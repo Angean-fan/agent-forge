@@ -7,19 +7,23 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import os
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
 from fastapi import Depends
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from agentforge_platform.accounts import Account
 from agentforge_platform.auth import get_current_account
 from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
-from agentforge_platform.models import Artifact, Project, Run, RunEvent, RunTask
+from agentforge_platform.models import Artifact, Project, Run, RunEvent, RunTask, Worker
+
+DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 30
+_CLAIM_ATTEMPTS = 5
 
 
 class RunStatus(StrEnum):
@@ -45,12 +49,78 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-def create_run(db: Session, project: Project, spec_id: int) -> Run:
-    run = Run(project_id=project.id, spec_id=spec_id, status=RunStatus.QUEUED)
+def create_run(
+    db: Session, project: Project, spec_id: int, *, idempotency_key: str | None = None
+) -> Run:
+    run = Run(
+        project_id=project.id,
+        spec_id=spec_id,
+        status=RunStatus.QUEUED,
+        idempotency_key=idempotency_key,
+    )
     db.add(run)
     db.flush()
     db.refresh(run)
     return run
+
+
+def find_run_by_idempotency(db: Session, project_id: int, key: str) -> Run | None:
+    return db.scalars(
+        select(Run).where(Run.project_id == project_id, Run.idempotency_key == key)
+    ).first()
+
+
+def claim_run(db: Session, worker_id: str, *, lease_seconds: int = 60) -> Run | None:
+    """事务领取一个 QUEUED 且租约空闲/过期的 run；原子更新防双领。租约比较以数据库时间为准。"""
+    for _ in range(_CLAIM_ATTEMPTS):
+        run_id = db.scalars(
+            select(Run.id)
+            .where(Run.status == RunStatus.QUEUED)
+            .where(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
+            .order_by(Run.id)
+            .limit(1)
+        ).first()
+        if run_id is None:
+            return None
+        result = db.execute(
+            update(Run)
+            .where(Run.id == run_id)
+            .where(Run.status == RunStatus.QUEUED)
+            .where(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
+            .values(lease_owner=worker_id, lease_until=_now() + timedelta(seconds=lease_seconds))
+        )
+        if result.rowcount == 1:
+            db.flush()
+            return db.get(Run, run_id)
+    return None
+
+
+def heartbeat(db: Session, worker_id: str, hostname: str) -> Worker:
+    worker = db.get(Worker, worker_id)
+    now = _now()
+    if worker is None:
+        worker = Worker(worker_id=worker_id, hostname=hostname, last_heartbeat=now)
+        db.add(worker)
+    else:
+        worker.last_heartbeat = now
+    db.flush()
+    return worker
+
+
+def worker_heartbeat_timeout() -> int:
+    return int(
+        os.environ.get(
+            "AGENTFORGE_WORKER_HEARTBEAT_TIMEOUT", str(DEFAULT_HEARTBEAT_TIMEOUT_SECONDS)
+        )
+    )
+
+
+def is_worker_healthy(
+    last_heartbeat: datetime, *, now: datetime | None = None, threshold_seconds: int | None = None
+) -> bool:
+    reference = now or _now()
+    threshold = worker_heartbeat_timeout() if threshold_seconds is None else threshold_seconds
+    return (reference - last_heartbeat) <= timedelta(seconds=threshold)
 
 
 def transition(db: Session, run: Run, new_status: RunStatus, *, error_code: str | None = None) -> Run:

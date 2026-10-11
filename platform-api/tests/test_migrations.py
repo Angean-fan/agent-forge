@@ -13,7 +13,7 @@ from agentforge_platform.models import Project
 
 PLATFORM_API_DIR = Path(__file__).resolve().parents[1]
 MANAGED_TABLES = {
-    "project", "spec_version", "platform_session", "run", "task", "event", "artifact",
+    "project", "spec_version", "platform_session", "run", "task", "event", "artifact", "worker",
 }
 
 
@@ -55,7 +55,7 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
 
     # upgrade head：全部受管表与 0003 新增列存在
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0004"
+    assert _revision(sqlite_url) == "0005"
     assert MANAGED_TABLES <= _tables(sqlite_url)
     assert "requirement_text" in _columns(sqlite_url, "project")
 
@@ -65,7 +65,14 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
         session.add(Project(owner_id=1, name="demo", requirement_text="需求文本"))
     engine.dispose()
 
-    # downgrade 一步（0004 → 0003）：run/task/event/artifact 表被删除，其余保留
+    # downgrade 一步（0005 → 0004）：worker 表与 run 租约/幂等列被删除
+    command.downgrade(config, "0004")
+    assert _revision(sqlite_url) == "0004"
+    assert "worker" not in _tables(sqlite_url)
+    assert "lease_until" not in _columns(sqlite_url, "run")
+    assert run_tables <= _tables(sqlite_url)
+
+    # downgrade（0004 → 0003）：run/task/event/artifact 表被删除，其余保留
     command.downgrade(config, "0003")
     assert _revision(sqlite_url) == "0003"
     assert not (run_tables & _tables(sqlite_url))
@@ -84,7 +91,7 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
 
     # 再次 upgrade head：表重建，但之前的行已随回退丢失
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0004"
+    assert _revision(sqlite_url) == "0005"
     assert MANAGED_TABLES <= _tables(sqlite_url)
     engine = make_engine(sqlite_url)
     with session_scope(make_session_factory(engine)) as session:

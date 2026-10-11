@@ -82,6 +82,9 @@ class Run(Base):
     spec_id: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.now()
     )
@@ -142,5 +145,18 @@ class Artifact(Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class Worker(Base):
+    """独立 worker 的注册与最近心跳；用于健康判定（停滞即不健康）。"""
+
+    __tablename__ = "worker"
+
+    worker_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    hostname: Mapped[str] = mapped_column(String(128), nullable=False)
+    last_heartbeat: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.now()
     )
