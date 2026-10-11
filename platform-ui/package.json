@@ -1,0 +1,10 @@
+{
+  "name": "agentforge-platform-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentForge MVP 平台前端（Vue 3 + TS 目标；M01 仅建立可重复测试入口）。",
+  "scripts": {
+    "test": "node --test"
+  }
+}
