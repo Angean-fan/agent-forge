@@ -52,7 +52,9 @@ docker compose up -d --build
 - **迁移**：`api` 服务启动命令为 `alembic upgrade head && uvicorn ...`，容器启动即应用迁移。
 - **持久化**：命名卷 `platform-db` 挂载到 `/db`（`AGENTFORGE_DATABASE_URL` 指向其中的 `agentforge.db`）；
   `./var/runs` 绑定挂载为运行目录。
-- **账号**：`../platform-api/config/accounts.json` 只读挂入 `/config/accounts.json`。
+- **账号**：挂载 `platform-api/config` 目录到 `/config`（只读），`AGENTFORGE_ACCOUNTS_FILE=/config/accounts.json`；
+  把生成的 `accounts.json` 放进该目录即可（**未放置时服务仍能启动**，只是无法登录）。
+- **`deploy/.env` 可选**：compose 以 `required: false` 读取，缺失时使用代码内默认值；`cp .env.example .env` 后按需覆盖。
 - **密钥边界**：`DEEPSEEK_API_KEY` 只注入 `api`；`worker` 不调用模型，Runner 绝不接收。
 - **UI**：`http://<host>:8080`（nginx 提供 SPA，并将 `/api` 反代到 `api:8000`，会话/CSRF 按同源处理）。
 

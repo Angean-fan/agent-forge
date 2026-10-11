@@ -22,13 +22,15 @@ services:
       context: ..
       dockerfile: deploy/api.Dockerfile
     command: ["sh", "-c", "alembic upgrade head && uvicorn agentforge_platform.main:app --host 0.0.0.0 --port 8000"]
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       <<: *platform-env
       AGENTFORGE_COOKIE_SECURE: "0"
     volumes:
       - platform-db:/db
-      - ../platform-api/config/accounts.json:/config/accounts.json:ro
+      - ../platform-api/config:/config:ro
       - ./var/runs:/runs
     ports:
       - "8000:8000"
@@ -44,7 +46,9 @@ services:
       context: ..
       dockerfile: deploy/api.Dockerfile
     command: ["python", "-m", "agentforge_platform.worker"]
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       <<: *platform-env
     volumes:
@@ -61,7 +65,9 @@ services:
       dockerfile: deploy/api.Dockerfile
     # 定期清理过期会话（并可在同处扩展运行产物清理）
     command: ["sh", "-c", "while true; do python -m agentforge_platform.maintenance sessions purge; python -m agentforge_platform.maintenance runs cleanup; sleep 3600; done"]
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       <<: *platform-env
     volumes:
