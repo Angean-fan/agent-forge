@@ -91,6 +91,8 @@
       <artifactId>spring-security-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- capability-pack dependencies are injected below this marker (do not remove) -->
+    <!-- CAPABILITY_PACK_DEPS -->
   </dependencies>
 
   <build>
