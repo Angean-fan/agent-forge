@@ -42,3 +42,5 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+# 本地 Claude Code 设置（可能含命令/密钥片段，绝不入库）
+.claude/settings.local.json

@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -158,5 +159,38 @@ class Worker(Base):
     hostname: Mapped[str] = mapped_column(String(128), nullable=False)
     last_heartbeat: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
     started_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class ModelCall(Base):
+    """模型调用账本；以 call_id 幂等结算。
+
+    支持生成前草稿（project_id + draft_id，run_id 为空）与生成期（run_id）两种用量。
+    金额使用整数**微单位**（1 元 = 1_000_000 微），并记录 `price_version`。
+    """
+
+    __tablename__ = "model_call"
+
+    call_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    model_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    draft_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    thinking_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    price_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reserved_micro: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    cost_micro: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_class: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.now()
     )

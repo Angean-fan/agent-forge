@@ -1,0 +1,273 @@
+"""M21 模型调用计费前置护栏。
+
+- **静态路由**：模型角色 → Provider/model（MVP 仅启用 `user_interaction → deepseek_official/deepseek-flash`；
+  其余角色仅占位，调用即拒且**不发生外部请求**）。
+- **账本**：`model_call` 记录生成前草稿（project_id + draft_id）与生成期（run_id）用量，按 call_id **幂等结算**。
+- **前置拦截**：预算预留 + 草稿次数/频率上限，均在调用 Provider **之前**判定。
+- 金额用整数**微单位**（1 元 = 1e6 微），价格来自外部 price 文件与 `price_version`，未知价记 `UNKNOWN` 并保留预留。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from agentforge_platform.clients import Completion, ModelClient, Usage
+from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.models import ModelCall
+
+MICRO_PER_YUAN = 1_000_000
+UNKNOWN = "UNKNOWN"
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+@dataclass(frozen=True)
+class Route:
+    role: str
+    provider: str
+    model: str
+    api_key_env: str
+    enabled: bool
+
+
+ROUTES: dict[str, Route] = {
+    "user_interaction": Route(
+        "user_interaction", "deepseek_official", "deepseek-flash", "DEEPSEEK_API_KEY", True
+    ),
+    # 后续阶段才实现：仅文档占位，MVP 不实例化、不检查密钥
+    "technical_planning": Route(
+        "technical_planning", "dashscope", "qwen3.7-plus", "DASHSCOPE_API_KEY", False
+    ),
+    "coding": Route("coding", "dashscope", "qwen3-coder-flash", "DASHSCOPE_API_KEY", False),
+    "complex_repair": Route(
+        "complex_repair", "dashscope", "qwen3.8-max", "DASHSCOPE_API_KEY", False
+    ),
+}
+
+
+@dataclass(frozen=True)
+class Price:
+    version: str
+    input_micro_per_million: int
+    output_micro_per_million: int
+
+
+def resolve_route(model_role: str) -> Route:
+    route = ROUTES.get(model_role)
+    if route is None or not route.enabled:
+        raise AppException(
+            ErrorCode.MODEL_ROLE_DISABLED, f"未启用或未知的模型角色：{model_role}", status_code=422
+        )
+    return route
+
+
+def project_budget_micro() -> int:
+    return int(
+        os.environ.get("AGENTFORGE_PROJECT_BUDGET_MICRO", str(10 * MICRO_PER_YUAN))  # 内测默认 10 元
+    )
+
+
+def draft_max_calls() -> int:
+    return int(os.environ.get("AGENTFORGE_DRAFT_MAX_CALLS", "20"))
+
+
+def draft_min_interval_seconds() -> float:
+    return float(os.environ.get("AGENTFORGE_DRAFT_MIN_INTERVAL_SECONDS", "0"))
+
+
+def default_reserve_micro() -> int:
+    return int(os.environ.get("AGENTFORGE_DEFAULT_RESERVE_MICRO", str(MICRO_PER_YUAN)))
+
+
+def price_table() -> dict[str, Price]:
+    path = os.environ.get("AGENTFORGE_PRICE_FILE")
+    if not path or not Path(path).is_file():
+        return {}
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    version = str(data.get("version", UNKNOWN))
+    return {
+        model: Price(
+            version,
+            int(entry["input_micro_per_million"]),
+            int(entry["output_micro_per_million"]),
+        )
+        for model, entry in data.get("models", {}).items()
+    }
+
+
+def lookup_price(model: str) -> Price | None:
+    return price_table().get(model)
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return -(-numerator // denominator)
+
+
+def _reserve_micro(model: str, max_input_tokens: int, max_output_tokens: int) -> tuple[int, str]:
+    price = lookup_price(model)
+    if price is None:
+        return default_reserve_micro(), UNKNOWN
+    micro = _ceil_div(max_input_tokens * price.input_micro_per_million, 1_000_000) + _ceil_div(
+        max_output_tokens * price.output_micro_per_million, 1_000_000
+    )
+    return micro, price.version
+
+
+def _totals(db: Session, project_id: int) -> tuple[int, int]:
+    settled = db.scalar(
+        select(func.coalesce(func.sum(ModelCall.cost_micro), 0)).where(
+            ModelCall.project_id == project_id, ModelCall.status == "SETTLED"
+        )
+    )
+    reserved = db.scalar(
+        select(func.coalesce(func.sum(ModelCall.reserved_micro), 0)).where(
+            ModelCall.project_id == project_id, ModelCall.status != "SETTLED"
+        )
+    )
+    return int(settled or 0), int(reserved or 0)
+
+
+def _enforce_draft_limits(db: Session, project_id: int) -> None:
+    interval = draft_min_interval_seconds()
+    if interval > 0:
+        last = db.scalar(
+            select(func.max(ModelCall.created_at)).where(
+                ModelCall.project_id == project_id, ModelCall.run_id.is_(None)
+            )
+        )
+        if last is not None and (_now() - last).total_seconds() < interval:
+            raise AppException(
+                ErrorCode.DRAFT_LIMIT_EXCEEDED, "草稿调用过于频繁。", status_code=429
+            )
+    count = db.scalar(
+        select(func.count())
+        .select_from(ModelCall)
+        .where(ModelCall.project_id == project_id, ModelCall.run_id.is_(None))
+    )
+    if int(count or 0) >= draft_max_calls():
+        raise AppException(
+            ErrorCode.DRAFT_LIMIT_EXCEEDED, "草稿调用次数已达上限。", status_code=429
+        )
+
+
+def reserve(
+    db: Session,
+    *,
+    call_id: str,
+    model_role: str,
+    project_id: int,
+    max_input_tokens: int,
+    max_output_tokens: int,
+    draft_id: int | None = None,
+    run_id: int | None = None,
+    thinking_mode: str | None = None,
+) -> ModelCall:
+    route = resolve_route(model_role)
+    if run_id is None:
+        _enforce_draft_limits(db, project_id)
+
+    reserve_micro, price_version = _reserve_micro(route.model, max_input_tokens, max_output_tokens)
+    settled, reserved = _totals(db, project_id)
+    if project_budget_micro() - settled - reserved < reserve_micro:
+        raise AppException(ErrorCode.BUDGET_EXCEEDED, "预算不足，未调用模型。", status_code=402)
+
+    row = ModelCall(
+        call_id=call_id,
+        model_role=route.role,
+        provider=route.provider,
+        model=route.model,
+        project_id=project_id,
+        draft_id=draft_id,
+        run_id=run_id,
+        thinking_mode=thinking_mode,
+        price_version=price_version,
+        reserved_micro=reserve_micro,
+        status="RESERVED",
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def settle(
+    db: Session,
+    call_id: str,
+    *,
+    usage: Usage | None = None,
+    request_id: str | None = None,
+    error_class: str | None = None,
+) -> ModelCall:
+    row = db.get(ModelCall, call_id)
+    if row is None:
+        raise AppException(ErrorCode.RUN_NOT_FOUND, f"未知 call_id：{call_id}", status_code=404)
+    if row.status == "SETTLED":
+        return row  # 幂等：已结算不重复计费
+    if request_id:
+        row.request_id = request_id
+    if usage is None:
+        row.status = "UNKNOWN"
+        row.error_class = error_class
+        row.updated_at = _now()
+        db.flush()
+        return row
+
+    row.input_tokens = usage.input_tokens
+    row.output_tokens = usage.output_tokens
+    price = lookup_price(row.model)
+    if price is None:
+        row.status = "UNKNOWN"
+        row.cost_micro = None
+    else:
+        row.price_version = price.version
+        row.cost_micro = _ceil_div(
+            usage.input_tokens * price.input_micro_per_million, 1_000_000
+        ) + _ceil_div(usage.output_tokens * price.output_micro_per_million, 1_000_000)
+        row.status = "SETTLED"
+    row.updated_at = _now()
+    db.flush()
+    return row
+
+
+def invoke(
+    db: Session,
+    *,
+    call_id: str,
+    model_role: str,
+    client: ModelClient,
+    prompt: str,
+    project_id: int,
+    max_input_tokens: int,
+    max_output_tokens: int,
+    draft_id: int | None = None,
+    run_id: int | None = None,
+    thinking_mode: str | None = None,
+) -> Completion:
+    route = resolve_route(model_role)
+    reserve(
+        db,
+        call_id=call_id,
+        model_role=model_role,
+        project_id=project_id,
+        max_input_tokens=max_input_tokens,
+        max_output_tokens=max_output_tokens,
+        draft_id=draft_id,
+        run_id=run_id,
+        thinking_mode=thinking_mode,
+    )
+    try:
+        result = client.complete(model=route.model, prompt=prompt, thinking_mode=thinking_mode)
+    except Exception as exc:
+        settle(db, call_id, usage=None, error_class=type(exc).__name__)
+        db.commit()  # 保留预留与 UNKNOWN 账本，供后续对账（不随调用者回滚）
+        raise
+    settle(db, call_id, usage=result.usage, request_id=result.request_id)
+    return result
