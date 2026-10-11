@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROOTS = (REPO_ROOT / "templates", REPO_ROOT / "capability-packs")
 _EXCLUDED_DIRS = {"node_modules", "target", "dist", "build", "__pycache__", ".git"}
 _MANIFEST_NAME = "manifest.json"
+_EXCLUDED_FILES = {_MANIFEST_NAME, ".DS_Store", "Thumbs.db"}
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -34,7 +36,7 @@ def compute_checksum(asset_dir: str | Path) -> str:
         if not path.is_file():
             continue
         relative = path.relative_to(asset_dir)
-        if relative.name == _MANIFEST_NAME:
+        if relative.name in _EXCLUDED_FILES:
             continue
         if any(part in _EXCLUDED_DIRS for part in relative.parts):
             continue
@@ -86,14 +88,14 @@ class AssetRegistry:
             self._scan(Path(root))
 
     def _scan(self, root: Path) -> None:
-        candidates: list[Path] = []
-        if (root / _MANIFEST_NAME).is_file():
-            candidates.append(root)
-        if root.is_dir():
-            for child in sorted(root.iterdir()):
-                if child.is_dir() and (child / _MANIFEST_NAME).is_file():
-                    candidates.append(child)
-        for directory in candidates:
+        """递归扫描 root 下的 manifest.json（支持同一资产多版本目录），剪枝构建产物目录。"""
+        if not root.is_dir():
+            return
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(name for name in dirnames if name not in _EXCLUDED_DIRS)
+            if _MANIFEST_NAME not in filenames:
+                continue
+            directory = Path(dirpath)
             manifest = AssetManifest.model_validate_json(
                 (directory / _MANIFEST_NAME).read_text(encoding="utf-8")
             )
@@ -150,17 +152,15 @@ def default_registry() -> AssetRegistry:
 
 
 def _write_checksums() -> None:
-    for root in DEFAULT_ROOTS:
-        for directory in [root, *sorted(p for p in root.iterdir() if p.is_dir())]:
-            manifest_path = directory / _MANIFEST_NAME
-            if not manifest_path.is_file():
-                continue
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-            payload["checksum"] = compute_checksum(directory)
-            manifest_path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-            )
-            print(f"updated checksum: {directory.name}")
+    registry = AssetRegistry(list(DEFAULT_ROOTS))
+    for manifest, directory in registry.all_with_paths():
+        manifest_path = directory / _MANIFEST_NAME
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["checksum"] = compute_checksum(directory)
+        manifest_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print(f"updated checksum: {manifest.id}@{manifest.version}")
 
 
 def main(argv: list[str]) -> int:

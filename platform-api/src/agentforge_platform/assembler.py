@@ -25,7 +25,10 @@ from agentforge_platform.resolver import AssetLock, resolve_assets
 from agentforge_platform.spec import SoftwareSpecification
 
 _STRICT = ConfigDict(extra="forbid")
-_EXCLUDED_COPY = {"manifest.json", "node_modules", "target", "dist", "build", "__pycache__", ".git"}
+_EXCLUDED_COPY = {
+    "manifest.json", "node_modules", "target", "dist", "build", "__pycache__", ".git",
+    ".DS_Store", "Thumbs.db",
+}
 _TEMPLATE_README = "README.md"
 _ASSET_LOCK_NAME = "asset-lock.json"
 _README_NAME = "README.md"

@@ -1,6 +1,6 @@
 {
   "id": "base-template",
-  "version": "demo-0.1",
+  "version": "demo-0.2",
   "kind": "template",
   "compatible_profiles": [
     "demo-ts-mp"
@@ -39,6 +39,6 @@
     "npm run type-check",
     "npm run build"
   ],
-  "checksum": "2a468fce5510189574bb5507228677c9738c432d74c5c7d34b8e450225e42f10",
+  "checksum": "5d3f60af606b202ee463de8c1d6877acdef984a3d4fa84b6cabf0178634ff2e9",
   "license": "internal"
 }

@@ -52,6 +52,10 @@ def _synthetic_registry(root: Path, renders: list[dict]) -> AssetRegistry:
     (template / "manifest.json").write_text(
         json.dumps({**_BASE_MANIFEST, "kind": "template", "id": "tpl"}), encoding="utf-8"
     )
+    (template / "compose.yaml").write_text(
+        "services:\n  mysql:\n    image: mysql:8.0.43@sha256:" + "0" * 64 + "\n",
+        encoding="utf-8",
+    )
     pack = root / "pack"
     (pack / "templates").mkdir(parents=True)
     (pack / "templates" / "x.j2").write_text("hello", encoding="utf-8")

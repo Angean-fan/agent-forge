@@ -7,6 +7,7 @@ from datetime import datetime
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
+from agentforge_platform.auth import purge_expired_sessions
 from agentforge_platform.db import session_scope
 from agentforge_platform.models import PlatformSession, Project
 
@@ -137,3 +138,26 @@ def test_project_ownership_is_enforced(platform_app) -> None:
     assert alice.get(f"/api/projects/{project_id}").status_code == 200
     assert bob.get(f"/api/projects/{project_id}").status_code == 403
     assert alice.get("/api/projects/424242").status_code == 404
+
+
+def test_purge_expired_sessions_keeps_valid_sessions(platform_app) -> None:
+    app, factory = platform_app
+    client = TestClient(app)
+    _login(client, ALICE_CREDS)
+
+    with session_scope(factory) as session:
+        session.add(
+            PlatformSession(
+                token_hash="deadbeef",
+                account_id=1,
+                csrf_token="expired",
+                created_at=datetime(2000, 1, 1),
+                expires_at=datetime(2000, 1, 1),
+            )
+        )
+
+    with session_scope(factory) as session:
+        removed = purge_expired_sessions(session)
+
+    assert removed == 1
+    assert client.get("/api/auth/me").status_code == 200  # 有效会话不受影响

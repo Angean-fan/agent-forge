@@ -17,8 +17,8 @@ from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.spec import SoftwareSpecification
 
 REPO = Path(__file__).resolve().parents[2]
-PACK = REPO / "capability-packs" / "task-crud-backend"
-TEMPLATE_BACKEND = REPO / "templates" / "backend"
+PACK = REPO / "capability-packs" / "task-crud-backend" / "0.1.1"
+TEMPLATE_BACKEND = REPO / "templates" / "demo-0.2" / "backend"
 SAMPLE_SPEC = REPO / "schemas" / "task-management.spec.json"
 
 

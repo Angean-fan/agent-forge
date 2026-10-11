@@ -14,6 +14,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, Request, Response
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from agentforge_platform.accounts import Account, find_by_id, get_accounts
@@ -74,6 +75,13 @@ def lookup_session(db: Session, raw_token: str) -> PlatformSession | None:
 def delete_session(db: Session, row: PlatformSession) -> None:
     db.delete(row)
     db.commit()
+
+
+def purge_expired_sessions(db: Session) -> int:
+    """批量清理已过期会话，返回删除行数；有效会话不受影响。"""
+    result = db.execute(delete(PlatformSession).where(PlatformSession.expires_at <= _utcnow()))
+    db.commit()
+    return result.rowcount or 0
 
 
 def set_session_cookies(

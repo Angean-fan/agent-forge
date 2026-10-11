@@ -9,8 +9,8 @@ from agentforge_platform.contract import compile_from_spec
 from agentforge_platform.spec import SoftwareSpecification
 
 REPO = Path(__file__).resolve().parents[2]
-PACK = REPO / "capability-packs" / "task-crud-frontend"
-TEMPLATE_FRONTEND = REPO / "templates" / "frontend"
+PACK = REPO / "capability-packs" / "task-crud-frontend" / "0.1.0"
+TEMPLATE_FRONTEND = REPO / "templates" / "demo-0.2" / "frontend"
 SAMPLE_SPEC = REPO / "schemas" / "task-management.spec.json"
 
 

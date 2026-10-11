@@ -34,6 +34,11 @@ def _write_manifest(directory: Path, **fields) -> None:
     }
     manifest.update(fields)
     (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if manifest["kind"] == "template":
+        (directory / "compose.yaml").write_text(
+            "services:\n  mysql:\n    image: mysql:8.0.43@sha256:" + "0" * 64 + "\n",
+            encoding="utf-8",
+        )
 
 
 def test_resolve_task_lock() -> None:

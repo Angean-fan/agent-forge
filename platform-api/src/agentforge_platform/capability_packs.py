@@ -45,6 +45,14 @@ _JAVA_TO_TS = {
     "BigDecimal": "number",
 }
 _DEP_MARKER = "<!-- CAPABILITY_PACK_DEPS -->"
+_OPERATION_ACTION = {
+    "list": "read",
+    "get": "read",
+    "create": "create",
+    "update": "update",
+    "delete": "delete",
+}
+PAGINATION_MAX = 100
 
 
 class PackRenderError(AppException):
@@ -191,6 +199,33 @@ def build_params(contract: BusinessContract) -> dict:
 
     indexes = [group[0] for group in table.indexes if len(group) == 1]
 
+    # 角色 → 允许操作；每条契约路由的 allowed_roles 必须与权限矩阵一致，否则拒绝装配。
+    role_actions = {entry.role: set(entry.actions) for entry in contract.permissions[0].roles}
+    op_roles: dict[str, list[str]] = {}
+    for route in contract.routes:
+        action = _OPERATION_ACTION[route.operation]
+        expected = sorted(role for role, actions in role_actions.items() if action in actions)
+        if expected != sorted(route.allowed_roles):
+            raise PackRenderError(
+                ErrorCode.CONTRACT_CONFLICT,
+                f"路由 {route.operation} 的 allowed_roles 与权限矩阵不一致",
+            )
+        op_roles[route.operation] = expected
+    op_roles_literals = {
+        op: ", ".join(f'"{role}"' for role in roles) for op, roles in op_roles.items()
+    }
+    creator_role = next(
+        (role for role in sorted(role_actions) if "create" in role_actions[role]), None
+    )
+    readonly_role = next(
+        (
+            role
+            for role in sorted(role_actions)
+            if "read" in role_actions[role] and "create" not in role_actions[role]
+        ),
+        None,
+    )
+
     return {
         "package": PACKAGE,
         "package_dir": PACKAGE_DIR,
@@ -209,6 +244,11 @@ def build_params(contract: BusinessContract) -> dict:
         "search_java": _camel(search_column.name) if search_column else None,
         "search_pascal": _pascal(search_column.name) if search_column else None,
         "indexes": indexes,
+        "op_roles": op_roles,
+        "op_roles_literals": op_roles_literals,
+        "creator_role": creator_role,
+        "readonly_role": readonly_role,
+        "pagination_max": PAGINATION_MAX,
         "writable_decls": _render_decls(writable_fields, "        "),
         "view_decls": _render_decls(view_fields, "        ", with_validation=False),
         "view_getters": _render_getters(view_fields, "                "),
@@ -320,8 +360,8 @@ def main(argv: list[str]) -> int:
     contract = BusinessContract.model_validate_json(Path(argv[0]).read_text(encoding="utf-8"))
     repo_root = Path(__file__).resolve().parents[3]
     written = materialize_backend(
-        repo_root / "templates" / "backend",
-        repo_root / "capability-packs" / "task-crud-backend",
+        repo_root / "templates" / "demo-0.2" / "backend",
+        repo_root / "capability-packs" / "task-crud-backend" / "0.1.1",
         contract,
         argv[1],
     )

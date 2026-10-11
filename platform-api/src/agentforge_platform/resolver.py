@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agentforge_platform.asset_registry import (
     REPO_ROOT,
+    AssetManifest,
     AssetRegistry,
     default_registry,
 )
@@ -24,6 +26,13 @@ from agentforge_platform.errors import AppException, ErrorCode
 
 LOCK_SCHEMA_VERSION = "0.1"
 _STRICT = ConfigDict(extra="forbid")
+
+
+class ImageRef(BaseModel):
+    model_config = _STRICT
+
+    reference: str
+    digest: str
 
 
 class LockedAsset(BaseModel):
@@ -41,6 +50,7 @@ class AssetLock(BaseModel):
 
     schema_version: str
     profile: str
+    mysql_image: ImageRef
     assets: list[LockedAsset]
     lock_hash: str
 
@@ -72,24 +82,71 @@ def _require_name(requirement: str) -> str:
     return requirement.split(":", 1)[1] if ":" in requirement else requirement
 
 
-def resolve_assets(registry: AssetRegistry, profile: str) -> AssetLock:
-    templates = [
+def _version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
+def _latest_by_id(assets: list[AssetManifest]) -> dict[str, AssetManifest]:
+    latest: dict[str, AssetManifest] = {}
+    for manifest in assets:
+        current = latest.get(manifest.id)
+        if current is None or _version_key(manifest.version) > _version_key(current.version):
+            latest[manifest.id] = manifest
+    return latest
+
+
+def _select(
+    assets: list[AssetManifest], pins: dict[str, str] | None
+) -> dict[str, AssetManifest]:
+    chosen = _latest_by_id(assets)
+    if pins:
+        for asset_id, version in pins.items():
+            pinned = next(
+                (m for m in assets if m.id == asset_id and m.version == version), None
+            )
+            if pinned is not None:
+                chosen[asset_id] = pinned
+    return chosen
+
+
+def _mysql_image(template_dir: Path) -> ImageRef:
+    compose = template_dir / "compose.yaml"
+    if not compose.is_file():
+        raise AppException(ErrorCode.ASSET_CONFLICT, "模板缺少 compose.yaml", status_code=422)
+    match = re.search(
+        r"image:\s*(mysql:[0-9][^\s@]*)@(sha256:[0-9a-f]{64})", compose.read_text("utf-8")
+    )
+    if match is None:
+        raise AppException(
+            ErrorCode.ASSET_CONFLICT,
+            "compose 的 MySQL 镜像未锁定 digest（不接受可变 tag）",
+            status_code=422,
+        )
+    return ImageRef(reference=match.group(1), digest=match.group(2))
+
+
+def resolve_assets(
+    registry: AssetRegistry, profile: str, *, pins: dict[str, str] | None = None
+) -> AssetLock:
+    compatible_templates = [
         manifest
         for manifest in registry.all()
         if manifest.kind == "template" and profile in manifest.compatible_profiles
     ]
-    if len(templates) != 1:
+    templates_by_id = _select(compatible_templates, pins)
+    if len(templates_by_id) != 1:
         raise AppException(
             ErrorCode.ASSET_CONFLICT,
-            f"Profile '{profile}' 需要恰好 1 个兼容模板，找到 {len(templates)} 个",
+            f"Profile '{profile}' 需要恰好 1 个兼容模板 ID，找到 {len(templates_by_id)} 个",
             status_code=422,
         )
-    template = templates[0]
-    packs = [
+    template = next(iter(templates_by_id.values()))
+    compatible_packs = [
         manifest
         for manifest in registry.all()
         if manifest.kind == "capability-pack" and profile in manifest.compatible_profiles
     ]
+    packs = list(_select(compatible_packs, pins).values())
     selected = [template, *packs]
 
     # 1) 重复能力
@@ -141,9 +198,11 @@ def resolve_assets(registry: AssetRegistry, profile: str) -> AssetLock:
     ]
     locked.sort(key=lambda asset: (asset.kind, asset.id))
 
+    _, template_dir = registry.get(template.kind, template.id, template.version)
     lock = AssetLock(
         schema_version=LOCK_SCHEMA_VERSION,
         profile=profile,
+        mysql_image=_mysql_image(Path(template_dir)),
         assets=locked,
         lock_hash="",
     )

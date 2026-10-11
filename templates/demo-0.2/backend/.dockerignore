@@ -1,0 +1,9 @@
+# 构建上下文排除：密钥、版本库、构建产物与日志（保留 pom.xml 等锁文件）
+.env
+.env.*
+.git
+.gitignore
+target
+build
+*.log
+logs
