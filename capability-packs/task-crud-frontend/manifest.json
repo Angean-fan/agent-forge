@@ -2,10 +2,24 @@
   "id": "task-crud-frontend",
   "version": "0.1.0",
   "kind": "capability-pack",
-  "compatible_profiles": ["demo-ts-mp"],
-  "requires": ["template:router", "template:auth", "template:api-client"],
-  "provides": ["crud-ui", "list", "form", "search-ui", "pagination-ui"],
+  "compatible_profiles": [
+    "demo-ts-mp"
+  ],
+  "requires": [
+    "template:router",
+    "template:auth",
+    "template:api-client"
+  ],
+  "provides": [
+    "crud-ui",
+    "list",
+    "form",
+    "search-ui",
+    "pagination-ui"
+  ],
   "conflicts": [],
+  "extension_points": [],
+  "checksum": "bb6e0267fa8f8f04a01262ca65d42b0aaec1dbea10aa34a321873dc5410673f9",
   "parameter_schema": {
     "entity_name": "string",
     "entity_camel": "string",
@@ -23,13 +37,32 @@
     "test/"
   ],
   "dependencies": [],
-  "checks": ["npm run type-check", "npm run build", "npm test"],
+  "checks": [
+    "npm run type-check",
+    "npm run build",
+    "npm test"
+  ],
   "license": "internal",
   "renders": [
-    {"template": "types.ts.j2", "target": "src/types/{{ entity_camel }}.ts"},
-    {"template": "api.ts.j2", "target": "src/api/{{ entity_camel }}.ts"},
-    {"template": "view_list.vue.j2", "target": "src/views/{{ entity_name }}ListView.vue"},
-    {"template": "router_module.ts.j2", "target": "src/router/modules/{{ entity_camel }}.ts"},
-    {"template": "api_test.ts.j2", "target": "test/{{ entity_camel }}-api.spec.ts"}
+    {
+      "template": "types.ts.j2",
+      "target": "src/types/{{ entity_camel }}.ts"
+    },
+    {
+      "template": "api.ts.j2",
+      "target": "src/api/{{ entity_camel }}.ts"
+    },
+    {
+      "template": "view_list.vue.j2",
+      "target": "src/views/{{ entity_name }}ListView.vue"
+    },
+    {
+      "template": "router_module.ts.j2",
+      "target": "src/router/modules/{{ entity_camel }}.ts"
+    },
+    {
+      "template": "api_test.ts.j2",
+      "target": "test/{{ entity_camel }}-api.spec.ts"
+    }
   ]
 }

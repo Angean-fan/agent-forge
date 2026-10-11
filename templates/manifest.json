@@ -1,0 +1,43 @@
+{
+  "id": "base-template",
+  "version": "demo-0.1",
+  "kind": "template",
+  "compatible_profiles": [
+    "demo-ts-mp"
+  ],
+  "requires": [],
+  "provides": [],
+  "parameter_schema": {},
+  "provided_capabilities": [
+    "auth",
+    "jwt-security",
+    "exception-handling",
+    "health",
+    "flyway-migration",
+    "router",
+    "api-client",
+    "login-page",
+    "base-layout"
+  ],
+  "conflicts": [],
+  "extension_points": [
+    "backend/pom.xml#CAPABILITY_PACK_DEPS",
+    "frontend/src/router/modules/*.ts",
+    "frontend/src/api/",
+    "frontend/src/views/",
+    "frontend/src/types/"
+  ],
+  "owned_paths": [
+    "backend/",
+    "frontend/",
+    "compose.yaml",
+    ".env.example"
+  ],
+  "checks": [
+    "mvn test",
+    "npm run type-check",
+    "npm run build"
+  ],
+  "checksum": "2a468fce5510189574bb5507228677c9738c432d74c5c7d34b8e450225e42f10",
+  "license": "internal"
+}

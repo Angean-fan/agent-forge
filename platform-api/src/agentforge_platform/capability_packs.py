@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-from pydantic import BaseModel, ConfigDict
 
+from agentforge_platform.asset_registry import AssetManifest
 from agentforge_platform.contract import BusinessContract
 from agentforge_platform.errors import AppException, ErrorCode
 
@@ -52,34 +52,9 @@ class PackRenderError(AppException):
         super().__init__(code, message, status_code=422, retryable=False)
 
 
-class RenderEntry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    template: str
-    target: str
-
-
-class CapabilityPackManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    version: str
-    kind: str
-    compatible_profiles: list[str]
-    requires: list[str]
-    provides: list[str]
-    conflicts: list[str]
-    parameter_schema: dict[str, str]
-    owned_paths: list[str]
-    dependencies: list[dict[str, str]] = []
-    checks: list[str] = []
-    license: str
-    renders: list[RenderEntry]
-
-
-def load_manifest(pack_dir: str | Path) -> CapabilityPackManifest:
+def load_manifest(pack_dir: str | Path) -> AssetManifest:
     manifest_path = Path(pack_dir) / "manifest.json"
-    return CapabilityPackManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    return AssetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
 
 
 def _camel(column: str) -> str:
