@@ -29,6 +29,8 @@ target/
 
 # ---- Runtime artifacts (MVP 生成的运行产物，不入库) ----
 runs/
+var/
+backups/
 *.log
 logs/
 *.db

@@ -11,7 +11,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from agentforge_platform.errors import AppException, ErrorCode
@@ -46,7 +46,8 @@ def latest_spec(db: Session, project_id: int) -> SpecVersion | None:
 
 
 def put_draft(
-    db: Session, project: Project, expected_version: int, spec: SoftwareSpecification
+    db: Session, project: Project, expected_version: int, spec: SoftwareSpecification,
+    *, expected_revision: int | None = None,
 ) -> SpecVersion:
     """创建或编辑草稿；版本不匹配返回 409；编辑已确认规格则新建版本。"""
     latest = latest_spec(db, project.id)
@@ -56,6 +57,11 @@ def put_draft(
             ErrorCode.SPEC_CONFLICT,
             f"规格版本冲突：期望 {expected_version}，当前 {current}。",
             status_code=409,
+        )
+    current_revision = latest.draft_revision if latest is not None else 0
+    if expected_revision is not None and expected_revision != current_revision:
+        raise AppException(
+            ErrorCode.SPEC_CONFLICT, "草稿已被修改，请重新读取。", status_code=409
         )
 
     body_json = canonical_json(spec)
@@ -67,12 +73,24 @@ def put_draft(
         )
         db.add(row)
     elif latest.confirmed_at is None:
-        latest.body_json = body_json
-        latest.hash = spec_hash
-        latest.draft_revision += 1
-        latest.summary = None
-        latest.missing_fields_json = "[]"
-        latest.questions_json = "[]"
+        result = db.execute(
+            update(SpecVersion)
+            .where(
+                SpecVersion.id == latest.id,
+                SpecVersion.draft_revision == current_revision,
+                SpecVersion.confirmed_at.is_(None),
+            )
+            .values(
+                body_json=body_json,
+                hash=spec_hash,
+                draft_revision=current_revision + 1,
+                summary=None,
+                missing_fields_json="[]",
+                questions_json="[]",
+            )
+        )
+        if result.rowcount != 1:
+            raise AppException(ErrorCode.SPEC_CONFLICT, "草稿已被修改，请重新读取。", status_code=409)
         row = latest
     else:
         row = SpecVersion(
@@ -88,7 +106,9 @@ def put_draft(
     return row
 
 
-def confirm_draft(db: Session, project: Project, expected_version: int) -> SpecVersion:
+def confirm_draft(
+    db: Session, project: Project, expected_version: int, *, expected_revision: int | None = None
+) -> SpecVersion:
     """确认并冻结草稿；无草稿 404、版本冲突 409、未就绪 422。"""
     latest = latest_spec(db, project.id)
     if latest is None or latest.confirmed_at is not None:
@@ -101,6 +121,8 @@ def confirm_draft(db: Session, project: Project, expected_version: int) -> SpecV
             f"规格版本冲突：期望 {expected_version}，当前 {latest.version}。",
             status_code=409,
         )
+    if expected_revision is not None and expected_revision != latest.draft_revision:
+        raise AppException(ErrorCode.SPEC_CONFLICT, "草稿已被修改，请重新读取。", status_code=409)
 
     spec = load_spec(latest)
     issues = confirmation_issues(spec)
@@ -118,7 +140,17 @@ def confirm_draft(db: Session, project: Project, expected_version: int) -> SpecV
             ErrorCode.SPEC_NOT_READY, "规格尚未就绪：" + "；".join(issues), status_code=422
         )
 
-    latest.confirmed_at = datetime.now(UTC).replace(tzinfo=None)
+    result = db.execute(
+        update(SpecVersion)
+        .where(
+            SpecVersion.id == latest.id,
+            SpecVersion.draft_revision == latest.draft_revision,
+            SpecVersion.confirmed_at.is_(None),
+        )
+        .values(confirmed_at=datetime.now(UTC).replace(tzinfo=None))
+    )
+    if result.rowcount != 1:
+        raise AppException(ErrorCode.SPEC_CONFLICT, "草稿已被修改，请重新读取。", status_code=409)
     project.active_spec_id = latest.id
     db.flush()
     db.refresh(latest)

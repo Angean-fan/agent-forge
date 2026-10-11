@@ -13,8 +13,8 @@ echo "==> platform-api: uv run --locked pytest"
 echo "==> platform-api: uv run --locked ruff check ."
 (cd "${ROOT}/platform-api" && uv run --locked ruff check .)
 
-echo "==> platform-ui: npm test"
-(cd "${ROOT}/platform-ui" && npm test)
+echo "==> platform-ui: npm ci + type-check + build + test"
+(cd "${ROOT}/platform-ui" && npm ci && npm run type-check && npm run build && npm test)
 
 echo "==> runner: uv run --locked pytest / ruff"
 (cd "${ROOT}/runner" && uv run --locked pytest && uv run --locked ruff check .)

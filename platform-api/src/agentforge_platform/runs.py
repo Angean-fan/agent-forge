@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -20,7 +21,15 @@ from agentforge_platform.accounts import Account
 from agentforge_platform.auth import get_current_account
 from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
-from agentforge_platform.models import Artifact, Project, Run, RunEvent, RunTask, Worker
+from agentforge_platform.models import (
+    Artifact,
+    ModelCall,
+    Project,
+    Run,
+    RunEvent,
+    RunTask,
+    Worker,
+)
 
 DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 30
 _CLAIM_ATTEMPTS = 5
@@ -167,6 +176,131 @@ def run_directory(work_root: str | Path, run_id: int) -> Path:
     directory = Path(work_root).resolve() / f"run-{run_id}"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def work_root() -> Path:
+    """平台运行根目录（与 worker 共用同一环境变量，默认 ``./var/runs``）。"""
+    return Path(os.environ.get("RUNNER_WORK_ROOT", "./var/runs"))
+
+
+def resolve_artifact_path(work_root_path: str | Path, run_id: int, artifact: Artifact) -> Path:
+    """解析产物绝对路径；路径必须落在本 run 目录内（拒绝目录穿越）。"""
+    run_dir = (Path(work_root_path).resolve() / f"run-{run_id}").resolve()
+    candidate = (run_dir / artifact.path).resolve()
+    if candidate != run_dir and run_dir not in candidate.parents:
+        raise AppException(ErrorCode.ARTIFACT_NOT_FOUND, "产物路径非法。", status_code=404)
+    return candidate
+
+
+def find_artifact(db: Session, run_id: int, kind: str) -> Artifact | None:
+    return db.scalars(
+        select(Artifact)
+        .where(Artifact.run_id == run_id, Artifact.kind == kind)
+        .order_by(Artifact.id.desc())
+    ).first()
+
+
+def list_artifacts(db: Session, run_id: int) -> list[Artifact]:
+    return list(
+        db.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
+    )
+
+
+def task_counts(db: Session, run_id: int) -> tuple[int, int]:
+    """返回 (任务总数, 已完成数)。"""
+    total = db.scalar(
+        select(func.count()).select_from(RunTask).where(RunTask.run_id == run_id)
+    )
+    done = db.scalar(
+        select(func.count())
+        .select_from(RunTask)
+        .where(RunTask.run_id == run_id, RunTask.status == "DONE")
+    )
+    return int(total or 0), int(done or 0)
+
+
+def run_cost(db: Session, run_id: int) -> dict[str, int]:
+    """本 run 生成期用量：已结算（settled）与预留（reserved）分列，未定价计 unknown。"""
+    settled = db.scalar(
+        select(func.coalesce(func.sum(ModelCall.cost_micro), 0)).where(
+            ModelCall.run_id == run_id, ModelCall.status == "SETTLED"
+        )
+    )
+    reserved = db.scalar(
+        select(func.coalesce(func.sum(ModelCall.reserved_micro), 0)).where(
+            ModelCall.run_id == run_id, ModelCall.status != "SETTLED"
+        )
+    )
+    unknown = db.scalar(
+        select(func.count(ModelCall.call_id)).where(
+            ModelCall.run_id == run_id, ModelCall.status != "SETTLED"
+        )
+    )
+    return {
+        "settled_micro": int(settled or 0),
+        "reserved_micro": int(reserved or 0),
+        "unknown_calls": int(unknown or 0),
+    }
+
+
+def current_phase(db: Session, run_id: int) -> str | None:
+    """最近一次 ``stage`` 事件的阶段名；无则 None（前端回退到状态）。"""
+    row = db.scalars(
+        select(RunEvent)
+        .where(RunEvent.run_id == run_id, RunEvent.type == "stage")
+        .order_by(RunEvent.sequence.desc())
+    ).first()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row.payload)
+    except ValueError:
+        return None
+    stage = payload.get("stage") if isinstance(payload, dict) else None
+    return stage if isinstance(stage, str) else None
+
+
+def events_after(db: Session, run_id: int, after_sequence: int, limit: int) -> list[RunEvent]:
+    return list(
+        db.scalars(
+            select(RunEvent)
+            .where(RunEvent.run_id == run_id, RunEvent.sequence > after_sequence)
+            .order_by(RunEvent.sequence)
+            .limit(limit)
+        ).all()
+    )
+
+
+def latest_sequence(db: Session, run_id: int) -> int:
+    return int(
+        db.scalar(select(func.max(RunEvent.sequence)).where(RunEvent.run_id == run_id)) or 0
+    )
+
+
+def worker_status(db: Session) -> dict[str, object]:
+    """汇总所有 worker 的心跳健康；供监控/告警探针使用。"""
+    rows = db.scalars(select(Worker).order_by(Worker.worker_id)).all()
+    items = [
+        {
+            "worker_id": worker.worker_id,
+            "hostname": worker.hostname,
+            "last_heartbeat": worker.last_heartbeat.isoformat(),
+            "healthy": is_worker_healthy(worker.last_heartbeat),
+        }
+        for worker in rows
+    ]
+    unhealthy = [item["worker_id"] for item in items if not item["healthy"]]
+    return {"workers": items, "unhealthy": unhealthy}
+
+
+def verification_report(run_id: int) -> dict | None:
+    """读取本 run 的 verification.json（含逐项 PASS/FAIL/NOT_RUN）；缺失则 None。"""
+    path = work_root().resolve() / f"run-{run_id}" / "verification.json"
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
 
 
 def require_run_owner(

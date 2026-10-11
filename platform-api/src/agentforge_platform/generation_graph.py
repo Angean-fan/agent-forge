@@ -23,6 +23,12 @@ from agentforge_platform.asset_registry import AssetRegistry, default_registry
 from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.db import session_scope
 from agentforge_platform.models import Run, SpecVersion
+from agentforge_platform.packaging import (
+    PackagingError,
+    build_cost_report,
+    package_run,
+    verification_passed,
+)
 from agentforge_platform.resolver import AssetLock, resolve_assets
 from agentforge_platform.runner_client import RunnerClient
 from agentforge_platform.runs import (
@@ -35,8 +41,6 @@ from agentforge_platform.runs import (
 )
 from agentforge_platform.spec import SoftwareSpecification
 from agentforge_platform.spec_service import content_hash
-
-VERIFY_REQUIRED = ("static_manifest", "backend_test", "backend_build", "frontend_build")
 
 
 class GenerationError(Exception):
@@ -168,11 +172,39 @@ def build_graph(context: GenerationContext):
         run_id = state["run_id"]
         verification = state["verification"]
         acceptance = state["acceptance"]
-        checks = {c.get("name"): c.get("status") for c in verification.get("checks", [])}
-        required_ok = all(checks.get(name) == "PASS" for name in VERIFY_REQUIRED)
-        ok = verification.get("overall") == "PASS" and acceptance.get("overall") == "PASS" and required_ok
+        ok = verification_passed(verification, acceptance)
+        run_dir = run_directory(context.work_root, run_id)
+
+        with session_scope(context.session_factory) as db:
+            cost_report = build_cost_report(db, project_id=state["project_id"], run_id=run_id)
+
+        try:
+            package = package_run(
+                run_dir,
+                spec=state["spec"],
+                lock=state["lock"],
+                contract=state["contract"],
+                verification=verification,
+                acceptance=acceptance,
+                cost_report=cost_report,
+            )
+        except PackagingError as exc:
+            with session_scope(context.session_factory) as db:
+                run = _require_active(db, run_id, RunStatus.VERIFYING)
+                transition(db, run, RunStatus.FAILED, error_code=exc.code)
+                append_event(db, run, "failed", json.dumps({"code": exc.code, "stage": "package"}))
+            return {"ok": False, "error_code": exc.code}
+
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.VERIFYING)
+            record_artifact(
+                db, run, package.zip_path, package.zip_sha256, "zip", verified=package.verified
+            )
+            append_event(
+                db, run, "packaged",
+                json.dumps({"zip": package.zip_path, "files": package.file_count,
+                            "verified": package.verified}),
+            )
             if ok:
                 transition(db, run, RunStatus.SUCCEEDED)
                 append_event(db, run, "succeeded", "{}")

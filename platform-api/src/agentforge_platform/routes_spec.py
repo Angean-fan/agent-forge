@@ -28,11 +28,13 @@ router = APIRouter(prefix="/api/projects", tags=["spec"])
 
 class SpecPutRequest(BaseModel):
     version: int = Field(ge=0)
+    draft_revision: int = Field(ge=0)
     spec: SoftwareSpecification
 
 
 class SpecConfirmRequest(BaseModel):
     version: int = Field(ge=0)
+    draft_revision: int = Field(ge=0)
 
 
 class SpecExtractRequest(BaseModel):
@@ -42,6 +44,7 @@ class SpecExtractRequest(BaseModel):
 class SpecView(BaseModel):
     spec_id: int
     version: int
+    draft_revision: int
     confirmed: bool
     confirmed_at: datetime | None
     hash: str
@@ -56,6 +59,7 @@ class SpecView(BaseModel):
 class SpecConfirmView(BaseModel):
     spec_id: int
     version: int
+    draft_revision: int
     hash: str
     confirmed_at: datetime
 
@@ -65,6 +69,7 @@ def _view(row: SpecVersion) -> SpecView:
     return SpecView(
         spec_id=row.id,
         version=row.version,
+        draft_revision=row.draft_revision,
         confirmed=row.confirmed_at is not None,
         confirmed_at=row.confirmed_at,
         hash=row.hash,
@@ -97,7 +102,9 @@ def put_spec(
     _csrf: None = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> ApiResponse[SpecView]:
-    row = put_draft(db, project, payload.version, payload.spec)
+    row = put_draft(
+        db, project, payload.version, payload.spec, expected_revision=payload.draft_revision
+    )
     return ApiResponse(request_id=get_request_id(request), data=_view(row))
 
 
@@ -121,12 +128,13 @@ def confirm_spec(
     _csrf: None = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> ApiResponse[SpecConfirmView]:
-    row = confirm_draft(db, project, payload.version)
+    row = confirm_draft(db, project, payload.version, expected_revision=payload.draft_revision)
     return ApiResponse(
         request_id=get_request_id(request),
         data=SpecConfirmView(
             spec_id=row.id,
             version=row.version,
+            draft_revision=row.draft_revision,
             hash=row.hash,
             confirmed_at=row.confirmed_at,
         ),

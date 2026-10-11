@@ -161,3 +161,53 @@ def test_purge_expired_sessions_keeps_valid_sessions(platform_app) -> None:
 
     assert removed == 1
     assert client.get("/api/auth/me").status_code == 200  # 有效会话不受影响
+
+
+def test_login_rate_limit_boundary(platform_app) -> None:
+    from agentforge_platform.ratelimit import SlidingWindowLimiter
+
+    app, _ = platform_app
+    app.state.login_limiter = SlidingWindowLimiter(max_attempts=3, window_seconds=60)
+    client = TestClient(app)
+
+    # 阈值内：3 次放行（此处用错误密码，均返回 401 而非 429）
+    for _ in range(3):
+        assert client.post("/api/auth/login", json={"username": "alice", "password": "nope"}).status_code == 401
+
+    # 第 4 次超阈：即使凭据正确也被限流
+    blocked = client.post("/api/auth/login", json=ALICE_CREDS)
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "RATE_LIMITED"
+    assert blocked.json()["error"]["retryable"] is True
+
+
+def test_login_rate_limit_window_resets(platform_app) -> None:
+    from agentforge_platform.ratelimit import SlidingWindowLimiter
+
+    app, _ = platform_app
+    clock = [1000.0]
+    app.state.login_limiter = SlidingWindowLimiter(
+        max_attempts=2, window_seconds=60, clock=lambda: clock[0]
+    )
+    client = TestClient(app)
+
+    assert client.post("/api/auth/login", json={"username": "alice", "password": "nope"}).status_code == 401
+    assert client.post("/api/auth/login", json={"username": "alice", "password": "nope"}).status_code == 401
+    assert client.post("/api/auth/login", json=ALICE_CREDS).status_code == 429
+
+    clock[0] += 61  # 窗口滑过
+    assert client.post("/api/auth/login", json=ALICE_CREDS).status_code == 200
+
+
+def test_login_rate_limit_is_per_client_ip(platform_app) -> None:
+    from agentforge_platform.ratelimit import SlidingWindowLimiter
+
+    app, _ = platform_app
+    app.state.login_limiter = SlidingWindowLimiter(max_attempts=1, window_seconds=60)
+
+    a = TestClient(app, client=("10.0.0.1", 5000))
+    b = TestClient(app, client=("10.0.0.2", 5000))
+
+    assert a.post("/api/auth/login", json={"username": "alice", "password": "nope"}).status_code == 401
+    assert a.post("/api/auth/login", json=ALICE_CREDS).status_code == 429  # 同一 IP 已用满
+    assert b.post("/api/auth/login", json=ALICE_CREDS).status_code == 200  # 另一 IP 不受影响

@@ -55,6 +55,16 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
 ) -> ApiResponse[LoginData]:
+    limiter = request.app.state.login_limiter
+    client_ip = request.client.host if request.client else "unknown"
+    if not limiter.allow(client_ip):
+        raise AppException(
+            ErrorCode.RATE_LIMITED,
+            "登录尝试过于频繁，请稍后再试。",
+            status_code=429,
+            retryable=True,
+        )
+
     account = find_by_username(get_accounts(), payload.username)
     if (
         account is None

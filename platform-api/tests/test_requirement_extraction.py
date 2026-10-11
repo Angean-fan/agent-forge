@@ -77,7 +77,8 @@ def test_extract_creates_readable_pending_draft_and_durable_ledger(platform_app,
     assert data["summary"] and data["questions"]
     assert client.get(f"/api/projects/{project_id}/spec").json()["data"]["summary"] == data["summary"]
     assert client.post(
-        f"/api/projects/{project_id}/confirm", json={"version": data["version"]},
+        f"/api/projects/{project_id}/confirm",
+        json={"version": data["version"], "draft_revision": data["draft_revision"]},
         headers={"X-CSRF-Token": client.cookies.get("af_csrf")},
     ).status_code == 422
     assert len(calls) == 1

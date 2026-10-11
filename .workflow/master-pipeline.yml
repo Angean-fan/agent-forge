@@ -33,7 +33,10 @@ stages:
           - cd platform-api && uv run --locked ruff check .
       - step: build@nodejs
         name: platform-ui-gate
-        displayName: 平台 UI npm test
+        displayName: 平台 UI 安装/类型检查/构建/测试
         nodeVersion: '22'
         commands:
+          - cd platform-ui && npm ci
+          - cd platform-ui && npm run type-check
+          - cd platform-ui && npm run build
           - cd platform-ui && npm test

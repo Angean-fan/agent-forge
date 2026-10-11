@@ -67,6 +67,12 @@ def platform_app(
 ) -> Iterator[tuple[FastAPI, object]]:
     monkeypatch.setenv("AGENTFORGE_ACCOUNTS_FILE", str(accounts_file))
     monkeypatch.delenv("AGENTFORGE_COOKIE_SECURE", raising=False)
+    # 测试会大量重复登录且共用同一 client host；默认阈值调到很高，避免相互干扰。
+    # 限流本身的边界测试会自行替换 app.state.login_limiter。
+    monkeypatch.setenv("AGENTFORGE_LOGIN_MAX_ATTEMPTS", "100000")
+    # 默认关闭配额/剩余空间门禁，使常规用例确定；配额用例会自行设置阈值。
+    monkeypatch.setenv("AGENTFORGE_RUN_QUOTA_BYTES", "0")
+    monkeypatch.setenv("AGENTFORGE_MIN_FREE_BYTES", "0")
     get_accounts.cache_clear()
 
     app = create_app()

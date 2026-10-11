@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -9,11 +10,11 @@ from sqlalchemy import select
 
 from agentforge_platform.db import session_scope
 from agentforge_platform.generation_graph import (
-    VERIFY_REQUIRED,
     GenerationContext,
     run_generation,
 )
-from agentforge_platform.models import Project, Run, RunEvent, RunTask, SpecVersion
+from agentforge_platform.models import Artifact, Project, Run, RunEvent, RunTask, SpecVersion
+from agentforge_platform.packaging import VERIFY_REQUIRED
 from agentforge_platform.runs import RunStatus, create_run
 from agentforge_platform.spec import SoftwareSpecification
 from agentforge_platform.spec_service import canonical_json, content_hash
@@ -136,5 +137,43 @@ def test_graph_never_succeeds_without_all_required_checks(platform_app, tmp_path
 
     run_generation(_context(factory, tmp_path, FakeRunner(verify=partial)), run_id)
 
+    with session_scope(factory) as session:
+        assert session.get(Run, run_id).status == "FAILED"
+        artifact = session.scalars(select(Artifact).where(Artifact.kind == "zip")).one()
+        assert artifact.verified is False
+    report = json.loads(
+        (tmp_path / "runs" / f"run-{run_id}" / "verification.json").read_text(encoding="utf-8")
+    )
+    assert report["verified"] is False
+
+
+def test_graph_success_packages_source_zip(platform_app, tmp_path: Path) -> None:
+    _, factory = platform_app
+    run_id = _seed_confirmed_run(factory)
+
+    run_generation(_context(factory, tmp_path, FakeRunner()), run_id)
+
+    run_dir = tmp_path / "runs" / f"run-{run_id}"
+    assert (run_dir / "source.zip").is_file()
+    with session_scope(factory) as session:
+        run = session.get(Run, run_id)
+        assert run.status == "SUCCEEDED"
+        assert any(
+            a.path == "source.zip" and a.verified for a in session.scalars(select(Artifact)).all()
+        )
+        assert "packaged" in [e.type for e in session.scalars(select(RunEvent)).all()]
+
+
+def test_graph_failure_packages_unverified_bundle(platform_app, tmp_path: Path) -> None:
+    _, factory = platform_app
+    run_id = _seed_confirmed_run(factory)
+    broken = {"overall": "FAIL", "checks": [{"name": "backend_build", "status": "FAIL"}]}
+
+    run_generation(_context(factory, tmp_path, FakeRunner(verify=broken)), run_id)
+
+    verification = json.loads(
+        (tmp_path / "runs" / f"run-{run_id}" / "verification.json").read_text(encoding="utf-8")
+    )
+    assert verification["verified"] is False and verification["label"] == "未验证"
     with session_scope(factory) as session:
         assert session.get(Run, run_id).status == "FAILED"

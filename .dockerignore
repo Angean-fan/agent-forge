@@ -1,0 +1,20 @@
+# 平台镜像构建上下文（deploy/ compose 用 context=仓库根）。
+.git
+**/node_modules
+**/.venv
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+*.zip
+*.log
+logs
+runs
+var
+backups
+platform-api/.env

@@ -39,17 +39,21 @@ def _create_project(client: TestClient) -> int:
 
 
 def _put_spec(client: TestClient, project_id: int, version: int, spec: dict):
+    current = client.get(f"/api/projects/{project_id}/spec")
+    revision = current.json()["data"]["draft_revision"] if current.status_code == 200 else 0
     return client.put(
         f"/api/projects/{project_id}/spec",
-        json={"version": version, "spec": spec},
+        json={"version": version, "draft_revision": revision, "spec": spec},
         headers={"X-CSRF-Token": client.cookies.get("af_csrf")},
     )
 
 
 def _confirm(client: TestClient, project_id: int, version: int):
+    current = client.get(f"/api/projects/{project_id}/spec")
+    revision = current.json()["data"]["draft_revision"] if current.status_code == 200 else 0
     return client.post(
         f"/api/projects/{project_id}/confirm",
-        json={"version": version},
+        json={"version": version, "draft_revision": revision},
         headers={"X-CSRF-Token": client.cookies.get("af_csrf")},
     )
 
@@ -93,6 +97,59 @@ def test_put_with_stale_version_conflicts(platform_app) -> None:
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "SPEC_CONFLICT"
+
+
+def test_stale_draft_revision_cannot_overwrite_or_confirm(platform_app) -> None:
+    app, _ = platform_app
+    client = _auth_client(app, ALICE_CREDS)
+    project_id = _create_project(client)
+    created = _put_spec(client, project_id, 0, _sample()).json()["data"]
+    first_revision = created["draft_revision"]
+    edited = _sample()
+    edited["goal"] = "第一页修改的目标"
+    saved = client.put(
+        f"/api/projects/{project_id}/spec",
+        json={"version": 1, "draft_revision": first_revision, "spec": edited},
+        headers={"X-CSRF-Token": client.cookies.get("af_csrf")},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["data"]["draft_revision"] == first_revision + 1
+
+    stale_save = client.put(
+        f"/api/projects/{project_id}/spec",
+        json={"version": 1, "draft_revision": first_revision, "spec": _sample()},
+        headers={"X-CSRF-Token": client.cookies.get("af_csrf")},
+    )
+    stale_confirm = client.post(
+        f"/api/projects/{project_id}/confirm",
+        json={"version": 1, "draft_revision": first_revision},
+        headers={"X-CSRF-Token": client.cookies.get("af_csrf")},
+    )
+    assert stale_save.status_code == 409
+    assert stale_confirm.status_code == 409
+    assert client.get(f"/api/projects/{project_id}/spec").json()["data"]["spec"]["goal"] == edited["goal"]
+
+
+def test_spec_mutations_require_draft_revision(platform_app) -> None:
+    app, _ = platform_app
+    client = _auth_client(app, ALICE_CREDS)
+    project_id = _create_project(client)
+    headers = {"X-CSRF-Token": client.cookies.get("af_csrf")}
+
+    missing_on_create = client.put(
+        f"/api/projects/{project_id}/spec",
+        json={"version": 0, "spec": _sample()},
+        headers=headers,
+    )
+    assert missing_on_create.status_code == 422
+
+    created = _put_spec(client, project_id, 0, _sample()).json()["data"]
+    missing_on_confirm = client.post(
+        f"/api/projects/{project_id}/confirm",
+        json={"version": created["version"]},
+        headers=headers,
+    )
+    assert missing_on_confirm.status_code == 422
 
 
 def test_confirm_freezes_spec_and_sets_active_spec(platform_app) -> None:
