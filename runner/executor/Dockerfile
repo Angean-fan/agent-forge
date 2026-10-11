@@ -18,3 +18,8 @@ RUN chmod +x /opt/agentforge/run/*.sh
 # 以非 root 运行（与 Runner 的 --user 一致）
 USER 1000:1000
 WORKDIR /workspace
+
+# 只读根文件系统下，把 Maven/npm 可写缓存指向容器内 tmpfs（/tmp）；
+# 生产应改为镜像内预热的只读依赖缓存或受控依赖代理。
+ENV MAVEN_ARGS="-Dmaven.repo.local=/tmp/.m2"
+ENV npm_config_cache="/tmp/.npm"

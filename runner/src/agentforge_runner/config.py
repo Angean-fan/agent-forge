@@ -12,6 +12,7 @@ class RunnerConfig:
     work_root: Path
     executor_image: str
     token: str
+    container_network: str = "none"
 
 
 def load_config() -> RunnerConfig:
@@ -21,4 +22,6 @@ def load_config() -> RunnerConfig:
             "RUNNER_EXECUTOR_IMAGE", "agentforge/runner-executor:demo-0.1"
         ),
         token=os.environ.get("RUNNER_TOKEN", ""),
+        # 公开网络默认阻断；仅"受控依赖代理"场景才改为受控网络名。
+        container_network=os.environ.get("RUNNER_CONTAINER_NETWORK", "none"),
     )

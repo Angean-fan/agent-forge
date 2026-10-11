@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from agentforge_runner import __version__
+from agentforge_runner.checks import ALL_CHECKS, VerificationResult, overall_of, run_verification
 from agentforge_runner.config import RunnerConfig, load_config
 from agentforge_runner.container import build_run_argv, container_runtime_available, run_container
 from agentforge_runner.security import UnsafePathError, resolve_artifact_dir
@@ -37,6 +38,13 @@ class RunResult(BaseModel):
     status: str
     exit_code: int | None = None
     detail: str | None = None
+
+
+class VerifyRequest(BaseModel):
+    model_config = _STRICT
+
+    artifact_dir: str
+    checks: list[str] = []
 
 
 def create_app(config: RunnerConfig | None = None) -> FastAPI:
@@ -66,11 +74,25 @@ def create_app(config: RunnerConfig | None = None) -> FastAPI:
 
         name = f"af-run-{uuid.uuid4().hex[:12]}"
         argv = build_run_argv(task, host_dir, cfg, name)
-        code = run_container(argv, timeout=task.timeout_seconds, container_name=name)
+        code, _output = run_container(argv, timeout=task.timeout_seconds, container_name=name)
         return RunResult(
             task=task.name,
             status="SUCCEEDED" if code == 0 else "FAILED",
             exit_code=code,
+        )
+
+    @app.post("/verify", dependencies=[Depends(require_token)], response_model=VerificationResult)
+    def verify(request: VerifyRequest) -> VerificationResult:
+        try:
+            host_dir = resolve_artifact_dir(cfg.work_root, request.artifact_dir)
+        except UnsafePathError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        names = request.checks or list(ALL_CHECKS)
+        results = run_verification(host_dir, cfg, names)
+        return VerificationResult(
+            artifact_dir=request.artifact_dir,
+            overall=overall_of(results),
+            checks=results,
         )
 
     return app

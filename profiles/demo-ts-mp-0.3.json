@@ -50,7 +50,7 @@
   "runner_image": {
     "status": "verified-locally",
     "reference": "agentforge/runner-executor:demo-0.1",
-    "digest": "sha256:a917189a75674bfe4c727fce7d8635c497e2899944e2de6bd3dc75507420a535",
+    "digest": "sha256:8a80c095c7e070e4a05da79c1b0002bdf41617886f936283fadc6ced7c49fc37",
     "note": "本地由 runner/executor/Dockerfile 构建（JDK17+Maven+Node22）并冒烟通过；未推送 registry——受控环境需推送后以 registry manifest digest 替换；基础镜像 digest 仍待锁定"
   },
   "verification": {

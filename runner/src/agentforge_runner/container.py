@@ -30,10 +30,10 @@ def build_run_argv(task: Task, host_dir: Path, config: RunnerConfig, name: str) 
         "--name",
         name,
         "--network",
-        "none",
+        config.container_network,
         "--read-only",
         "--tmpfs",
-        "/tmp:rw,size=256m,mode=1777",
+        "/tmp:rw,size=1024m,mode=1777",
         "--user",
         "1000:1000",
         "--cap-drop",
@@ -55,10 +55,12 @@ def build_run_argv(task: Task, host_dir: Path, config: RunnerConfig, name: str) 
     ]
 
 
-def run_container(argv: list[str], *, timeout: int, container_name: str) -> int:
+def run_container(argv: list[str], *, timeout: int, container_name: str) -> tuple[int, str]:
+    """执行受限容器，返回 (退出码, 合并后的输出)。超时则尽力清理并返回 124。"""
     try:
         completed = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired:
         subprocess.run([DOCKER, "rm", "-f", container_name], capture_output=True, check=False)
-        return TIMEOUT_EXIT_CODE
-    return completed.returncode
+        return TIMEOUT_EXIT_CODE, "container timed out"
+    output = (completed.stdout + b"\n" + completed.stderr).decode("utf-8", "replace")
+    return completed.returncode, output
