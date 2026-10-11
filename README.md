@@ -5,13 +5,13 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M03**（SQLite 数据层 + Alembic 迁移）
+- 当前进度：**M04**（预置账号、会话与 CSRF、项目归属）
 
 ## 目录
 
 | 路径 | 说明 | 引入阶段 |
 |---|---|---|
-| `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M02 ✅ |
+| `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M04 ✅ |
 | `platform-ui/` | 平台前端（Vue 3 + TS 目标） | M25 |
 | `docs/` | 每步实施记录 | M01 |
 
@@ -48,6 +48,15 @@ uv run uvicorn agentforge_platform.main:app --reload
 ```
 
 统一响应约定：成功 `{"request_id", "data"}`；失败 `{"request_id", "error": {"code", "message", "retryable"}}`；每个响应带 `X-Request-ID` 头（可用同名请求头指定）。
+
+平台内测账号（不做注册/找回）：复制 `platform-api/config/accounts.example.json` 为 `config/accounts.json`（已 gitignore），用下面命令生成密码哈希填入：
+
+```bash
+cd platform-api
+uv run python -m agentforge_platform.passwords   # 交互式生成 scrypt 哈希
+```
+
+认证：`POST /api/auth/login`（预置账号）→ 下发 HttpOnly 会话 Cookie 与可读 CSRF Cookie；状态变更请求须带 `X-CSRF-Token`；`GET /api/auth/me`、`POST /api/auth/logout`。
 
 ### 前端（platform-ui）
 

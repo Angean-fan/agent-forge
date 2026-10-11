@@ -2,7 +2,7 @@
 
 AgentForge MVP 的平台后端（Python / FastAPI / Pydantic / SQLAlchemy）。
 
-当前状态：M03，新增 SQLite 数据层（`db.py`/`models.py`）与 Alembic 迁移。
+当前状态：M04，新增预置账号、HttpOnly 会话、CSRF 防护与项目归属校验。
 
 ## 数据库
 
@@ -33,6 +33,16 @@ uv run uvicorn agentforge_platform.main:app --reload   # 启动 API
 - `middleware.py` — `X-Request-ID` 生成/沿用与 `request.state` 传播
 - `responses.py` — `ApiResponse` / `ApiErrorResponse` / `ApiError` 统一信封
 - `errors.py` — `ErrorCode`、`AppException` 与异常处理器
-- `db.py` — SQLite 引擎（WAL）、会话工厂与 `session_scope` 短事务
-- `models.py` — `Project` / `SpecVersion` 最小模型
-- `../migrations/` — Alembic 迁移（`0001` 建 project/spec_version）
+- `db.py` — SQLite 引擎（WAL）、会话工厂、`session_scope` 短事务与 `get_db` 依赖
+- `models.py` — `Project` / `SpecVersion` / `PlatformSession`
+- `accounts.py` — 预置平台账号加载（JSON，仅存哈希）
+- `passwords.py` — scrypt 密码哈希/校验 + 生成 CLI
+- `auth.py` — 会话存储、`get_current_account` / `require_csrf` / `require_project_owner` 依赖
+- `routes_auth.py` — `/api/auth/login` `/api/auth/me` `/api/auth/logout`
+- `../migrations/` — Alembic 迁移（`0001` project/spec_version，`0002` platform_session）
+
+## 预置账号
+
+复制 `config/accounts.example.json` → `config/accounts.json`，用
+`uv run python -m agentforge_platform.passwords` 生成密码哈希后填入。平台账号与
+生成项目内的独立登录账号是两套体系，不可复用。

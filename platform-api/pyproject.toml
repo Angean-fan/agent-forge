@@ -1,7 +1,7 @@
 [project]
 name = "agentforge-platform"
 version = "0.1.0"
-description = "AgentForge MVP 平台后端（FastAPI 目标；M01 仅建立可重复测试基线）。"
+description = "AgentForge MVP 平台后端（Python / FastAPI / SQLAlchemy / SQLite）。"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -32,3 +32,14 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 依赖注入惯例：Depends 等作为参数默认值是预期用法
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Body",
+    "fastapi.Path",
+]

@@ -25,6 +25,9 @@ class ErrorCode(StrEnum):
     NOT_FOUND = "NOT_FOUND"
     BAD_REQUEST = "BAD_REQUEST"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    UNAUTHORIZED = "UNAUTHORIZED"
+    FORBIDDEN = "FORBIDDEN"
+    CSRF_INVALID = "CSRF_INVALID"
 
 
 class AppException(Exception):

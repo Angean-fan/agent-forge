@@ -62,3 +62,9 @@ def session_scope(factory: sessionmaker[Session]) -> Iterator[Session]:
 
 engine = make_engine(get_database_url())
 SessionLocal = make_session_factory(engine)
+
+
+def get_db() -> Iterator[Session]:
+    """FastAPI 依赖：每请求一个短事务会话，成功提交、异常回滚。"""
+    with session_scope(SessionLocal) as session:
+        yield session
