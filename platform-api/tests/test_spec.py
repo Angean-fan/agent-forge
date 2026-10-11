@@ -132,3 +132,16 @@ def test_missing_required_contract_field_is_rejected() -> None:
 
     with pytest.raises(ValidationError):
         SoftwareSpecification.model_validate(raw)
+
+
+def test_superseded_profile_version_requires_reconfirm() -> None:
+    # 既有已确认 spec 引用的 Profile 版本被新版本取代后，不再"可确认"，须按新版本重新确认。
+    spec = _spec_with(
+        technical_profile={
+            "profile_id": "demo-ts-mp",
+            "profile_version": "0.2",
+            "template_version": "demo-0.1",
+        }
+    )
+
+    assert not is_confirmable(spec)

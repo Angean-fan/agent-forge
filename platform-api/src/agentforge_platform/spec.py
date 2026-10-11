@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 SPEC_SCHEMA_VERSION = "0.1"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SPEC_SCHEMA_VERSION})
 MVP_PROFILE_ID = "demo-ts-mp"
-MVP_PROFILE_VERSION = "0.2"
+MVP_PROFILE_VERSION = "0.3"
 MVP_ENTITY_LIMIT = 1
 
 _STRICT = ConfigDict(extra="forbid")

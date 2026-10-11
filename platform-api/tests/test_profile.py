@@ -12,11 +12,12 @@ from agentforge_platform import spec
 from agentforge_platform.profile import PlatformProfile, load_profile
 
 PROFILE_PATH = (
-    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.2.json"
+    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.3.json"
 )
-SUPERSEDED_PROFILE_PATH = (
-    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.1.json"
-)
+SUPERSEDED_PROFILE_PATHS = [
+    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.1.json",
+    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.2.json",
+]
 SAMPLE_SPEC_PATH = (
     Path(__file__).resolve().parents[2] / "schemas" / "task-management.spec.json"
 )
@@ -30,7 +31,8 @@ def test_profile_file_is_valid_and_locked() -> None:
     profile = load_profile(PROFILE_PATH)
 
     assert profile.profile_id == "demo-ts-mp"
-    assert profile.profile_version == "0.2"
+    assert profile.profile_version == "0.3"
+    assert profile.template_version == "demo-0.2"
     assert profile.status == "locked"
     assert profile.frontend.syntax == "typescript"
     assert profile.backend.orm == "mybatis-plus"
@@ -64,13 +66,11 @@ def test_profile_matches_spec_constants() -> None:
     assert profile.template_version == sample["technical_profile"]["template_version"]
 
 
-def test_superseded_profile_still_validates() -> None:
+def test_superseded_profiles_still_validate() -> None:
     # 已发布 Profile 不可原地覆盖：旧版本文件保留且仍可校验。
-    superseded = load_profile(SUPERSEDED_PROFILE_PATH)
-
-    assert superseded.profile_id == "demo-ts-mp"
-    assert superseded.profile_version == "0.1"
-    assert superseded.status == "locked"
+    assert [load_profile(p).profile_version for p in SUPERSEDED_PROFILE_PATHS] == ["0.1", "0.2"]
+    for path in SUPERSEDED_PROFILE_PATHS:
+        assert load_profile(path).status == "locked"
 
 
 def test_range_version_is_rejected() -> None:

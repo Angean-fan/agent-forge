@@ -1,0 +1,63 @@
+{
+  "profile_id": "demo-ts-mp",
+  "profile_version": "0.3",
+  "status": "locked",
+  "template_version": "demo-0.2",
+  "generated_at": "2026-10-11",
+  "frontend": {
+    "language": "typescript",
+    "framework": "vue",
+    "package_manager": "npm",
+    "module_system": "esm",
+    "syntax": "typescript",
+    "runtime": {
+      "node": "22.19.0",
+      "npm": "10.9.3"
+    },
+    "dependencies": {
+      "vue": "3.5.43",
+      "vue-router": "5.4.0",
+      "pinia": "4.0.3",
+      "element-plus": "2.14.7"
+    },
+    "dev_dependencies": {
+      "typescript": "5.9.3",
+      "vite": "8.3.4",
+      "@vitejs/plugin-vue": "6.0.10",
+      "vue-tsc": "3.3.13",
+      "vitest": "5.0.3"
+    }
+  },
+  "backend": {
+    "language": "java",
+    "java_version": "17",
+    "framework": "spring-boot",
+    "spring_boot_version": "3.5.16",
+    "orm": "mybatis-plus",
+    "build_tool": "maven",
+    "maven_version": "3.9.11",
+    "dependencies": {
+      "com.baomidou:mybatis-plus-spring-boot3-starter": "3.5.17",
+      "org.mybatis:mybatis": "3.5.19",
+      "org.mybatis:mybatis-spring": "3.0.5",
+      "com.mysql:mysql-connector-j": "9.7.0"
+    }
+  },
+  "database": {
+    "engine": "mysql",
+    "version": "8.0.43"
+  },
+  "runner_image": {
+    "status": "pending",
+    "reference": "agentforge/runner-executor:demo-0.1",
+    "digest": null,
+    "note": "需在受控 Linux + Docker 环境构建执行镜像（runner/executor/Dockerfile）后回填 reference/digest；本机无 Docker，未构建"
+  },
+  "verification": {
+    "toolchain": "verified-locally: java 17.0.17 / maven 3.9.11 / node 22.19.0 / npm 10.9.3 / mysql 8.0.43",
+    "backend_build": "verified: 模板/能力包 0.1.1 生成的 Task 工程 mvn test 通过（含角色/分页）",
+    "frontend_resolution": "verified: npm ci resolved at pinned versions",
+    "frontend_build": "verified: 生成前端 type-check + build + test 通过（内存令牌）",
+    "runner_image": "pending: 无 Docker 环境，执行镜像未构建、digest 未锁定（M16 未完成项）"
+  }
+}

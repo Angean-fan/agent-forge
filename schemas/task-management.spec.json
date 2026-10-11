@@ -42,8 +42,8 @@
   ],
   "technical_profile": {
     "profile_id": "demo-ts-mp",
-    "profile_version": "0.2",
-    "template_version": "demo-0.1"
+    "profile_version": "0.3",
+    "template_version": "demo-0.2"
   },
   "constraints": ["MVP 仅支持单个业务实体 Task"],
   "exclusions": ["不做注册、找回密码等账号流程", "不做多实体与复杂状态机"],

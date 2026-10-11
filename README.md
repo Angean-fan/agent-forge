@@ -5,13 +5,14 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M15A**（阶段 B 生成资产安全补强）
+- 当前进度：**M16**（受控 Runner 服务与隔离契约；容器实跑/镜像构建 = NOT_RUN）
 
 ## 目录
 
 | 路径 | 说明 | 引入阶段 |
 |---|---|---|
 | `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M07 ✅ |
+| `runner/` | 独立受控 Runner（内部认证 + 固定任务 + 隔离容器契约） | M16 ⚠️ |
 | `platform-ui/` | 平台前端（Vue 3 + TS 目标） | M25 |
 | `profiles/` | 锁定的 Platform Profile（当前 `demo-ts-mp-0.2`） | M08 ✅ |
 | `templates/` | 生成项目基础模板（版本化 `demo-0.1/`、`demo-0.2/`） | M09/M13/M15A ✅ |

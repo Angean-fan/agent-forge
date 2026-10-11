@@ -37,7 +37,7 @@ def test_compiles_task_contract() -> None:
     contract = compile_from_spec(_spec())
 
     assert contract.schema_version == "0.1"
-    assert contract.profile_ref == "demo-ts-mp@0.2"
+    assert contract.profile_ref == "demo-ts-mp@0.3"
     assert [t.table for t in contract.tables] == ["task"]
     assert {c.name for c in contract.tables[0].columns} == {
         "id", "title", "description", "status", "owner_id", "created_at"

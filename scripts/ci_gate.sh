@@ -16,4 +16,7 @@ echo "==> platform-api: uv run --locked ruff check ."
 echo "==> platform-ui: npm test"
 (cd "${ROOT}/platform-ui" && npm test)
 
+echo "==> runner: uv run --locked pytest / ruff"
+(cd "${ROOT}/runner" && uv run --locked pytest && uv run --locked ruff check .)
+
 echo "==> gate passed"
