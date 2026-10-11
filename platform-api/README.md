@@ -2,7 +2,17 @@
 
 AgentForge MVP 的平台后端（Python / FastAPI / Pydantic / SQLAlchemy）。
 
-当前状态：M02，FastAPI 应用骨架 + 统一响应/错误结构 + 请求 ID + `/health`。
+当前状态：M03，新增 SQLite 数据层（`db.py`/`models.py`）与 Alembic 迁移。
+
+## 数据库
+
+```bash
+uv run alembic upgrade head    # 应用迁移（空库可执行）
+uv run alembic current         # 查看当前版本
+uv run alembic revision -m "..." --autogenerate   # 生成新迁移
+```
+
+连接串：`AGENTFORGE_DATABASE_URL`（默认 `sqlite+pysqlite:///./agentforge.db`，WAL）。平台元数据用 SQLite；生成项目用独立 MySQL，两者不可复用。
 
 ## 运行
 
@@ -23,3 +33,6 @@ uv run uvicorn agentforge_platform.main:app --reload   # 启动 API
 - `middleware.py` — `X-Request-ID` 生成/沿用与 `request.state` 传播
 - `responses.py` — `ApiResponse` / `ApiErrorResponse` / `ApiError` 统一信封
 - `errors.py` — `ErrorCode`、`AppException` 与异常处理器
+- `db.py` — SQLite 引擎（WAL）、会话工厂与 `session_scope` 短事务
+- `models.py` — `Project` / `SpecVersion` 最小模型
+- `../migrations/` — Alembic 迁移（`0001` 建 project/spec_version）

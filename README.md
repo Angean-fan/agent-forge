@@ -5,7 +5,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M02**（FastAPI 骨架 + 统一响应/错误结构）
+- 当前进度：**M03**（SQLite 数据层 + Alembic 迁移）
 
 ## 目录
 
@@ -35,7 +35,10 @@ cd platform-api
 uv sync --dev      # 按 uv.lock 复现依赖环境
 uv run pytest      # 运行测试
 uv run ruff check  # 静态检查
+uv run alembic upgrade head   # 在空 SQLite 上应用平台迁移（默认 ./agentforge.db）
 ```
+
+平台数据库连接串可用 `AGENTFORGE_DATABASE_URL` 覆盖（默认 `sqlite+pysqlite:///./agentforge.db`，已开启 WAL）。
 
 启动 API（默认 http://127.0.0.1:8000，健康检查 `GET /health`）：
 
