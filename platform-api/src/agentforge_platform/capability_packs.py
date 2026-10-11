@@ -226,7 +226,7 @@ def build_params(contract: BusinessContract) -> dict:
     }
 
 
-def _inject_dependencies(pom_path: Path, dependencies: list[dict[str, str]]) -> None:
+def inject_dependencies(pom_path: Path, dependencies: list[dict[str, str]]) -> None:
     if not dependencies:
         return
     if not pom_path.exists():
@@ -247,27 +247,39 @@ def _inject_dependencies(pom_path: Path, dependencies: list[dict[str, str]]) -> 
     pom_path.write_text(text.replace(_DEP_MARKER, f"{block}\n    {_DEP_MARKER}"), encoding="utf-8")
 
 
-def render_pack(pack_dir: str | Path, contract: BusinessContract, output_dir: str | Path) -> list[str]:
-    pack_dir = Path(pack_dir)
-    output_dir = Path(output_dir)
-    manifest = load_manifest(pack_dir)
-    params = build_params(contract)
-    environment = Environment(
+def _environment(pack_dir: Path) -> Environment:
+    return Environment(
         loader=FileSystemLoader(pack_dir / "templates"),
         undefined=StrictUndefined,
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
+
+
+def render_pack_files(pack_dir: str | Path, contract: BusinessContract) -> list[tuple[str, str]]:
+    """返回 [(相对路径, 内容)]，不做任何写入（供装配器带守卫地写入）。"""
+    pack_dir = Path(pack_dir)
+    params = build_params(contract)
+    environment = _environment(pack_dir)
+    return [
+        (
+            environment.from_string(entry.target).render(**params),
+            environment.get_template(entry.template).render(**params),
+        )
+        for entry in load_manifest(pack_dir).renders
+    ]
+
+
+def render_pack(pack_dir: str | Path, contract: BusinessContract, output_dir: str | Path) -> list[str]:
+    output_dir = Path(output_dir)
     written: list[str] = []
-    for entry in manifest.renders:
-        target_relative = environment.from_string(entry.target).render(**params)
-        content = environment.get_template(entry.template).render(**params)
+    for target_relative, content in render_pack_files(pack_dir, contract):
         destination = output_dir / target_relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(content, encoding="utf-8")
         written.append(str(destination))
-    _inject_dependencies(output_dir / "pom.xml", manifest.dependencies)
+    inject_dependencies(output_dir / "pom.xml", load_manifest(pack_dir).dependencies)
     return written
 
 

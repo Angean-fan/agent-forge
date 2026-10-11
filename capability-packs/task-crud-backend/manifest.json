@@ -18,6 +18,7 @@
   ],
   "conflicts": [],
   "extension_points": [],
+  "target_dir": "backend",
   "checksum": "ab27d23b844167c9936258b7f2c4b970cce53ca8a1681aff9e1d43e5a07b1230",
   "parameter_schema": {
     "entity_name": "string",

@@ -72,6 +72,7 @@ class AssetManifest(BaseModel):
     checksum: str
     license: str
     provided_capabilities: list[str] = []
+    target_dir: str = ""
     renders: list[RenderEntry] = []
     dependencies: list[dict[str, str]] = []
 

@@ -55,6 +55,13 @@ def lock_hash_of(lock: AssetLock) -> str:
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
+def _asset_path(directory: Path) -> str:
+    try:
+        return Path(directory).relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return Path(directory).as_posix()
+
+
 def _overlaps(left: str, right: str) -> bool:
     a = left.rstrip("/")
     b = right.rstrip("/")
@@ -127,7 +134,7 @@ def resolve_assets(registry: AssetRegistry, profile: str) -> AssetLock:
             id=manifest.id,
             version=manifest.version,
             checksum=manifest.checksum,
-            path=Path(directory).relative_to(REPO_ROOT).as_posix(),
+            path=_asset_path(directory),
         )
         for manifest, directory in registry.all_with_paths()
         if (manifest.kind, manifest.id, manifest.version) in selected_ids

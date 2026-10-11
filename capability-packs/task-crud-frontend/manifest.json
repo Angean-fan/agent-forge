@@ -19,6 +19,7 @@
   ],
   "conflicts": [],
   "extension_points": [],
+  "target_dir": "frontend",
   "checksum": "bb6e0267fa8f8f04a01262ca65d42b0aaec1dbea10aa34a321873dc5410673f9",
   "parameter_schema": {
     "entity_name": "string",
