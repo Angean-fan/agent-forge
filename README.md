@@ -5,7 +5,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M08**（锁定第一份 Platform Profile）
+- 当前进度：**M08A**（平台回归门禁与依赖检查）
 
 ## 目录
 
@@ -15,6 +15,8 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 | `platform-ui/` | 平台前端（Vue 3 + TS 目标） | M25 |
 | `profiles/` | 锁定的 Platform Profile（`demo-ts-mp-0.1`） | M08 ✅ |
 | `schemas/` | 规格/契约协议与样例（如 `task-management.spec.json`） | M06 ✅ |
+| `scripts/` | 平台基础回归门禁脚本（`ci_gate.sh`） | M08A ✅ |
+| `.workflow/` | Gitee Go 流水线配置（待启用后核对） | M08A ✅ |
 | `docs/` | 每步实施记录 | M01 |
 
 > 其余建议目录（worker/、runner/、profiles/、templates/、capability-packs/、schemas/ 等）在对应步骤落地时再创建，本步不预建空目录。
@@ -41,6 +43,12 @@ uv run alembic upgrade head   # 在空 SQLite 上应用平台迁移（默认 ./a
 ```
 
 平台数据库连接串可用 `AGENTFORGE_DATABASE_URL` 覆盖（默认 `sqlite+pysqlite:///./agentforge.db`，已开启 WAL）。
+
+平台基础门禁（本地一键，CI 亦调用同一脚本）：
+
+```bash
+./scripts/ci_gate.sh   # = uv run --locked pytest + ruff check . + npm test
+```
 
 启动 API（默认 http://127.0.0.1:8000，健康检查 `GET /health`）：
 
