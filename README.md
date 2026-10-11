@@ -5,13 +5,13 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M01**（仓库骨架 + 可重复测试基线）
+- 当前进度：**M02**（FastAPI 骨架 + 统一响应/错误结构）
 
 ## 目录
 
 | 路径 | 说明 | 引入阶段 |
 |---|---|---|
-| `platform-api/` | 平台后端（Python 3.12 / FastAPI 目标） | M02 |
+| `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M02 ✅ |
 | `platform-ui/` | 平台前端（Vue 3 + TS 目标） | M25 |
 | `docs/` | 每步实施记录 | M01 |
 
@@ -34,7 +34,17 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 cd platform-api
 uv sync --dev      # 按 uv.lock 复现依赖环境
 uv run pytest      # 运行测试
+uv run ruff check  # 静态检查
 ```
+
+启动 API（默认 http://127.0.0.1:8000，健康检查 `GET /health`）：
+
+```bash
+cd platform-api
+uv run uvicorn agentforge_platform.main:app --reload
+```
+
+统一响应约定：成功 `{"request_id", "data"}`；失败 `{"request_id", "error": {"code", "message", "retryable"}}`；每个响应带 `X-Request-ID` 头（可用同名请求头指定）。
 
 ### 前端（platform-ui）
 
