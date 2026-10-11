@@ -5,13 +5,13 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M06**（版本化 Software Specification Schema）
+- 当前进度：**M07**（规格冻结与确认 API）
 
 ## 目录
 
 | 路径 | 说明 | 引入阶段 |
 |---|---|---|
-| `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M05 ✅ |
+| `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M07 ✅ |
 | `platform-ui/` | 平台前端（Vue 3 + TS 目标） | M25 |
 | `schemas/` | 规格/契约协议与样例（如 `task-management.spec.json`） | M06 ✅ |
 | `docs/` | 每步实施记录 | M01 |
@@ -60,6 +60,8 @@ uv run python -m agentforge_platform.passwords   # 交互式生成 scrypt 哈希
 认证：`POST /api/auth/login`（预置账号）→ 下发 HttpOnly 会话 Cookie 与可读 CSRF Cookie；状态变更请求须带 `X-CSRF-Token`；`GET /api/auth/me`、`POST /api/auth/logout`。
 
 项目：`POST /api/projects`（名称 1–60 字、初始需求 20–5000 字）、`GET /api/projects`（仅当前用户）、`GET /api/projects/{id}`（归属校验）。创建仅保存需求草稿，不生成代码。
+
+规格：`GET/PUT /api/projects/{id}/spec`（编辑草稿，版本乐观锁，冲突 409）、`POST /api/projects/{id}/confirm`（校验必需字段并冻结版本，生成 hash）。已确认版本不可原地修改。
 
 ### 前端（platform-ui）
 

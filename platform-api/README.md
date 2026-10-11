@@ -2,7 +2,7 @@
 
 AgentForge MVP 的平台后端（Python / FastAPI / Pydantic / SQLAlchemy）。
 
-当前状态：M06，新增版本化 Software Specification schema 与可确认性校验。
+当前状态：M07，新增规格草稿编辑与确认冻结 API。
 
 ## 数据库
 
@@ -37,6 +37,8 @@ uv run uvicorn agentforge_platform.main:app --reload   # 启动 API
 - `models.py` — `Project` / `SpecVersion` / `PlatformSession`
 - `routes_projects.py` — `/api/projects` 创建/列表/详情（保存原始需求文本）
 - `spec.py` — `SoftwareSpecification` schema、来源标注与 `is_confirmable` 校验
+- `spec_service.py` — 规格草稿读写/确认冻结与稳定 hash
+- `routes_spec.py` — `/api/projects/{id}/spec`、`/api/projects/{id}/confirm`
 - `accounts.py` — 预置平台账号加载（JSON，仅存哈希）
 - `passwords.py` — scrypt 密码哈希/校验 + 生成 CLI
 - `auth.py` — 会话存储、`get_current_account` / `require_csrf` / `require_project_owner` 依赖

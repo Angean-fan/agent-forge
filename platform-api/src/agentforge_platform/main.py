@@ -13,6 +13,7 @@ from agentforge_platform.middleware import RequestIdMiddleware
 from agentforge_platform.routes import router as system_router
 from agentforge_platform.routes_auth import router as auth_router
 from agentforge_platform.routes_projects import router as projects_router
+from agentforge_platform.routes_spec import router as spec_router
 
 
 def create_app() -> FastAPI:
@@ -22,6 +23,7 @@ def create_app() -> FastAPI:
     app.include_router(system_router)
     app.include_router(auth_router)
     app.include_router(projects_router)
+    app.include_router(spec_router)
     return app
 
 
