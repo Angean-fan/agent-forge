@@ -5,7 +5,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M21**（模型调用计费前置护栏；真实 DeepSeek 调用 NOT_RUN）
+- 当前进度：**M22**（DeepSeek 结构化需求提取已接入并完成真实 API 验证；待用户确认的草稿才能进入 M23）
 
 ## 目录
 
@@ -57,6 +57,7 @@ uv run alembic upgrade head   # 在空 SQLite 上应用平台迁移（默认 ./a
 
 ```bash
 cd platform-api
+set -a; source .env; set +a  # 本机私有配置；见下方 M22 说明
 uv run uvicorn agentforge_platform.main:app --reload
 ```
 
@@ -74,6 +75,8 @@ uv run python -m agentforge_platform.passwords   # 交互式生成 scrypt 哈希
 项目：`POST /api/projects`（名称 1–60 字、初始需求 20–5000 字）、`GET /api/projects`（仅当前用户）、`GET /api/projects/{id}`（归属校验）。创建仅保存需求草稿，不生成代码。
 
 规格：`GET/PUT /api/projects/{id}/spec`（编辑草稿，版本乐观锁，冲突 409）、`POST /api/projects/{id}/confirm`（校验必需字段并冻结版本，生成 hash）。已确认版本不可原地修改。
+
+M22 提取：复制 `platform-api/.env.example` 为 `platform-api/.env`（被 Git 忽略，权限设为 `0600`），配置 `DEEPSEEK_API_KEY` 和本机适用的 `SSL_CERT_FILE`；启动前加载环境变量。`POST /api/projects/{id}/extract` 携带 `{"version":0}` 和 CSRF 头，最多一次结构纠正重试；`GET /api/projects/{id}/spec` 读取摘要、缺失字段、问题与所有 `pending` 项。模型草稿须由用户编辑确认后，才能 `POST /api/projects/{id}/confirm`。缺少经核对的同币种价目表时，账本保留预留并把成本记为 `UNKNOWN`，不以其他币种价格伪算人民币。
 
 ### 前端（platform-ui）
 

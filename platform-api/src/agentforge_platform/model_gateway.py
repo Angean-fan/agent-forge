@@ -18,9 +18,9 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from agentforge_platform.clients import Completion, ModelClient, Usage
+from agentforge_platform.clients import Completion, ModelClient, ProviderPreflightError, Usage
 from agentforge_platform.errors import AppException, ErrorCode
-from agentforge_platform.models import ModelCall
+from agentforge_platform.models import ModelCall, Project
 
 MICRO_PER_YUAN = 1_000_000
 UNKNOWN = "UNKNOWN"
@@ -84,6 +84,14 @@ def draft_min_interval_seconds() -> float:
     return float(os.environ.get("AGENTFORGE_DRAFT_MIN_INTERVAL_SECONDS", "0"))
 
 
+def user_draft_max_calls() -> int:
+    return int(os.environ.get("AGENTFORGE_USER_DRAFT_MAX_CALLS", "100"))
+
+
+def user_draft_min_interval_seconds() -> float:
+    return float(os.environ.get("AGENTFORGE_USER_DRAFT_MIN_INTERVAL_SECONDS", "0"))
+
+
 def default_reserve_micro() -> int:
     return int(os.environ.get("AGENTFORGE_DEFAULT_RESERVE_MICRO", str(MICRO_PER_YUAN)))
 
@@ -112,14 +120,13 @@ def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator)
 
 
-def _reserve_micro(model: str, max_input_tokens: int, max_output_tokens: int) -> tuple[int, str]:
-    price = lookup_price(model)
+def _reserve_micro(price: Price | None, max_input_tokens: int, max_output_tokens: int) -> int:
     if price is None:
-        return default_reserve_micro(), UNKNOWN
+        return default_reserve_micro()
     micro = _ceil_div(max_input_tokens * price.input_micro_per_million, 1_000_000) + _ceil_div(
         max_output_tokens * price.output_micro_per_million, 1_000_000
     )
-    return micro, price.version
+    return micro
 
 
 def _totals(db: Session, project_id: int) -> tuple[int, int]:
@@ -141,7 +148,8 @@ def _enforce_draft_limits(db: Session, project_id: int) -> None:
     if interval > 0:
         last = db.scalar(
             select(func.max(ModelCall.created_at)).where(
-                ModelCall.project_id == project_id, ModelCall.run_id.is_(None)
+                ModelCall.project_id == project_id, ModelCall.run_id.is_(None),
+                ModelCall.status != "NOT_SENT",
             )
         )
         if last is not None and (_now() - last).total_seconds() < interval:
@@ -151,12 +159,39 @@ def _enforce_draft_limits(db: Session, project_id: int) -> None:
     count = db.scalar(
         select(func.count())
         .select_from(ModelCall)
-        .where(ModelCall.project_id == project_id, ModelCall.run_id.is_(None))
+        .where(ModelCall.project_id == project_id, ModelCall.run_id.is_(None),
+               ModelCall.status != "NOT_SENT")
     )
     if int(count or 0) >= draft_max_calls():
         raise AppException(
             ErrorCode.DRAFT_LIMIT_EXCEEDED, "草稿调用次数已达上限。", status_code=429
         )
+    owner_id = db.scalar(select(Project.owner_id).where(Project.id == project_id))
+    if owner_id is None:
+        return
+    user_count = db.scalar(
+        select(func.count())
+        .select_from(ModelCall)
+        .join(Project, ModelCall.project_id == Project.id)
+        .where(Project.owner_id == owner_id, ModelCall.run_id.is_(None),
+               ModelCall.status != "NOT_SENT")
+    )
+    if int(user_count or 0) >= user_draft_max_calls():
+        raise AppException(
+            ErrorCode.DRAFT_LIMIT_EXCEEDED, "用户草稿调用次数已达上限。", status_code=429
+        )
+    user_interval = user_draft_min_interval_seconds()
+    if user_interval > 0:
+        last_user_call = db.scalar(
+            select(func.max(ModelCall.created_at))
+            .join(Project, ModelCall.project_id == Project.id)
+            .where(Project.owner_id == owner_id, ModelCall.run_id.is_(None),
+                   ModelCall.status != "NOT_SENT")
+        )
+        if last_user_call is not None and (_now() - last_user_call).total_seconds() < user_interval:
+            raise AppException(
+                ErrorCode.DRAFT_LIMIT_EXCEEDED, "用户草稿调用过于频繁。", status_code=429
+            )
 
 
 def reserve(
@@ -175,7 +210,8 @@ def reserve(
     if run_id is None:
         _enforce_draft_limits(db, project_id)
 
-    reserve_micro, price_version = _reserve_micro(route.model, max_input_tokens, max_output_tokens)
+    price = lookup_price(route.model)
+    reserve_micro = _reserve_micro(price, max_input_tokens, max_output_tokens)
     settled, reserved = _totals(db, project_id)
     if project_budget_micro() - settled - reserved < reserve_micro:
         raise AppException(ErrorCode.BUDGET_EXCEEDED, "预算不足，未调用模型。", status_code=402)
@@ -189,7 +225,9 @@ def reserve(
         draft_id=draft_id,
         run_id=run_id,
         thinking_mode=thinking_mode,
-        price_version=price_version,
+        price_version=price.version if price else UNKNOWN,
+        input_micro_per_million=price.input_micro_per_million if price else None,
+        output_micro_per_million=price.output_micro_per_million if price else None,
         reserved_micro=reserve_micro,
         status="RESERVED",
     )
@@ -222,15 +260,13 @@ def settle(
 
     row.input_tokens = usage.input_tokens
     row.output_tokens = usage.output_tokens
-    price = lookup_price(row.model)
-    if price is None:
+    if row.input_micro_per_million is None or row.output_micro_per_million is None:
         row.status = "UNKNOWN"
         row.cost_micro = None
     else:
-        row.price_version = price.version
         row.cost_micro = _ceil_div(
-            usage.input_tokens * price.input_micro_per_million, 1_000_000
-        ) + _ceil_div(usage.output_tokens * price.output_micro_per_million, 1_000_000)
+            usage.input_tokens * row.input_micro_per_million, 1_000_000
+        ) + _ceil_div(usage.output_tokens * row.output_micro_per_million, 1_000_000)
         row.status = "SETTLED"
     row.updated_at = _now()
     db.flush()
@@ -250,8 +286,14 @@ def invoke(
     draft_id: int | None = None,
     run_id: int | None = None,
     thinking_mode: str | None = None,
+    json_mode: bool = False,
 ) -> Completion:
     route = resolve_route(model_role)
+    # SQLite WAL 允许多读单写。先拿写锁，再检查预算/频率并写入预留，
+    # 防止并发请求都从相同的旧余额通过检查。
+    db.commit()
+    if db.get_bind().dialect.name == "sqlite":
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
     reserve(
         db,
         call_id=call_id,
@@ -263,11 +305,28 @@ def invoke(
         run_id=run_id,
         thinking_mode=thinking_mode,
     )
+    # 先持久化预留；远程调用期间不能持有未提交的账本事务。
+    db.commit()
     try:
-        result = client.complete(model=route.model, prompt=prompt, thinking_mode=thinking_mode)
+        kwargs: dict[str, object] = {"max_output_tokens": max_output_tokens}
+        if json_mode:
+            kwargs["json_mode"] = True
+        result = client.complete(
+            model=route.model, prompt=prompt, thinking_mode=thinking_mode, **kwargs
+        )
+    except ProviderPreflightError as exc:
+        row = db.get(ModelCall, call_id)
+        assert row is not None
+        row.status = "NOT_SENT"
+        row.reserved_micro = 0
+        row.error_class = type(exc).__name__
+        row.updated_at = _now()
+        db.commit()
+        raise
     except Exception as exc:
         settle(db, call_id, usage=None, error_class=type(exc).__name__)
         db.commit()  # 保留预留与 UNKNOWN 账本，供后续对账（不随调用者回滚）
         raise
     settle(db, call_id, usage=result.usage, request_id=result.request_id)
+    db.commit()
     return result

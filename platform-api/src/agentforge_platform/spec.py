@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Any
 
@@ -16,7 +17,28 @@ SPEC_SCHEMA_VERSION = "0.1"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SPEC_SCHEMA_VERSION})
 MVP_PROFILE_ID = "demo-ts-mp"
 MVP_PROFILE_VERSION = "0.3"
+MVP_TEMPLATE_VERSION = "demo-0.2"
 MVP_ENTITY_LIMIT = 1
+MVP_TASK_FIELDS = {
+    "id": ("long", True),
+    "title": ("string", True),
+    "description": ("text", False),
+    "status": ("string", True),
+    "owner_id": ("long", True),
+    "created_at": ("datetime", True),
+}
+_SAFE_FIELD_NAME = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
+_JAVA_KEYWORDS = frozenset({
+    "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
+    "class", "const", "continue", "default", "do", "double", "else", "enum",
+    "extends", "final", "finally", "float", "for", "goto", "if", "implements",
+    "import", "instanceof", "int", "interface", "long", "native", "new", "package",
+    "private", "protected", "public", "return", "short", "static", "strictfp",
+    "super", "switch", "synchronized", "this", "throw", "throws", "transient",
+    "try", "void", "volatile", "while", "null", "true", "false", "record",
+    "var", "yield", "sealed", "permits", "non_sealed", "exports", "module",
+    "open", "opens", "provides", "requires", "to", "transitive", "uses", "with",
+})
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -110,6 +132,7 @@ def is_supported_profile(profile: TechnicalProfile) -> bool:
     return (
         profile.profile_id == MVP_PROFILE_ID
         and profile.profile_version == MVP_PROFILE_VERSION
+        and profile.template_version == MVP_TEMPLATE_VERSION
     )
 
 
@@ -146,6 +169,45 @@ def confirmation_issues(spec: SoftwareSpecification) -> list[str]:
         issues.append("缺少角色权限定义")
     if not spec.business_rules:
         issues.append("缺少关键业务规则")
+    if spec.project_type != "crud_web":
+        issues.append("MVP 仅支持 crud_web 项目类型")
+    if len(spec.entities) == 1:
+        entity = spec.entities[0]
+        if entity.name != "Task":
+            issues.append("MVP 仅支持 Task 实体")
+        fields_by_name = {field.name: field for field in entity.fields}
+        for name, (type_name, required) in MVP_TASK_FIELDS.items():
+            field = fields_by_name.get(name)
+            if field is None or field.type != type_name or field.required != required:
+                issues.append(f"Task 固定字段缺失或类型不匹配：{name}")
+        for field in entity.fields:
+            if (len(field.name) > 64 or _SAFE_FIELD_NAME.fullmatch(field.name) is None
+                    or field.name in _JAVA_KEYWORDS):
+                issues.append(f"不安全的字段名：{field.name}")
+            if field.type not in {
+                "long", "int", "integer", "string", "text", "bool", "boolean",
+                "datetime", "date", "decimal",
+            }:
+                issues.append(f"不支持的字段类型：{field.name} {field.type}")
+        if not any(
+            field.type == "string" and field.name not in {"id", "owner_id", "created_at"}
+            for field in entity.fields
+        ):
+            issues.append("Task 需要至少一个可搜索的字符串字段")
+    if any(role not in {"ADMIN", "MEMBER"} for role in spec.actors):
+        issues.append("MVP 仅支持 ADMIN/MEMBER 角色")
+    if any(permission.role not in {"ADMIN", "MEMBER"} for permission in spec.permissions):
+        issues.append("MVP 仅支持 ADMIN/MEMBER 权限角色")
+    if not any({"create", "read"} <= set(permission.actions) for permission in spec.permissions):
+        issues.append("Task 需要同时可创建和读取的角色")
+    if any(
+        action not in {"create", "read", "update", "delete"}
+        for permission in spec.permissions for action in permission.actions
+    ):
+        issues.append("存在不支持的权限操作")
+    if any((spec.relations, spec.capability_requests, spec.recipe_requests,
+            spec.integrations, spec.external_requirements)):
+        issues.append("MVP 不支持额外关系、能力请求或外部集成")
     if not is_supported_profile(spec.technical_profile):
         issues.append(
             "不支持的技术 Profile: "

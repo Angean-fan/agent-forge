@@ -69,6 +69,10 @@ def put_draft(
     elif latest.confirmed_at is None:
         latest.body_json = body_json
         latest.hash = spec_hash
+        latest.draft_revision += 1
+        latest.summary = None
+        latest.missing_fields_json = "[]"
+        latest.questions_json = "[]"
         row = latest
     else:
         row = SpecVersion(
@@ -98,7 +102,17 @@ def confirm_draft(db: Session, project: Project, expected_version: int) -> SpecV
             status_code=409,
         )
 
-    issues = confirmation_issues(load_spec(latest))
+    spec = load_spec(latest)
+    issues = confirmation_issues(spec)
+    if not issues:
+        # M23 将直接消费冻结规格；确认前先验证契约与固定 Task 能力包能接收它。
+        from agentforge_platform.capability_packs import build_params
+        from agentforge_platform.contract import compile_from_spec
+
+        try:
+            build_params(compile_from_spec(spec))
+        except AppException as exc:
+            issues.append(exc.message)
     if issues:
         raise AppException(
             ErrorCode.SPEC_NOT_READY, "规格尚未就绪：" + "；".join(issues), status_code=422

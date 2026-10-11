@@ -30,8 +30,18 @@ class Completion:
 
 class ModelClient(Protocol):
     def complete(
-        self, *, model: str, prompt: str, thinking_mode: str | None = None
+        self,
+        *,
+        model: str,
+        prompt: str,
+        thinking_mode: str | None = None,
+        json_mode: bool = False,
+        max_output_tokens: int | None = None,
     ) -> Completion: ...
+
+
+class ProviderPreflightError(RuntimeError):
+    """The provider request was definitely not sent."""
 
 
 class DeepSeekClient:
@@ -44,11 +54,17 @@ class DeepSeekClient:
         self._base_url = base_url.rstrip("/")
 
     def complete(
-        self, *, model: str, prompt: str, thinking_mode: str | None = None
+        self,
+        *,
+        model: str,
+        prompt: str,
+        thinking_mode: str | None = None,
+        json_mode: bool = False,
+        max_output_tokens: int | None = None,
     ) -> Completion:
         api_key = os.environ.get(self._api_key_env)
         if not api_key:
-            raise RuntimeError(f"环境变量 {self._api_key_env} 未配置")
+            raise ProviderPreflightError(f"环境变量 {self._api_key_env} 未配置")
 
         payload: dict[str, object] = {
             "model": model,
@@ -57,6 +73,10 @@ class DeepSeekClient:
         }
         if thinking_mode:
             payload["thinking"] = {"type": thinking_mode}
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        if max_output_tokens is not None:
+            payload["max_tokens"] = max_output_tokens
 
         request = urllib.request.Request(
             f"{self._base_url}/chat/completions",
@@ -68,7 +88,7 @@ class DeepSeekClient:
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 body = json.loads(response.read().decode("utf-8"))
-                request_id = response.headers.get("x-request-id")
+                request_id = response.headers.get("x-request-id") or body.get("id")
         except urllib.error.HTTPError as error:
             # 不回显响应体（可能含敏感信息）
             raise RuntimeError(f"DeepSeek API HTTP {error.code}") from None

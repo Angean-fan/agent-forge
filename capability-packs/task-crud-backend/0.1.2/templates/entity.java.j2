@@ -1,0 +1,25 @@
+package {{ package }}.entity;
+
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+{% for imp in java_imports %}
+import {{ imp }};
+{% endfor %}
+
+@TableName("{{ table_name }}")
+public class {{ entity_name }} {
+{% for f in fields %}
+{% if f.primary_key %}    @TableId(type = IdType.AUTO)
+{% endif %}    private {{ f.java_type }} {{ f.java_name }};
+{% endfor %}
+{% for f in fields %}
+    public {{ f.java_type }} get{{ f.pascal }}() {
+        return {{ f.java_name }};
+    }
+
+    public void set{{ f.pascal }}({{ f.java_type }} {{ f.java_name }}) {
+        this.{{ f.java_name }} = {{ f.java_name }};
+    }
+{% endfor %}
+}

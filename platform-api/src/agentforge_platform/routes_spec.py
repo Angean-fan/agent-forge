@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
@@ -13,6 +14,7 @@ from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.middleware import get_request_id
 from agentforge_platform.models import Project, SpecVersion
+from agentforge_platform.requirement_extraction import extract_requirement
 from agentforge_platform.responses import ApiResponse
 from agentforge_platform.spec import (
     SoftwareSpecification,
@@ -33,6 +35,10 @@ class SpecConfirmRequest(BaseModel):
     version: int = Field(ge=0)
 
 
+class SpecExtractRequest(BaseModel):
+    version: int = Field(ge=0)
+
+
 class SpecView(BaseModel):
     spec_id: int
     version: int
@@ -42,6 +48,9 @@ class SpecView(BaseModel):
     spec: SoftwareSpecification
     pending: list[str]
     issues: list[str]
+    summary: str | None = None
+    missing_fields: list[str] = []
+    questions: list[str] = []
 
 
 class SpecConfirmView(BaseModel):
@@ -62,6 +71,9 @@ def _view(row: SpecVersion) -> SpecView:
         spec=spec,
         pending=critical_pending_fields(spec),
         issues=confirmation_issues(spec),
+        summary=row.summary,
+        missing_fields=json.loads(row.missing_fields_json),
+        questions=json.loads(row.questions_json),
     )
 
 
@@ -86,6 +98,18 @@ def put_spec(
     db: Session = Depends(get_db),
 ) -> ApiResponse[SpecView]:
     row = put_draft(db, project, payload.version, payload.spec)
+    return ApiResponse(request_id=get_request_id(request), data=_view(row))
+
+
+@router.post("/{project_id}/extract", response_model=ApiResponse[SpecView])
+def extract_spec(
+    payload: SpecExtractRequest,
+    request: Request,
+    project: Project = Depends(require_project_owner),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> ApiResponse[SpecView]:
+    row = extract_requirement(db, project, payload.version)
     return ApiResponse(request_id=get_request_id(request), data=_view(row))
 
 

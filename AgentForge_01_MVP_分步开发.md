@@ -160,12 +160,19 @@ AgentForge/
 - **Constraints：** 版本须通过本地工具和构建验证后写入；Profile 一经发布不可原地覆盖；只启用这一组合，不提前实现其余三组合。
 - **WhenDone：** `profiles/` 有可机器解析、可校验版本号的 Profile；不存在不受控依赖范围；记录兼容性和未验证项。
 
+### M08A｜补齐平台工程回归门禁与依赖检查
+
+- **Goal：** 在进入模板开发前，为平台 API 和当前零依赖 UI 测试建立自动回归入口，并验证平台数据库迁移回退；处理已记录的 TestClient 依赖弃用告警。
+- **Context：** 依赖 M01—M08；`platform-api/uv.lock` 已提交，`platform-ui/` 此时尚未引入 Vue/Vite 依赖；M02—M04 记录了 `fastapi.testclient` 使用 `httpx` 的弃用告警；仓库远程为 Gitee。此步只治理平台自身，不修改 M08 已锁定的生成项目 Profile。
+- **Constraints：** 按 Gitee Go 实际可用的配置格式和执行环境建立 CI，不凭猜测编写无法运行的流水线；基础门禁运行 `uv run --locked pytest`、`uv run --locked ruff check .`、`npm test`，不得将 Mock/单元测试冒充真实 Provider 或 Runner 验收。对 `httpx2` 先做 TestClient 兼容性验证，再决定是否替换 `httpx` 并更新 `uv.lock`；若暂不能切换，记录阻碍、当前锁定版本和复查时点，不将告警静默忽略。
+- **WhenDone：** 本地执行上述基础命令并记录结果；提交可审查的 CI 配置，实际流水线通过后才能声称自动门禁已生效，若 Gitee 执行环境不可用则标 `NOT_RUN` 并在 M28 前解决；临时 SQLite 库上的迁移 `upgrade head → downgrade base → upgrade head` 测试通过，逐级检查版本与表/列结构，并明确回退会删除对应版本新增的数据；TestClient 依赖决策及验证证据入实施记录。
+
 ### M09｜制作能够独立启动的全栈基础模板
 
 - **Goal：** 在 `templates/` 落地 Spring Boot + MyBatis-Plus + MySQL 与 Vue 3 + TS 的最小可运行工程，提供固定登录/异常处理/基础页面。
 - **Context：** 依赖 M08；技术文档第 6 节要求后端 `controller/service/mapper/entity/dto/vo/config/exception/security` 等结构；模板应声明自身已提供的认证、路由等能力。
-- **Constraints：** 本步不做“按用户需求自动生成”；生成项目与平台登录体系完全独立；样例凭据必须用部署环境安全注入，勿硬编码真实秘密；固定认证逻辑要经过测试。
-- **WhenDone：** 在受控开发环境中，基础模板的 `mvn test/package`、`npm ci/build` 实际通过；启动后能访问健康检查并完成模板登录；提交依赖锁及操作记录。
+- **Constraints：** 本步不做“按用户需求自动生成”；生成项目与平台登录体系完全独立；样例凭据必须用部署环境安全注入，勿硬编码真实秘密；固定认证逻辑要经过测试。生成项目 compose 的 MySQL 镜像须锁定仓库引用与不可变 digest，不以 `database.version` 或可变 tag 代替镜像锁。
+- **WhenDone：** 在受控开发环境中，基础模板的 `mvn test/package`、`npm ci/build` 实际通过；启动后能访问健康检查并完成模板登录；提交依赖锁、MySQL 镜像 reference/digest 与操作记录，说明其与 Profile 中 MySQL 版本的对应关系。
 
 ### M10｜先冻结数据库与 REST API 业务契约
 
@@ -199,8 +206,8 @@ AgentForge/
 
 - **Goal：** 为 Task 生成链路选择模板和能力包，在写文件前检测重复能力、路径冲突与依赖关系，并输出 `asset-lock.json`。
 - **Context：** 依赖 M13；技术文档第 3 节要求先解析、校验，再写入；M15 会消费解析后的只读资产引用。
-- **Constraints：** 不让 LLM 直接指定任意磁盘路径、包地址和依赖版本；不使用“有冲突就覆盖”的策略；输出包含资产版本及 hash。
-- **WhenDone：** 正常 Task 计划得到稳定锁清单；构造的重复能力/路径冲突被拒；相同输入重复解析锁清单一致。
+- **Constraints：** 不让 LLM 直接指定任意磁盘路径、包地址和依赖版本；不使用“有冲突就覆盖”的策略；输出包含资产版本及 hash。将 M09 模板 compose 使用的 MySQL 镜像 reference/digest 纳入资产锁，不接受仅有可变 tag 的镜像引用。
+- **WhenDone：** 正常 Task 计划得到稳定锁清单且可追溯 MySQL 镜像 digest；构造的重复能力/路径冲突被拒；相同输入重复解析锁清单一致。
 
 ### M15｜编写确定性代码装配器
 
@@ -209,6 +216,13 @@ AgentForge/
 - **Constraints：** 限制安全路径、文件数量/大小、非法文件名与符号链接逃逸；写入暂存目录并核对哈希后提交；生成器不得改原版模板或固定测试文件。
 - **WhenDone：** 使用手工确认 Task spec 可在独立目录生成前后端、migration、README 初稿和 lock；两次独立生成结构一致、无文件覆盖；路径越界测试通过。
 
+### M15A｜阶段 B 生成资产安全补强（进入 Runner 前）
+
+- **Goal：** 修复已发现的生成项目权限矩阵未落地、列表分页无上限等缺口，并收紧前端令牌与 Docker 构建上下文。
+- **Context：** 依赖 M10—M15；M10 契约的每条路由已有 `allowed_roles`，但 M11 Controller 目前只检查登录与记录归属；`size` 未限制；M09 前端将 JWT 存于 `localStorage`，后端/前端构建目录尚无 `.dockerignore`。这些生成资产将在 M17/M18 被真实执行。
+- **Constraints：** 服务端按每条路由的 `allowed_roles` 判定角色，再保留现有数据归属校验；空角色集合对应的接口须拒绝请求，契约权限矩阵与路由不一致时拒绝装配，不以 UI 隐藏按钮替代鉴权。`page` 与 `size` 均须有确定边界，超界返回明确 4xx，不把用户传入的极大值交给分页查询。MVP 生成前端改用内存保存短期 JWT，页面刷新需重新登录；不将令牌写入 `localStorage`/`sessionStorage`，同时保留安全文本渲染。后端/前端 `.dockerignore` 排除 `.env`、版本库、依赖目录、构建产物与日志；构建所需锁文件仍须进入上下文。不得原地覆盖已发布模板或能力包：创建新资产版本、更新 checksum；Registry/装配器须能按资产锁定位新旧模板版本，不能继续假定只有 `templates/` 根目录一个版本；在 M16 新 Profile 发布时切换默认引用。
+- **WhenDone：** 用一份 ADMIN 可写、MEMBER 只读的变体契约生成项目，真实 HTTP 测试证明 MEMBER 写操作返回 403、读自己数据可用且跨用户数据仍被拒；空 `allowed_roles` 不会放行。分页 `page/size` 的零值、负值和过大值均被拒，合法边界仍可分页；前端刷新重登及令牌不落持久浏览器存储有测试。新模板/能力包版本的构建、测试、checksum 与 `.dockerignore` 内容检查通过；旧资产和原有锁清单保持可校验。
+
 ---
 
 ## 阶段 C｜真实沙箱、验证与错误报告
@@ -216,9 +230,9 @@ AgentForge/
 ### M16｜创建独立受控 Runner 服务与隔离契约
 
 - **Goal：** 创建 Runner 的内部认证 API、固定任务白名单与执行容器约束，供后续实际构建/启动使用。
-- **Context：** 依赖 M15 的待测产物；技术文档第 7 节要求专用 Linux 主机或 VM、非 root、受控网络、资源/时间限制、清理；平台 API 不接触 Docker Engine。
-- **Constraints：** 不暴露任意 shell；不挂载宿主 Docker socket、平台数据库、模型 Key 或宿主敏感目录；配置 `no-new-privileges`、`cap-drop`、seccomp 和资源限制；Docker 不等于公众级安全隔离。
-- **WhenDone：** 未认证 Runner 请求被拒；越界路径与非白名单任务被拒；Runner 能启动和清理一个受限测试容器；真实主机配置/未落实项被记录。
+- **Context：** 依赖 M15A 的修订资产；技术文档第 7 节要求专用 Linux 主机或 VM、非 root、受控网络、资源/时间限制、清理；平台 API 不接触 Docker Engine。
+- **Constraints：** 不暴露任意 shell；不挂载宿主 Docker socket、平台数据库、模型 Key 或宿主敏感目录；配置 `no-new-privileges`、`cap-drop`、seccomp 和资源限制；Docker 不等于公众级安全隔离。M08 的 `demo-ts-mp@0.1` 已发布且不可原地覆盖；镜像 digest 就绪后须新建 `profile_version`，并核对模板、能力包、样例 spec 与资产锁对新版本的兼容性。既有已确认 spec/hash 不得静默改版。
+- **WhenDone：** 未认证 Runner 请求被拒；越界路径与非白名单任务被拒；Runner 能启动和清理一个受限测试容器；锁定实际 Runner 镜像 reference/digest，以新 `profile_version` 记录 M15A 的新模板版本和 Runner 镜像，不修改已发布 Profile；更新 M06 的 MVP Profile 版本映射、样例 spec 与资产兼容声明，重新解析 `asset-lock.json` 并通过测试，既有已确认 spec 的拒绝或重新确认路径明确；真实主机配置/未落实项被记录。
 
 ### M17｜实现静态与前后端构建验证
 
@@ -231,8 +245,8 @@ AgentForge/
 
 - **Goal：** Runner 在隔离测试环境内应用 migration、启动前后端，执行登录、CRUD、分页、搜索、数据归属固定 HTTP 用例。
 - **Context：** 依赖 M11/M12/M16/M17；需求文档第 8 节要求“编译成功≠功能通过”；技术文档第 7 节规定数据库、健康检查及业务验收分层。
-- **Constraints：** 每个 run 使用隔离数据库与演示数据；验收断言在源码生成前由平台固定，不允许装配器修改；容器端口/网络按白名单开放。
-- **WhenDone：** 全新环境可完成完整 Task HTTP 场景；故意移除数据权限后验收失败，且不被“编译成功”覆盖；超时与容器退出均形成可复现报告。
+- **Constraints：** 每个 run 使用隔离数据库与演示数据；Runner 启动的 MySQL 镜像须与 M09 模板 compose、M14 资产锁中的 digest 一致，运行前校验实际解析的镜像 digest；验收断言在源码生成前由平台固定，不允许装配器修改；容器端口/网络按白名单开放。
+- **WhenDone：** 全新环境可完成完整 Task HTTP 场景，记录所用 MySQL 镜像 digest 并与生成项目 compose 对账；固定验收包括角色权限拒绝、跨用户数据拒绝与分页上限；故意移除数据权限后验收失败，且不被“编译成功”覆盖；超时与容器退出均形成可复现报告。
 
 ---
 
@@ -249,22 +263,22 @@ AgentForge/
 
 - **Goal：** 实现 `POST /api/projects/{id}/runs` 和后台**独立 worker** 的事务领取、租约、运行幂等键及 `GET /api/runs/{id}`。
 - **Context：** 依赖 M07/M19；技术文档第 1、5、9 节规定单 worker、租约、Idempotency-Key、`202`，不能用 FastAPI BackgroundTasks 承载长期构建。
-- **Constraints：** 仅确认规格可运行；重复点击生成返回同一个运行记录；worker 不与 API 进程绑定；初期不承诺完整中断恢复，异常必须落 `FAILED/UNKNOWN` 而非假成功。
-- **WhenDone：** API 可提交任务并轮询状态；同一幂等键重复请求不新建 run；关闭 API 不应使独立 worker 立即丢失已持久化任务；有集成测试。
+- **Constraints：** 仅确认规格可运行；重复点击生成返回同一个运行记录；worker 不与 API 进程绑定；统一 M04 既有会话过期和新增租约、账本时间戳的 UTC 约定，租约比较以数据库时间为准，进程内超时使用单调时钟；多机部署要求主机时钟同步并在运行手册中写明容许偏差。初期不承诺完整中断恢复，异常必须落 `FAILED/UNKNOWN` 而非假成功。
+- **WhenDone：** API 可提交任务并轮询状态；同一幂等键重复请求不新建 run；关闭 API 不应使独立 worker 立即丢失已持久化任务；worker 上报可查询的最近心跳，停滞超过阈值会显示不健康并阻止误报成功，但不自动接管或重放任务（交 R23）；时间边界与心跳停滞有集成测试。
 
 ### M21｜实现模型调用计费前置护栏（最小版）
 
 - **Goal：** 引入 `model_call` 账本、模型角色 → Provider 静态路由、最大 Token/次数/预算预留；MVP 只实现 `user_interaction → deepseek_official/deepseek-flash`。
 - **Context：** 依赖 M19/M20；技术文档第 8 节统一模型网关/账本，结合本版“模型 API 路由约定”；M22 将在**创建 run 之前的需求草稿阶段**调用 DeepSeek。
-- **Constraints：** `model_call` 同时支持 `project_id + draft_id` 的生成前访谈用量和后续 `run_id` 的生成期用量（不能把 M22 的花费虚报成 0）；使用整数微单位与实际 `price_version`，不得硬编码价格；缺 usage / 账单不确定则保留预留并等待对账；Provider 密钥只从环境注入；Qwen 路由在本步仅文档占位，不实例化。
-- **WhenDone：** 测试路由 `user_interaction` 必须选择 DeepSeek `deepseek-flash`、任意未启用角色必须拒绝且没有外部请求；预算不足时客户端**未被调用**；同 call_id 结算幂等；有 usage/无 usage/超额与“生成前草稿计费”测试均通过。
+- **Constraints：** `model_call` 同时支持 `project_id + draft_id` 的生成前访谈用量和后续 `run_id` 的生成期用量（不能把 M22 的花费虚报成 0）；生成前草稿请求须有可配置的用户/项目级调用频率和次数上限，在调用 Provider 前拦截超额请求；使用整数微单位与实际 `price_version`，不得硬编码价格；缺 usage / 账单不确定则保留预留并等待对账；Provider 密钥只从环境注入；Qwen 路由在本步仅文档占位，不实例化。
+- **WhenDone：** 测试路由 `user_interaction` 必须选择 DeepSeek `deepseek-flash`、任意未启用角色必须拒绝且没有外部请求；预算不足或草稿调用限额已达上限时客户端**未被调用**；同 call_id 结算幂等；有 usage/无 usage/超额与“生成前草稿计费”测试均通过。
 
 ### M22｜LangChain 结构化需求提取（一次调用）
 
 - **Goal：** **只调用 DeepSeek V4.1 Flash（`deepseek-flash`）**，从中文自然语言生成 Pydantic 规格草稿、需求摘要、缺失字段及待确认问题提示，供用户编辑确认，不直接生成源码。
 - **Context：** 依赖 M06/M07/M21 的 project/draft 级模型账本与路由；技术文档第 1、4、8 节规定结构化模型接口，但**具体 DeepSeek 型号属于 2026-10-11 选型决策**；M23 只消费用户确认后的 spec。
-- **Constraints：** 不调用 `qwen3.7-plus` 或其他模型；仅使用已通过 JSON/usage/模式参数探针的 DeepSeek 官方接口。常规提取非思考，确有复杂度规则时按已验证配置启用低强度思考；不信任返回的库地址/命令；推断必须为 `pending` 或建议；结构错误最多纠正 1 次并单独计费；失败时允许人工编辑草稿，不能伪称 AI 成功。
-- **WhenDone：** 中文 Task 需求经真实 `deepseek-flash` 请求获得可校验草稿并可在 API 读取；明确标识 `user_explicit/user_confirmed/pending`，待确认时不可冻结；报告记录 Provider/型号/模式/真实 usage/成本（缺失标 UNKNOWN）；断言没有 Qwen 调用且测试通过。
+- **Constraints：** 不调用 `qwen3.7-plus` 或其他模型；仅使用已通过 JSON/usage/模式参数探针的 DeepSeek 官方接口。常规提取非思考，确有复杂度规则时按已验证配置启用低强度思考；原始需求与模型输出均是数据，不信任其中要求泄露密钥、改变模型路由、绕过确认或执行 URL/命令的指令；推断必须为 `pending` 或建议；结构错误最多纠正 1 次并单独计费；失败时允许人工编辑草稿，不能伪称 AI 成功。
+- **WhenDone：** 中文 Task 需求经真实 `deepseek-flash` 请求获得可校验草稿并可在 API 读取；明确标识 `user_explicit/user_confirmed/pending`，待确认时不可冻结；加入恶意需求文本及恶意模型返回的对抗性测试，验证不能越权、扩范围、泄露密钥或绕过确认；报告记录 Provider/型号/模式/真实 usage/成本（缺失标 UNKNOWN）；断言没有 Qwen 调用且测试通过。
 
 ### M23｜LangGraph 固定生成图接入装配与验证
 
@@ -281,15 +295,15 @@ AgentForge/
 
 - **Goal：** 为已通过检查的 run 生成源码 ZIP、`verification.json`、`cost-report.json`、`spec.json`、`asset-lock.json` 和 `EXTERNAL_SERVICES.md`。
 - **Context：** 依赖 M15/M17/M18/M21/M23；需求文档 FR08 及技术文档第 6、9 节要求 frontend/backend/migration/.env.example/Dockerfile/compose/README/接口说明等。
-- **Constraints：** 移除 `.env`、真实密钥、`node_modules`、构建缓存和敏感日志；无第三方服务时指南明确写“无须配置”；`cost-report.json` 如实列出草稿阶段 DeepSeek 用量和生成期用量；`verification.json` 标注 MVP 检查范围、PASS/FAIL/NOT_RUN，失败包必须标“未验证”。
-- **WhenDone：** ZIP 可解压；静态文件清单和密钥扫描通过；按 README 在干净目录复现构建/启动；验证报告与实际 Runner 结果一致。
+- **Constraints：** 移除 `.env`、真实密钥、`node_modules`、构建缓存和敏感日志；无第三方服务时指南明确写“无须配置”；`cost-report.json` 如实列出草稿阶段 DeepSeek 用量和生成期用量；`verification.json` 标注 MVP 检查范围、PASS/FAIL/NOT_RUN，失败包必须标“未验证”。单 run 的暂存目录与 ZIP 须有可配置的大小上限；超限不得继续打包或覆盖其他 run 产物。
+- **WhenDone：** ZIP 可解压；静态文件清单和密钥扫描通过；生成项目前后端 `.dockerignore` 随 ZIP 交付，构建上下文不含密钥、依赖缓存或运行日志；按 README 在干净目录复现构建/启动；验证报告与实际 Runner 结果一致；大小上限与超限后仅清理本 run 暂存文件、保留失败记录的行为经测试。
 
 ### M25｜平台 UI：创建项目与自然语言输入
 
 - **Goal：** 在 `platform-ui/` 做最小登录、项目列表、项目创建和需求输入页面，接入 M04/M05/M22。
 - **Context：** 依赖 M04/M05/M22；技术文档第 1、5 节建议 Vue 3 + TS + Vite + Element Plus；需求文档 FR01 对非技术用户的业务语言要求。
-- **Constraints：** 此步只做项目/需求输入，不同时搭完整工作台；所有模型文本按普通文本或安全 Markdown 展示；处理 401/403/422 和加载失败。
-- **WhenDone：** 登录后可创建 Task 项目并经 `user_interaction` 路由触发 **DeepSeek V4.1 Flash** 结构化草稿生成；UI 不出现来自其他模型的用户交互文本；刷新后项目仍在；前端构建与最少一条界面测试通过。
+- **Constraints：** 此步只做项目/需求输入，不同时搭完整工作台；所有模型文本按普通文本或安全 Markdown 展示；处理 401/403/422 和加载失败；平台 UI 的依赖独立于生成项目 Profile 管理，不复用 M08 的版本决定。
+- **WhenDone：** 登录后可创建 Task 项目并经 `user_interaction` 路由触发 **DeepSeek V4.1 Flash** 结构化草稿生成；UI 不出现来自其他模型的用户交互文本；刷新后项目仍在；平台 UI 的 Vue/Vite/TypeScript/Element Plus 等直接依赖记录经兼容性构建验证的精确版本，提交 `package-lock.json`，在干净环境执行 `npm ci`、类型检查、构建与最少一条界面测试；CI 同步覆盖平台 UI 安装、类型检查、构建和测试。
 
 ### M26｜平台 UI：规格编辑、显式确认与运行按钮
 
@@ -307,10 +321,10 @@ AgentForge/
 
 ### M28｜MVP 冷启动端到端验收与交接
 
-- **Goal：** 在一套全新受控环境中，把 M01—M27 串成一次“输入 → 草稿 → 确认 → 生成 → 验证 → 下载 → 重启”的演示。
+- **Goal：** 在一套全新受控环境中，把 M01—M27 及 M08A/M15A 串成一次“平台部署 → 输入 → 草稿 → 确认 → 生成 → 验证 → 下载 → 重启”的演示。
 - **Context：** 依赖全部先前步骤；需求文档第 3、8 节定义编译、数据库、启动、HTTP 业务场景均必须通过；技术文档第 9 节强调真实多次评估及失败可见性。
-- **Constraints：** 不允许人工修改生成源码再把结果计为成功；测试账号与密码经安全配置注入；缺少 Runner 或真实 Provider 连接就如实记录 NOT_RUN，不录制模拟“全绿”结果。
-- **WhenDone：** 至少一套 Task 项目在清洁环境中通过“**DeepSeek `deepseek-flash` → 结构化草稿 → 用户确认冻结 → 不调用 Qwen 的模板装配 → Runner 验证**”的真实链路；源码可解压并按 README 启动；保存一例故意失败样例及真实报告；`docs/MVP_ACCEPTANCE.md` 列出模型路由、Provider/型号/模式、实际调用与成本，并明确“已完成/未完成/下一阶段入口”。
+- **Constraints：** 不允许人工修改生成源码再把结果计为成功；测试账号与密码经安全配置注入；缺少 Runner 或真实 Provider 连接就如实记录 NOT_RUN，不录制模拟“全绿”结果。平台 API 不获取 Docker Engine 权限，Runner 仍在独立受控 Linux 环境运行；不得为追求单文件 compose 而挂载宿主 Docker socket、平台数据库或 Provider 密钥给 Runner。平台 SQLite 的备份使用一致性快照机制，不能在 WAL 写入期间仅复制主数据库文件；备份副本须加密存储、限制读取权限，解密凭据与备份分离。运行目录与 ZIP 的清理只针对已终结且超过保留期的 run，不删除进行中任务或仍承诺可下载的产物。
+- **WhenDone：** 交付并实测平台自身的启动编排及运行说明，覆盖 API、独立 worker、UI、持久化 SQLite 卷与独立 Runner 的部署/连通性检查；从清洁环境完成启动、迁移、健康检查和重启后数据保留，核对多机时钟同步与 worker 心跳停滞告警，并明确平台编排与生成项目 ZIP 内 compose 的区别。制定并演练 SQLite 元数据与产物目录的备份/恢复，记录备份范围、频率、保留期、加密与读取权限及恢复结果；为运行目录/ZIP 设定总量配额、剩余空间告警和保留/清理策略，验证达到阈值时拒绝新任务或安全清理已过期产物；平台过期会话定期批量清理，已过期令牌仍返回 401，清理不会删除有效会话，并有测试。登录接口有后端限流及边界测试，在对内开放前启用。至少一套 Task 项目通过“**DeepSeek `deepseek-flash` → 结构化草稿 → 用户确认冻结 → 不调用 Qwen 的模板装配 → Runner 验证**”的真实链路；源码可解压并按 README 启动；保存一例故意失败样例及真实报告；CI 基础门禁实际通过，`docs/MVP_ACCEPTANCE.md` 列出平台部署/恢复证据、镜像 digest、模型路由、Provider/型号/模式、实际调用与成本，并明确“已完成/未完成/下一阶段入口”。
 
 ---
 
@@ -321,6 +335,7 @@ AgentForge/
 3. **执行边界成立：** Platform API 无直接 Docker 权限、Runner 使用隔离环境、跨用户授权拒绝、跨 run 文件隔离、密钥不入 ZIP；缺任一项则不得声称安全交付。
 4. **失败与花费如实披露：** 模型调用前预算拦截有效，实际 usage/未知账单区分，异常不伪装成功；所有未实施的完整 Demo P0 测试列为缺口。
 5. **交付物：** 源码 ZIP + 规格、资产锁、运行说明、接口说明、验证报告、费用报告、无外部服务指南，以及 MVP 验收记录。
+6. **平台自身可复现：** 平台 UI 依赖锁、API 锁文件和 CI 基础门禁均有效；Runner 与 MySQL 镜像 digest 可追溯；平台部署可从清洁环境重建，SQLite 与产物备份能够安全恢复，worker 健康与磁盘阈值可观测；登录和生成前付费接口的限额经验证。生成项目 ZIP 的 compose 不能替代平台部署证据。
 
 ## 与第二份文件的衔接
 
@@ -333,4 +348,4 @@ AgentForge/
 - 《Demo需求分析文档》v0.1：第 2—3 节交付边界与成功标准；第 4—7 节 FR01—FR09；第 8 节固定验收与 9 次评估；第 9 节阶段与后续方向。
 - 《Demo技术文档_修订版》v0.3：第 1—2 节 Python 架构/资产和 Profile；第 3—5 节状态/规格/API；第 6 节模板与 DeepAgent 限制；第 7 节 Runner 和验证；第 8 节账本；第 9 节实施建议与测试。
 
-**使用建议：** 每次只把“总控 Prompt + 模型路由约定 + 当前一个 Mxx 步骤”交给编码 AI。WhenDone 不满足时，先在本步骤修复或记录外部阻塞，不进入 Mxx+1。
+**使用建议：** 每次只把“总控 Prompt + 模型路由约定 + 当前一个步骤（含 M08A/M15A）”交给编码 AI。WhenDone 不满足时，先在本步骤修复或记录外部阻塞，不进入后续步骤；M08A 的 CI 若因 Gitee 执行环境暂记 `NOT_RUN`，须在 M28 发布验收前补齐真实通过证据。

@@ -171,6 +171,77 @@ def test_confirm_with_pending_is_rejected(platform_app) -> None:
     assert "pending" in response.json()["error"]["message"]
 
 
+def test_confirm_rejects_spec_that_cannot_build_task_pack(platform_app) -> None:
+    app, _ = platform_app
+    client = _auth_client(app, ALICE_CREDS)
+    project_id = _create_project(client)
+    incomplete = _sample()
+    incomplete["entities"][0]["fields"] = [
+        field for field in incomplete["entities"][0]["fields"] if field["name"] != "owner_id"
+    ]
+    _put_spec(client, project_id, 0, incomplete)
+
+    response = _confirm(client, project_id, 1)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SPEC_NOT_READY"
+
+
+def test_confirm_rejects_unsafe_field_identifier(platform_app) -> None:
+    app, _ = platform_app
+    client = _auth_client(app, ALICE_CREDS)
+    project_id = _create_project(client)
+    unsafe = _sample()
+    unsafe["entities"][0]["fields"][1]["name"] = "title; Runtime.getRuntime()"
+    _put_spec(client, project_id, 0, unsafe)
+
+    response = _confirm(client, project_id, 1)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SPEC_NOT_READY"
+
+
+def test_confirm_rejects_java_keyword_and_unsearchable_task(platform_app) -> None:
+    app, _ = platform_app
+    client = _auth_client(app, ALICE_CREDS)
+    project_id = _create_project(client)
+    keyword = _sample()
+    keyword["entities"][0]["fields"].append(
+        {"name": "boolean", "type": "boolean", "required": False}
+    )
+    assert _put_spec(client, project_id, 0, keyword).status_code == 200
+    assert _confirm(client, project_id, 1).status_code == 422
+
+    unsearchable = _sample()
+    for field in unsearchable["entities"][0]["fields"]:
+        if field["type"] == "string":
+            field["type"] = "int"
+    assert _put_spec(client, project_id, 1, unsearchable).status_code == 200
+    assert _confirm(client, project_id, 1).status_code == 422
+
+
+def test_confirm_requires_creator_reader_role(platform_app) -> None:
+    app, _ = platform_app
+    client = _auth_client(app, ALICE_CREDS)
+    project_id = _create_project(client)
+    spec = _sample()
+    spec["permissions"] = [
+        {"role": "MEMBER", "actions": ["read"], "source": "user_confirmed"}
+    ]
+    assert _put_spec(client, project_id, 0, spec).status_code == 200
+    assert _confirm(client, project_id, 1).status_code == 422
+
+
+def test_confirm_rejects_wrong_fixed_column_types(platform_app) -> None:
+    app, _ = platform_app
+    client = _auth_client(app, ALICE_CREDS)
+    project_id = _create_project(client)
+    spec = _sample()
+    next(field for field in spec["entities"][0]["fields"] if field["name"] == "owner_id")["type"] = "string"
+    assert _put_spec(client, project_id, 0, spec).status_code == 200
+    assert _confirm(client, project_id, 1).status_code == 422
+
+
 def test_confirm_with_version_mismatch_conflicts(platform_app) -> None:
     app, _ = platform_app
     client = _auth_client(app, ALICE_CREDS)

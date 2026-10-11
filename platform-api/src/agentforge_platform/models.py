@@ -54,9 +54,13 @@ class SpecVersion(Base):
         ForeignKey("project.id", ondelete="CASCADE"), nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
+    draft_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     body_json: Mapped[str] = mapped_column(Text, nullable=False)
     hash: Mapped[str] = mapped_column(String(64), nullable=False)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    missing_fields_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    questions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
 
 
 class PlatformSession(Base):
@@ -182,6 +186,8 @@ class ModelCall(Base):
     thinking_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     price_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    input_micro_per_million: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_micro_per_million: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reserved_micro: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     cost_micro: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

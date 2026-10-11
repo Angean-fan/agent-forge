@@ -215,7 +215,7 @@ def build_params(contract: BusinessContract) -> dict:
         op: ", ".join(f'"{role}"' for role in roles) for op, roles in op_roles.items()
     }
     creator_role = next(
-        (role for role in sorted(role_actions) if "create" in role_actions[role]), None
+        (role for role in sorted(role_actions) if {"create", "read"} <= role_actions[role]), None
     )
     readonly_role = next(
         (
@@ -225,6 +225,10 @@ def build_params(contract: BusinessContract) -> dict:
         ),
         None,
     )
+    if search_column is None:
+        raise PackRenderError(ErrorCode.CONTRACT_UNSUPPORTED, "Task 测试需要可搜索的字符串字段")
+    if creator_role is None:
+        raise PackRenderError(ErrorCode.CONTRACT_UNSUPPORTED, "Task 测试需要同时可创建和读取的角色")
 
     return {
         "package": PACKAGE,

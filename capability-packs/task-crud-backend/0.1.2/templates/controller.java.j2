@@ -1,0 +1,99 @@
+package {{ package }}.controller;
+
+import {{ package }}.dto.{{ entity_name }}CreateRequest;
+import {{ package }}.dto.{{ entity_name }}UpdateRequest;
+import {{ package }}.exception.ApiException;
+import {{ package }}.exception.ErrorCode;
+import {{ package }}.service.{{ entity_name }}Service;
+import {{ package }}.service.UserService;
+import {{ package }}.vo.{{ entity_name }}View;
+import {{ package }}.vo.PageResult;
+import jakarta.validation.Valid;
+import java.util.List;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+/** {{ entity_name }} REST 路由：按契约 allowed_roles 做服务端角色判定，再叠加数据归属校验。 */
+@RestController
+@RequestMapping("{{ route_path }}")
+public class {{ entity_name }}Controller {
+
+    private static final long MAX_PAGE_SIZE = {{ pagination_max }};
+
+    private final {{ entity_name }}Service service;
+    private final UserService userService;
+
+    public {{ entity_name }}Controller({{ entity_name }}Service service, UserService userService) {
+        this.service = service;
+        this.userService = userService;
+    }
+
+    @GetMapping
+    public PageResult<{{ entity_name }}View> list(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "10") long size,
+            @RequestParam(required = false) String keyword,
+            Authentication authentication) {
+        requireAnyRole(authentication, List.of({{ op_roles_literals['list'] }}));
+        validatePaging(page, size);
+        return service.list(page, size, keyword, currentUserId(authentication));
+    }
+
+    @PostMapping
+    public {{ entity_name }}View create(
+            @Valid @RequestBody {{ entity_name }}CreateRequest request, Authentication authentication) {
+        requireAnyRole(authentication, List.of({{ op_roles_literals['create'] }}));
+        return service.create(request, currentUserId(authentication));
+    }
+
+    @GetMapping("/{id}")
+    public {{ entity_name }}View get(@PathVariable Long id, Authentication authentication) {
+        requireAnyRole(authentication, List.of({{ op_roles_literals['get'] }}));
+        return service.get(id, currentUserId(authentication));
+    }
+
+    @PutMapping("/{id}")
+    public {{ entity_name }}View update(
+            @PathVariable Long id,
+            @Valid @RequestBody {{ entity_name }}UpdateRequest request,
+            Authentication authentication) {
+        requireAnyRole(authentication, List.of({{ op_roles_literals['update'] }}));
+        return service.update(id, request, currentUserId(authentication));
+    }
+
+    @DeleteMapping("/{id}")
+    public void delete(@PathVariable Long id, Authentication authentication) {
+        requireAnyRole(authentication, List.of({{ op_roles_literals['delete'] }}));
+        service.delete(id, currentUserId(authentication));
+    }
+
+    private void validatePaging(long page, long size) {
+        if (page < 1 || size < 1 || size > MAX_PAGE_SIZE) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "分页参数越界", 400);
+        }
+    }
+
+    private void requireAnyRole(Authentication authentication, List<String> roles) {
+        boolean allowed = authentication.getAuthorities().stream()
+                .anyMatch(authority -> roles.contains(authority.getAuthority().replaceFirst("^ROLE_", "")));
+        if (!allowed) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权执行该操作", 403);
+        }
+    }
+
+    private Long currentUserId(Authentication authentication) {
+        var user = userService.findByUsername(authentication.getName());
+        if (user == null) {
+            throw new ApiException(ErrorCode.UNAUTHORIZED, "用户不存在", 401);
+        }
+        return user.getId();
+    }
+}

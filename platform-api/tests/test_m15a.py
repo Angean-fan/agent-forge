@@ -14,7 +14,7 @@ from agentforge_platform.resolver import resolve_assets
 from agentforge_platform.spec import SoftwareSpecification
 
 REPO = Path(__file__).resolve().parents[2]
-BACKEND_PACK = REPO / "capability-packs" / "task-crud-backend" / "0.1.1"
+BACKEND_PACK = REPO / "capability-packs" / "task-crud-backend" / "0.1.2"
 TEMPLATE_FRONTEND = REPO / "templates" / "demo-0.2" / "frontend"
 SAMPLE_SPEC = REPO / "schemas" / "task-management.spec.json"
 
@@ -45,6 +45,7 @@ def test_registry_keeps_multiple_asset_versions() -> None:
     assert ("template", "base-template", "demo-0.2") in keys
     assert ("capability-pack", "task-crud-backend", "0.1.0") in keys
     assert ("capability-pack", "task-crud-backend", "0.1.1") in keys
+    assert ("capability-pack", "task-crud-backend", "0.1.2") in keys
 
 
 def test_resolver_selects_latest_and_locks_mysql_digest() -> None:
@@ -52,7 +53,7 @@ def test_resolver_selects_latest_and_locks_mysql_digest() -> None:
 
     versions = {(a.id, a.version) for a in lock.assets}
     assert ("base-template", "demo-0.2") in versions
-    assert ("task-crud-backend", "0.1.1") in versions
+    assert ("task-crud-backend", "0.1.2") in versions
     assert lock.mysql_image.reference == "mysql:8.0.43"
     assert lock.mysql_image.digest.startswith("sha256:")
 
@@ -96,6 +97,23 @@ def test_empty_allowed_roles_renders_empty_list() -> None:
     controller = _controller(compile_from_spec(_spec(permissions=no_delete)))
 
     assert "List.of()" in controller  # delete 无角色 → 拒绝
+
+
+def test_generated_api_fixture_uses_values_matching_field_types() -> None:
+    raw = json.loads(SAMPLE_SPEC.read_text(encoding="utf-8"))
+    raw["entities"][0]["fields"].extend([
+        {"name": "priority", "type": "int", "required": True},
+        {"name": "due_date", "type": "date", "required": False},
+        {"name": "done", "type": "boolean", "required": False},
+    ])
+    contract = compile_from_spec(SoftwareSpecification.model_validate(raw))
+    api_test = next(
+        content for relative, content in render_pack_files(BACKEND_PACK, contract)
+        if relative.endswith("TaskApiTest.java")
+    )
+    assert 'map.put("priority", 1);' in api_test
+    assert 'map.put("due_date", "2026-01-01");' in api_test
+    assert 'map.put("done", true);' in api_test
 
 
 def test_controller_has_pagination_bounds() -> None:
