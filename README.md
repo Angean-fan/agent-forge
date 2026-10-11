@@ -12,9 +12,9 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 | 路径 | 说明 | 引入阶段 |
 |---|---|---|
 | `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M07 ✅ |
-| `runner/` | 独立受控 Runner（内部认证 + 固定任务 + 隔离容器契约） | M16 ⚠️ |
+| `runner/` | 独立受控 Runner（内部认证 + 固定任务 + 隔离容器契约） | M16 ✅ |
 | `platform-ui/` | 平台前端（Vue 3 + TS 目标） | M25 |
-| `profiles/` | 锁定的 Platform Profile（当前 `demo-ts-mp-0.2`） | M08 ✅ |
+| `profiles/` | 锁定的 Platform Profile（当前 `demo-ts-mp-0.3`） | M08/M16 ✅ |
 | `templates/` | 生成项目基础模板（版本化 `demo-0.1/`、`demo-0.2/`） | M09/M13/M15A ✅ |
 | `capability-packs/` | 可参数化业务能力包（版本化 `<id>/<version>/`） | M11–M15A ✅ |
 | `schemas/` | 规格/契约协议与样例（`*.spec.json`、`*.contract.json`、`asset-lock.sample.json`） | M06/M10/M14 ✅ |

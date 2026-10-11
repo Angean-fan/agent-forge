@@ -21,6 +21,13 @@ class Task:
 
 
 TASKS: dict[str, Task] = {
+    "smoke": Task(
+        name="smoke",
+        workdir="/workspace",
+        command=["java", "-version"],
+        timeout_seconds=120,
+        description="受控容器启动/清理冒烟检查",
+    ),
     "backend_test": Task(
         name="backend_test",
         workdir="/workspace/backend",

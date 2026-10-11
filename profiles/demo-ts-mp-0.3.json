@@ -48,16 +48,16 @@
     "version": "8.0.43"
   },
   "runner_image": {
-    "status": "pending",
+    "status": "verified-locally",
     "reference": "agentforge/runner-executor:demo-0.1",
-    "digest": null,
-    "note": "需在受控 Linux + Docker 环境构建执行镜像（runner/executor/Dockerfile）后回填 reference/digest；本机无 Docker，未构建"
+    "digest": "sha256:a917189a75674bfe4c727fce7d8635c497e2899944e2de6bd3dc75507420a535",
+    "note": "本地由 runner/executor/Dockerfile 构建（JDK17+Maven+Node22）并冒烟通过；未推送 registry——受控环境需推送后以 registry manifest digest 替换；基础镜像 digest 仍待锁定"
   },
   "verification": {
     "toolchain": "verified-locally: java 17.0.17 / maven 3.9.11 / node 22.19.0 / npm 10.9.3 / mysql 8.0.43",
     "backend_build": "verified: 模板/能力包 0.1.1 生成的 Task 工程 mvn test 通过（含角色/分页）",
     "frontend_resolution": "verified: npm ci resolved at pinned versions",
     "frontend_build": "verified: 生成前端 type-check + build + test 通过（内存令牌）",
-    "runner_image": "pending: 无 Docker 环境，执行镜像未构建、digest 未锁定（M16 未完成项）"
+    "runner_image": "verified-locally: 执行镜像构建 + 受限容器冒烟通过（未推送 registry；digest 为本地 manifest 摘要）"
   }
 }
