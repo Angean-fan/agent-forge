@@ -2,7 +2,7 @@
 
 AgentForge MVP 的平台后端（Python / FastAPI / Pydantic / SQLAlchemy）。
 
-当前状态：M05，新增项目创建与需求草稿读取。
+当前状态：M06，新增版本化 Software Specification schema 与可确认性校验。
 
 ## 数据库
 
@@ -36,6 +36,7 @@ uv run uvicorn agentforge_platform.main:app --reload   # 启动 API
 - `db.py` — SQLite 引擎（WAL）、会话工厂、`session_scope` 短事务与 `get_db` 依赖
 - `models.py` — `Project` / `SpecVersion` / `PlatformSession`
 - `routes_projects.py` — `/api/projects` 创建/列表/详情（保存原始需求文本）
+- `spec.py` — `SoftwareSpecification` schema、来源标注与 `is_confirmable` 校验
 - `accounts.py` — 预置平台账号加载（JSON，仅存哈希）
 - `passwords.py` — scrypt 密码哈希/校验 + 生成 CLI
 - `auth.py` — 会话存储、`get_current_account` / `require_csrf` / `require_project_owner` 依赖

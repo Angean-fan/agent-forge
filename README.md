@@ -5,7 +5,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M05**（创建项目与保存需求草稿）
+- 当前进度：**M06**（版本化 Software Specification Schema）
 
 ## 目录
 
@@ -13,6 +13,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 |---|---|---|
 | `platform-api/` | 平台后端（Python 3.12 / FastAPI） | M05 ✅ |
 | `platform-ui/` | 平台前端（Vue 3 + TS 目标） | M25 |
+| `schemas/` | 规格/契约协议与样例（如 `task-management.spec.json`） | M06 ✅ |
 | `docs/` | 每步实施记录 | M01 |
 
 > 其余建议目录（worker/、runner/、profiles/、templates/、capability-packs/、schemas/ 等）在对应步骤落地时再创建，本步不预建空目录。

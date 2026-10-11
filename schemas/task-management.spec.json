@@ -1,0 +1,54 @@
+{
+  "schema_version": "0.1",
+  "project_type": "crud_web",
+  "goal": "个人任务管理系统：用户登录后可管理属于自己的任务列表。",
+  "actors": ["ADMIN", "MEMBER"],
+  "entities": [
+    {
+      "name": "Task",
+      "source": "user_confirmed",
+      "fields": [
+        {"name": "id", "type": "long", "required": true},
+        {"name": "title", "type": "string", "required": true},
+        {"name": "description", "type": "text", "required": false},
+        {"name": "status", "type": "string", "required": true},
+        {"name": "owner_id", "type": "long", "required": true},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ]
+    }
+  ],
+  "relations": [],
+  "permissions": [
+    {"role": "ADMIN", "actions": ["create", "read", "update", "delete"], "source": "user_confirmed"},
+    {"role": "MEMBER", "actions": ["create", "read", "update", "delete"], "source": "user_confirmed"}
+  ],
+  "business_rules": [
+    {"id": "BR01", "text": "成员只能访问属于自己的任务", "source": "user_confirmed"},
+    {"id": "BR02", "text": "任务标题为必填项", "source": "user_confirmed"}
+  ],
+  "acceptance_cases": [
+    {
+      "id": "AC01",
+      "scenario": "成员登录后新增一条任务",
+      "expected": "任务保存成功并出现在自己的任务列表中",
+      "source": "user_confirmed"
+    },
+    {
+      "id": "AC02",
+      "scenario": "成员尝试读取他人的任务",
+      "expected": "请求被拒绝，不返回他人数据",
+      "source": "user_confirmed"
+    }
+  ],
+  "technical_profile": {
+    "profile_id": "demo-ts-mp",
+    "profile_version": "0.1",
+    "template_version": "demo-0.1"
+  },
+  "constraints": ["MVP 仅支持单个业务实体 Task"],
+  "exclusions": ["不做注册、找回密码等账号流程", "不做多实体与复杂状态机"],
+  "capability_requests": [],
+  "recipe_requests": [],
+  "integrations": [],
+  "external_requirements": []
+}
