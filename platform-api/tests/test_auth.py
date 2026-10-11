@@ -5,14 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 
 import sqlalchemy as sa
-from fastapi import Depends, Request
 from fastapi.testclient import TestClient
 
-from agentforge_platform.auth import require_project_owner
 from agentforge_platform.db import session_scope
-from agentforge_platform.middleware import get_request_id
 from agentforge_platform.models import PlatformSession, Project
-from agentforge_platform.responses import ApiResponse
 
 ALICE_CREDS = {"username": "alice", "password": "alice-secret"}
 BOB_CREDS = {"username": "bob", "password": "bob-secret"}
@@ -129,16 +125,6 @@ def test_logout_with_csrf_revokes_session(platform_app) -> None:
 
 def test_project_ownership_is_enforced(platform_app) -> None:
     app, factory = platform_app
-
-    @app.get("/api/projects/{project_id}")
-    def _get_project(
-        request: Request, project: Project = Depends(require_project_owner)
-    ) -> ApiResponse[dict]:
-        return ApiResponse(
-            request_id=get_request_id(request),
-            data={"id": project.id, "name": project.name},
-        )
-
     project_id = _seed_project(factory, owner_id=1, name="alice-project")
 
     alice = TestClient(app)

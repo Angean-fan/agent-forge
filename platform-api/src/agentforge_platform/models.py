@@ -23,6 +23,8 @@ class Project(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(60), nullable=False)
+    # 用户创建项目时输入的原始需求文本（M05）；M06 据此生成规格草稿。
+    requirement_text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     # 指向 spec_version.id；因与 spec_version.project_id 形成循环引用，DB 层不加外键，
     # 由应用层在 M07 确认规格时维护。
     active_spec_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
