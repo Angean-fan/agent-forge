@@ -39,6 +39,7 @@ uv run uvicorn agentforge_platform.main:app --reload   # 启动 API
 - `spec.py` — `SoftwareSpecification` schema、来源标注与 `is_confirmable` 校验
 - `spec_service.py` — 规格草稿读写/确认冻结与稳定 hash
 - `routes_spec.py` — `/api/projects/{id}/spec`、`/api/projects/{id}/confirm`
+- `profile.py` — `PlatformProfile` 解析与精确版本校验（读取 `../profiles/*.json`）
 - `accounts.py` — 预置平台账号加载（JSON，仅存哈希）
 - `passwords.py` — scrypt 密码哈希/校验 + 生成 CLI
 - `auth.py` — 会话存储、`get_current_account` / `require_csrf` / `require_project_owner` 依赖
