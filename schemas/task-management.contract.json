@@ -1,0 +1,258 @@
+{
+  "schema_version": "0.1",
+  "project_type": "crud_web",
+  "spec_hash": "7e940216e818d6645284c4dd5622c0182950a5a7cc04f42ec80d6a7fba7b5de8",
+  "profile_ref": "demo-ts-mp@0.2",
+  "tables": [
+    {
+      "table": "task",
+      "columns": [
+        {
+          "name": "id",
+          "sql_type": "BIGINT",
+          "nullable": false,
+          "primary_key": true,
+          "unique": false
+        },
+        {
+          "name": "title",
+          "sql_type": "VARCHAR(255)",
+          "nullable": false,
+          "primary_key": false,
+          "unique": false
+        },
+        {
+          "name": "description",
+          "sql_type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "unique": false
+        },
+        {
+          "name": "status",
+          "sql_type": "VARCHAR(255)",
+          "nullable": false,
+          "primary_key": false,
+          "unique": false
+        },
+        {
+          "name": "owner_id",
+          "sql_type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "unique": false
+        },
+        {
+          "name": "created_at",
+          "sql_type": "DATETIME",
+          "nullable": false,
+          "primary_key": false,
+          "unique": false
+        }
+      ],
+      "unique_constraints": [],
+      "indexes": [
+        [
+          "owner_id"
+        ]
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "operation": "list",
+      "method": "GET",
+      "path": "/api/tasks",
+      "request_dto": null,
+      "response_dto": "TaskView",
+      "response_is_list": true,
+      "allowed_roles": [
+        "ADMIN",
+        "MEMBER"
+      ]
+    },
+    {
+      "operation": "create",
+      "method": "POST",
+      "path": "/api/tasks",
+      "request_dto": "TaskCreateRequest",
+      "response_dto": "TaskView",
+      "response_is_list": false,
+      "allowed_roles": [
+        "ADMIN",
+        "MEMBER"
+      ]
+    },
+    {
+      "operation": "get",
+      "method": "GET",
+      "path": "/api/tasks/{id}",
+      "request_dto": null,
+      "response_dto": "TaskView",
+      "response_is_list": false,
+      "allowed_roles": [
+        "ADMIN",
+        "MEMBER"
+      ]
+    },
+    {
+      "operation": "update",
+      "method": "PUT",
+      "path": "/api/tasks/{id}",
+      "request_dto": "TaskUpdateRequest",
+      "response_dto": "TaskView",
+      "response_is_list": false,
+      "allowed_roles": [
+        "ADMIN",
+        "MEMBER"
+      ]
+    },
+    {
+      "operation": "delete",
+      "method": "DELETE",
+      "path": "/api/tasks/{id}",
+      "request_dto": null,
+      "response_dto": "TaskView",
+      "response_is_list": false,
+      "allowed_roles": [
+        "ADMIN",
+        "MEMBER"
+      ]
+    }
+  ],
+  "dtos": [
+    {
+      "name": "TaskCreateRequest",
+      "fields": [
+        {
+          "name": "title",
+          "json_type": "string",
+          "required": true
+        },
+        {
+          "name": "description",
+          "json_type": "string",
+          "required": false
+        },
+        {
+          "name": "status",
+          "json_type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "TaskUpdateRequest",
+      "fields": [
+        {
+          "name": "title",
+          "json_type": "string",
+          "required": true
+        },
+        {
+          "name": "description",
+          "json_type": "string",
+          "required": false
+        },
+        {
+          "name": "status",
+          "json_type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "TaskView",
+      "fields": [
+        {
+          "name": "id",
+          "json_type": "number",
+          "required": true
+        },
+        {
+          "name": "title",
+          "json_type": "string",
+          "required": true
+        },
+        {
+          "name": "description",
+          "json_type": "string",
+          "required": false
+        },
+        {
+          "name": "status",
+          "json_type": "string",
+          "required": true
+        },
+        {
+          "name": "owner_id",
+          "json_type": "number",
+          "required": true
+        },
+        {
+          "name": "created_at",
+          "json_type": "string",
+          "required": true
+        }
+      ]
+    }
+  ],
+  "permissions": [
+    {
+      "entity": "Task",
+      "roles": [
+        {
+          "role": "ADMIN",
+          "actions": [
+            "create",
+            "delete",
+            "read",
+            "update"
+          ]
+        },
+        {
+          "role": "MEMBER",
+          "actions": [
+            "create",
+            "delete",
+            "read",
+            "update"
+          ]
+        }
+      ]
+    }
+  ],
+  "error_codes": [
+    {
+      "code": "VALIDATION_ERROR",
+      "http_status": 400,
+      "description": "请求参数不合法"
+    },
+    {
+      "code": "UNAUTHORIZED",
+      "http_status": 401,
+      "description": "未认证"
+    },
+    {
+      "code": "FORBIDDEN",
+      "http_status": 403,
+      "description": "无权访问"
+    },
+    {
+      "code": "NOT_FOUND",
+      "http_status": 404,
+      "description": "资源不存在"
+    },
+    {
+      "code": "CONFLICT",
+      "http_status": 409,
+      "description": "资源冲突"
+    },
+    {
+      "code": "INTERNAL_ERROR",
+      "http_status": 500,
+      "description": "服务器内部错误"
+    }
+  ],
+  "contract_hash": "4e9f68672ee3f19608869ea7a53d0441d592a61cf3f159c6a2773e63853b2332"
+}
