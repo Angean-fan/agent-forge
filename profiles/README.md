@@ -13,7 +13,12 @@
 
 | profile_id | version | 组合 | 状态 |
 |---|---|---|---|
-| `demo-ts-mp` | `0.1` | 前端 TypeScript(Vue 3) + 后端 MyBatis-Plus | locked |
+| `demo-ts-mp` | `0.1` | 前端 TypeScript(Vue 3) + 后端 MyBatis-Plus | locked（已被 0.2 取代，保留不改） |
+| `demo-ts-mp` | `0.2` | 同上，前端 `typescript` 由 7.0.2 修正为 5.9.3 | locked（当前） |
+
+`0.2` 产生原因：M09 验证发现 `vue-tsc 3.3.13` 与 `typescript 7.0.2` 不兼容（TS 7 不再导出
+`./lib/tsc`），类型检查失败；按"版本以兼容性测试结果为准"将 `typescript` 修正为 `5.9.3`
+（`vue-tsc` 声明支持 `typescript>=5.0.0`，实测通过）。`0.1` 依不可变策略保留，未原地修改。
 
 MVP 仅启用 `demo-ts-mp` 组合；JS/`MyBatis` 其余三种组合在本阶段不实现。
 

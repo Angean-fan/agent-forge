@@ -12,6 +12,9 @@ from agentforge_platform import spec
 from agentforge_platform.profile import PlatformProfile, load_profile
 
 PROFILE_PATH = (
+    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.2.json"
+)
+SUPERSEDED_PROFILE_PATH = (
     Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.1.json"
 )
 SAMPLE_SPEC_PATH = (
@@ -27,7 +30,7 @@ def test_profile_file_is_valid_and_locked() -> None:
     profile = load_profile(PROFILE_PATH)
 
     assert profile.profile_id == "demo-ts-mp"
-    assert profile.profile_version == "0.1"
+    assert profile.profile_version == "0.2"
     assert profile.status == "locked"
     assert profile.frontend.syntax == "typescript"
     assert profile.backend.orm == "mybatis-plus"
@@ -59,6 +62,15 @@ def test_profile_matches_spec_constants() -> None:
     assert profile.profile_id == spec.MVP_PROFILE_ID
     assert profile.profile_version == spec.MVP_PROFILE_VERSION
     assert profile.template_version == sample["technical_profile"]["template_version"]
+
+
+def test_superseded_profile_still_validates() -> None:
+    # 已发布 Profile 不可原地覆盖：旧版本文件保留且仍可校验。
+    superseded = load_profile(SUPERSEDED_PROFILE_PATH)
+
+    assert superseded.profile_id == "demo-ts-mp"
+    assert superseded.profile_version == "0.1"
+    assert superseded.status == "locked"
 
 
 def test_range_version_is_rejected() -> None:

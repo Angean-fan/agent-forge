@@ -1,0 +1,17 @@
+# 本地快速启动 profile：使用内存 H2（MySQL 兼容模式），无需外部 MySQL。
+# 仅用于本地演示/联调；生产与 compose 使用 MySQL（见 compose.yaml）。
+# 这里的 demo 凭据与开发密钥只服务于本地演示，不是真实秘密。
+spring:
+  datasource:
+    url: jdbc:h2:mem:agentforge_local;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+app:
+  security:
+    jwt:
+      secret: local-dev-secret-local-dev-secret-1234
+    admin:
+      username: admin
+      password: admin123

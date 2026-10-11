@@ -42,7 +42,7 @@
   ],
   "technical_profile": {
     "profile_id": "demo-ts-mp",
-    "profile_version": "0.1",
+    "profile_version": "0.2",
     "template_version": "demo-0.1"
   },
   "constraints": ["MVP 仅支持单个业务实体 Task"],
