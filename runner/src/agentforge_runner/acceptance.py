@@ -27,6 +27,7 @@ from agentforge_runner.tasks import get_task
 _STRICT = ConfigDict(extra="forbid")
 _ADMIN = ("admin", "admin123")
 _MEMBER = ("member", "member123")
+_ADMIN_ROLE = "ADMIN"
 _DB_NAME = "agentforge"
 _DB_USER = "agentforge"
 _DB_PASSWORD = "agentforge_pw"
@@ -312,8 +313,13 @@ def _run_http_cases(base: str, artifact_dir: Path, case) -> None:
         )
         case("role_denied", status == 403, f"role={limited_role}")
 
-    delete_expected = 200 if _role_allowed(artifact_dir, "delete", _ADMIN[0]) else 403
-    case("delete_own", _http("DELETE", f"{base}/api/tasks/{task_id}", admin_token)[0] == delete_expected)
+    delete_expected = 200 if _role_allowed(artifact_dir, "delete", _ADMIN_ROLE) else 403
+    delete_status = _http("DELETE", f"{base}/api/tasks/{task_id}", admin_token)[0]
+    detail = (
+        f"expected={delete_expected} got={delete_status} "
+        f"dir={artifact_dir} contract={(artifact_dir / 'contract.json').is_file()}"
+    )
+    case("delete_own", delete_status == delete_expected, detail)
 
 
 def _result(artifact_dir, reference, digest, reconciled, cases) -> AcceptanceResult:

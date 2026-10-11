@@ -8,11 +8,23 @@ from fastapi.testclient import TestClient
 
 from agentforge_platform.db import session_scope
 from agentforge_platform.models import Project, Run, Worker
-from agentforge_platform.runs import RunStatus, _now, claim_run
+from agentforge_platform.runs import RunStatus, _now, claim_run, transition
 from agentforge_platform.worker import run_worker
 
 ALICE_CREDS = {"username": "alice", "password": "alice-secret"}
 BOB_CREDS = {"username": "bob", "password": "bob-secret"}
+
+
+def _failing_handler(factory):
+    """测试用处理函数：领取后如实判失败（默认处理已改为 M23 生成图）。"""
+
+    def handler(run_id: int) -> None:
+        with session_scope(factory) as session:
+            run = session.get(Run, run_id)
+            transition(session, run, RunStatus.PLANNING)
+            transition(session, run, RunStatus.FAILED, error_code="WORKER_TEST")
+
+    return handler
 
 
 def _seed_project(factory, *, owner_id: int = 1, active_spec_id: int | None = 1) -> int:
@@ -154,11 +166,17 @@ def test_worker_claims_run_and_reports_heartbeat(platform_app) -> None:
     run_id = _submit(client, project_id, "k1").json()["data"]["id"]
 
     # worker 以独立循环处理（不依赖 API 进程）
-    run_worker(session_factory=factory, worker_id="w-test", iterations=1, poll_interval=0.0)
+    run_worker(
+        session_factory=factory,
+        worker_id="w-test",
+        iterations=1,
+        poll_interval=0.0,
+        handler=_failing_handler(factory),
+    )
 
     run = client.get(f"/api/runs/{run_id}").json()["data"]
     assert run["status"] == "FAILED"
-    assert run["error_code"] == "GENERATION_NOT_IMPLEMENTED"
+    assert run["error_code"] == "WORKER_TEST"
 
     workers = client.get("/api/workers").json()["data"]["items"]
     assert any(w["worker_id"] == "w-test" and w["healthy"] for w in workers)
@@ -189,7 +207,13 @@ def test_worker_processes_persisted_run_without_api(platform_app) -> None:
     client = _auth_client(app, ALICE_CREDS)
     _submit(client, project_id, "k1")
 
-    run_worker(session_factory=factory, worker_id="w2", iterations=1, poll_interval=0.0)
+    run_worker(
+        session_factory=factory,
+        worker_id="w2",
+        iterations=1,
+        poll_interval=0.0,
+        handler=_failing_handler(factory),
+    )
 
     with session_scope(factory) as session:
         run = session.query(Run).one()
