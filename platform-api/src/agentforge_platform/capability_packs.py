@@ -35,6 +35,15 @@ _JAVA_IMPORTS = {
     "LocalDate": "java.time.LocalDate",
     "BigDecimal": "java.math.BigDecimal",
 }
+_JAVA_TO_TS = {
+    "Long": "number",
+    "Integer": "number",
+    "String": "string",
+    "Boolean": "boolean",
+    "LocalDateTime": "string",
+    "LocalDate": "string",
+    "BigDecimal": "number",
+}
 _DEP_MARKER = "<!-- CAPABILITY_PACK_DEPS -->"
 
 
@@ -155,6 +164,7 @@ def build_params(contract: BusinessContract) -> dict:
                 "java_name": _camel(column.name),
                 "pascal": _pascal(column.name),
                 "java_type": java_type,
+                "ts_type": _JAVA_TO_TS[java_type],
                 "nullable": column.nullable,
                 "primary_key": column.primary_key,
                 "ddl": ddl,
@@ -183,6 +193,7 @@ def build_params(contract: BusinessContract) -> dict:
                     "java_name": field.name,
                     "pascal": _pascal(field.name),
                     "java_type": java_type,
+                    "ts_type": _JAVA_TO_TS[java_type],
                     "required": field.required,
                     "validation_annotation": annotation,
                     "validation_import": import_name,
@@ -209,9 +220,12 @@ def build_params(contract: BusinessContract) -> dict:
         "package": PACKAGE,
         "package_dir": PACKAGE_DIR,
         "entity_name": entity_name,
+        "entity_camel": entity_name[:1].lower() + entity_name[1:],
         "table_name": table.table,
         "plural": plural,
         "route_path": f"/api/{plural}",
+        "api_path": f"/{plural}",
+        "ui_path": f"/{plural}",
         "fields": fields,
         "writable_fields": writable_fields,
         "view_fields": view_fields,
@@ -282,8 +296,8 @@ def render_pack(pack_dir: str | Path, contract: BusinessContract, output_dir: st
     return written
 
 
-def materialize_backend(
-    template_backend_dir: str | Path,
+def materialize(
+    template_dir: str | Path,
     pack_dir: str | Path,
     contract: BusinessContract,
     output_dir: str | Path,
@@ -292,8 +306,21 @@ def materialize_backend(
     output_dir = Path(output_dir)
     if output_dir.exists():
         shutil.rmtree(output_dir)
-    shutil.copytree(template_backend_dir, output_dir, ignore=shutil.ignore_patterns("target"))
+    shutil.copytree(
+        template_dir,
+        output_dir,
+        ignore=shutil.ignore_patterns("target", "node_modules", "dist"),
+    )
     return render_pack(pack_dir, contract, output_dir)
+
+
+def materialize_backend(
+    template_backend_dir: str | Path,
+    pack_dir: str | Path,
+    contract: BusinessContract,
+    output_dir: str | Path,
+) -> list[str]:
+    return materialize(template_backend_dir, pack_dir, contract, output_dir)
 
 
 def main(argv: list[str]) -> int:

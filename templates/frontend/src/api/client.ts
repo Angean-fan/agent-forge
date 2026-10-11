@@ -28,5 +28,9 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     const body = await response.json().catch(() => ({ code: 'ERROR', message: response.statusText }));
     throw new Error((body as { message?: string }).message ?? 'request failed');
   }
-  return (await response.json()) as T;
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  const text = await response.text();
+  return (text ? (JSON.parse(text) as T) : (undefined as T));
 }

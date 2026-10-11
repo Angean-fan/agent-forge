@@ -1,0 +1,43 @@
+import type { {{ entity_name }}Input, {{ entity_name }}View } from '../types/{{ entity_camel }}';
+import { request } from './client';
+
+export interface PageResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export function list{{ entity_name }}s(
+  page = 1,
+  size = 10,
+  keyword = '',
+): Promise<PageResult<{{ entity_name }}View>> {
+  const query = new URLSearchParams({ page: String(page), size: String(size) });
+  if (keyword) {
+    query.set('keyword', keyword);
+  }
+  return request<PageResult<{{ entity_name }}View>>(`{{ api_path }}?${query.toString()}`);
+}
+
+export function create{{ entity_name }}(payload: {{ entity_name }}Input): Promise<{{ entity_name }}View> {
+  return request<{{ entity_name }}View>('{{ api_path }}', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function get{{ entity_name }}(id: number): Promise<{{ entity_name }}View> {
+  return request<{{ entity_name }}View>(`{{ api_path }}/${id}`);
+}
+
+export function update{{ entity_name }}(id: number, payload: {{ entity_name }}Input): Promise<{{ entity_name }}View> {
+  return request<{{ entity_name }}View>(`{{ api_path }}/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function remove{{ entity_name }}(id: number): Promise<void> {
+  return request<void>(`{{ api_path }}/${id}`, { method: 'DELETE' });
+}
