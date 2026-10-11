@@ -5,6 +5,7 @@ description = "AgentForge MVP 受控 Runner：独立执行生成代码的构建/
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "bcrypt>=5.0.0",
     "fastapi>=0.143.0",
     "uvicorn>=0.30",
 ]

@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from agentforge_runner import __version__
+from agentforge_runner.acceptance import AcceptanceResult, run_acceptance
 from agentforge_runner.checks import ALL_CHECKS, VerificationResult, overall_of, run_verification
 from agentforge_runner.config import RunnerConfig, load_config
 from agentforge_runner.container import build_run_argv, container_runtime_available, run_container
@@ -45,6 +46,12 @@ class VerifyRequest(BaseModel):
 
     artifact_dir: str
     checks: list[str] = []
+
+
+class AcceptRequest(BaseModel):
+    model_config = _STRICT
+
+    artifact_dir: str
 
 
 def create_app(config: RunnerConfig | None = None) -> FastAPI:
@@ -94,6 +101,14 @@ def create_app(config: RunnerConfig | None = None) -> FastAPI:
             overall=overall_of(results),
             checks=results,
         )
+
+    @app.post("/accept", dependencies=[Depends(require_token)], response_model=AcceptanceResult)
+    def accept(request: AcceptRequest) -> AcceptanceResult:
+        try:
+            host_dir = resolve_artifact_dir(cfg.work_root, request.artifact_dir)
+        except UnsafePathError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return run_acceptance(host_dir, cfg)
 
     return app
 

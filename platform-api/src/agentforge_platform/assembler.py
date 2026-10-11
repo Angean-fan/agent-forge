@@ -32,6 +32,8 @@ _EXCLUDED_COPY = {
 _TEMPLATE_README = "README.md"
 _ASSET_LOCK_NAME = "asset-lock.json"
 _README_NAME = "README.md"
+_SPEC_NAME = "spec.json"
+_CONTRACT_NAME = "contract.json"
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,10 @@ def assemble(
     _copy_template(template_dir, writer)
     _render_packs(contract, lock, registry, writer)
     writer.write("", _ASSET_LOCK_NAME, (lock.model_dump_json(indent=2) + "\n").encode("utf-8"))
+    writer.write("", _SPEC_NAME, (spec.model_dump_json(indent=2) + "\n").encode("utf-8"))
+    writer.write(
+        "", _CONTRACT_NAME, (contract.model_dump_json(indent=2) + "\n").encode("utf-8")
+    )
     writer.write("", _README_NAME, _readme(spec, contract, lock).encode("utf-8"))
 
     files = _collect_manifest(staging)
