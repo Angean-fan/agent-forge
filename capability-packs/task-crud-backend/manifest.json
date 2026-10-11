@@ -7,8 +7,8 @@
   ],
   "requires": [
     "template:auth",
-    "template:exception",
-    "lib:mybatis-plus"
+    "template:exception-handling",
+    "template:mybatis-plus"
   ],
   "provides": [
     "crud",

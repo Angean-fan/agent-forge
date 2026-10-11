@@ -17,7 +17,8 @@
     "router",
     "api-client",
     "login-page",
-    "base-layout"
+    "base-layout",
+    "mybatis-plus"
   ],
   "conflicts": [],
   "extension_points": [

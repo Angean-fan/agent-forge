@@ -5,7 +5,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：`AgentForge_01_MVP_分步开发.md`
-- 当前进度：**M13**（资产 manifest 与只读注册表）
+- 当前进度：**M14**（Asset Resolver 与锁清单）
 
 ## 目录
 
@@ -16,7 +16,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 | `profiles/` | 锁定的 Platform Profile（当前 `demo-ts-mp-0.2`） | M08 ✅ |
 | `templates/` | 生成项目基础模板（含 `manifest.json`：provided_capabilities） | M09/M13 ✅ |
 | `capability-packs/` | 可参数化业务能力包（后端 + 前端 CRUD，含 manifest） | M11–M13 ✅ |
-| `schemas/` | 规格/契约协议与样例（`task-management.spec.json`、`task-management.contract.json`） | M06/M10 ✅ |
+| `schemas/` | 规格/契约协议与样例（`*.spec.json`、`*.contract.json`、`asset-lock.sample.json`） | M06/M10/M14 ✅ |
 | `scripts/` | 平台基础回归门禁脚本（`ci_gate.sh`） | M08A ✅ |
 | `.workflow/` | Gitee Go 流水线配置（待启用后核对） | M08A ✅ |
 | `docs/` | 每步实施记录 | M01 |

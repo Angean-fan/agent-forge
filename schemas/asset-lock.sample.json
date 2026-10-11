@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1",
+  "profile": "demo-ts-mp",
+  "assets": [
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-backend",
+      "version": "0.1.0",
+      "checksum": "ab27d23b844167c9936258b7f2c4b970cce53ca8a1681aff9e1d43e5a07b1230",
+      "path": "capability-packs/task-crud-backend"
+    },
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-frontend",
+      "version": "0.1.0",
+      "checksum": "bb6e0267fa8f8f04a01262ca65d42b0aaec1dbea10aa34a321873dc5410673f9",
+      "path": "capability-packs/task-crud-frontend"
+    },
+    {
+      "kind": "template",
+      "id": "base-template",
+      "version": "demo-0.1",
+      "checksum": "2a468fce5510189574bb5507228677c9738c432d74c5c7d34b8e450225e42f10",
+      "path": "templates"
+    }
+  ],
+  "lock_hash": "32b521bec7d5b592c8dba40806acefb93467053ab60d90e25a104e375617f806"
+}

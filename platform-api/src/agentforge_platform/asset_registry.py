@@ -104,6 +104,12 @@ class AssetRegistry:
             key=lambda m: (m.kind, m.id, m.version),
         )
 
+    def all_with_paths(self) -> list[tuple[AssetManifest, Path]]:
+        return sorted(
+            self._assets.values(),
+            key=lambda item: (item[0].kind, item[0].id, item[0].version),
+        )
+
     def get(self, kind: str, asset_id: str, version: str) -> tuple[AssetManifest, Path]:
         key = (kind, asset_id, version)
         if key not in self._assets:
