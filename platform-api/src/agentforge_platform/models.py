@@ -9,7 +9,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -59,3 +68,79 @@ class PlatformSession(Base):
     csrf_token: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+
+
+class Run(Base):
+    """一次代码生成运行；状态为数据库权威值，只能通过白名单迁移。"""
+
+    __tablename__ = "run"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    spec_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class RunTask(Base):
+    """run 内的一个任务节点（DAG 由 task_id/deps 表达）。"""
+
+    __tablename__ = "task"
+    __table_args__ = (UniqueConstraint("run_id", "task_id", name="uq_task_run_task_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class RunEvent(Base):
+    """运行事件；sequence 在每个 run 内单调递增，支持断点读取。"""
+
+    __tablename__ = "event"
+    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_event_run_sequence"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class Artifact(Base):
+    """run 产物文件记录（路径属于该 run 的目录）。"""
+
+    __tablename__ = "artifact"
+    __table_args__ = (UniqueConstraint("run_id", "path", name="uq_artifact_run_path"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )

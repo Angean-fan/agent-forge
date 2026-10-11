@@ -12,7 +12,9 @@ from agentforge_platform.db import make_engine, make_session_factory, session_sc
 from agentforge_platform.models import Project
 
 PLATFORM_API_DIR = Path(__file__).resolve().parents[1]
-MANAGED_TABLES = {"project", "spec_version", "platform_session"}
+MANAGED_TABLES = {
+    "project", "spec_version", "platform_session", "run", "task", "event", "artifact",
+}
 
 
 def _config(url: str) -> Config:
@@ -49,10 +51,11 @@ def _revision(url: str) -> str | None:
 
 def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
     config = _config(sqlite_url)
+    run_tables = {"run", "task", "event", "artifact"}
 
-    # upgrade head：三张表与 0003 新增列存在
+    # upgrade head：全部受管表与 0003 新增列存在
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0003"
+    assert _revision(sqlite_url) == "0004"
     assert MANAGED_TABLES <= _tables(sqlite_url)
     assert "requirement_text" in _columns(sqlite_url, "project")
 
@@ -62,7 +65,13 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
         session.add(Project(owner_id=1, name="demo", requirement_text="需求文本"))
     engine.dispose()
 
-    # downgrade 一步（0003 → 0002）：requirement_text 列及其数据被删除，其余表保留
+    # downgrade 一步（0004 → 0003）：run/task/event/artifact 表被删除，其余保留
+    command.downgrade(config, "0003")
+    assert _revision(sqlite_url) == "0003"
+    assert not (run_tables & _tables(sqlite_url))
+    assert "requirement_text" in _columns(sqlite_url, "project")
+
+    # downgrade（0003 → 0002）：requirement_text 列及其数据被删除
     command.downgrade(config, "0002")
     assert _revision(sqlite_url) == "0002"
     assert "requirement_text" not in _columns(sqlite_url, "project")
@@ -75,7 +84,7 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
 
     # 再次 upgrade head：表重建，但之前的行已随回退丢失
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0003"
+    assert _revision(sqlite_url) == "0004"
     assert MANAGED_TABLES <= _tables(sqlite_url)
     engine = make_engine(sqlite_url)
     with session_scope(make_session_factory(engine)) as session:
