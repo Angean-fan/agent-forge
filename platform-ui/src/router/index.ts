@@ -37,6 +37,11 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/RunDetailView.vue'),
     props: true,
   },
+  {
+    path: '/profiles',
+    name: 'profiles',
+    component: () => import('@/views/ProfilesView.vue'),
+  },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ];
 

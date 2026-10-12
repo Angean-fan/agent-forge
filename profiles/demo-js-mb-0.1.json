@@ -1,0 +1,58 @@
+{
+  "profile_id": "demo-js-mb",
+  "profile_version": "0.1",
+  "status": "certified",
+  "template_version": "demo-0.2-js-mb",
+  "generated_at": "2026-10-12",
+  "frontend": {
+    "language": "javascript",
+    "framework": "vue",
+    "package_manager": "npm",
+    "module_system": "esm",
+    "syntax": "javascript",
+    "runtime": {
+      "node": "22.19.0",
+      "npm": "10.9.3"
+    },
+    "dependencies": {
+      "vue": "3.5.43",
+      "vue-router": "5.4.0",
+      "pinia": "4.0.3",
+      "element-plus": "2.14.7"
+    },
+    "dev_dependencies": {
+      "@vitejs/plugin-vue": "6.0.10",
+      "vite": "8.3.4",
+      "vitest": "5.0.3"
+    }
+  },
+  "backend": {
+    "language": "java",
+    "java_version": "17",
+    "framework": "spring-boot",
+    "spring_boot_version": "3.5.16",
+    "orm": "mybatis",
+    "build_tool": "maven",
+    "maven_version": "3.9.11",
+    "dependencies": {
+      "org.mybatis.spring.boot:mybatis-spring-boot-starter": "3.0.4",
+      "com.mysql:mysql-connector-j": "9.7.0"
+    }
+  },
+  "database": {
+    "engine": "mysql",
+    "version": "8.0.43"
+  },
+  "runner_image": {
+    "status": "verified-locally",
+    "reference": "agentforge/runner-executor:demo-0.1",
+    "digest": "sha256:8a80c095c7e070e4a05da79c1b0002bdf41617886f936283fadc6ced7c49fc37",
+    "note": "与其余组合复用同一执行镜像（JDK17+Maven+Node22）"
+  },
+  "verification": {
+    "toolchain": "verified-locally: java 17 / maven 3.9 / node 22 / npm 10",
+    "backend_build": "R09 认证：demo-0.2-js-mb + task-crud-backend-mb@0.1.1 生成的 Task 工程 mvn test 通过",
+    "frontend_build": "R07 认证：demo-0.2-js 前端 npm ci/build/test 通过（本组合前端同 demo-0.2-js）",
+    "http_acceptance": "NOT_RUN（本轮按约定构建认证 + 无网回归；真实 Runner/MySQL 验收待环境）"
+  }
+}

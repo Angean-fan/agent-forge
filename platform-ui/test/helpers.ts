@@ -14,6 +14,7 @@ export function makeTestRouter(): Router {
       { path: '/projects/:id', name: 'project-detail', component: Stub },
       { path: '/projects/:id/interview', name: 'project-interview', component: Stub },
       { path: '/runs/:id', name: 'run-detail', component: Stub },
+      { path: '/profiles', name: 'profiles', component: Stub },
     ],
   });
 }

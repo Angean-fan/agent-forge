@@ -1,0 +1,63 @@
+{
+  "id": "task-crud-frontend-js",
+  "version": "0.1.1",
+  "kind": "capability-pack",
+  "compatible_profiles": [
+    "demo-js-mb"
+  ],
+  "requires": [
+    "template:router",
+    "template:auth",
+    "template:api-client"
+  ],
+  "provides": [
+    "crud-ui",
+    "list",
+    "form",
+    "search-ui",
+    "pagination-ui"
+  ],
+  "conflicts": [],
+  "extension_points": [],
+  "target_dir": "frontend",
+  "checksum": "b707fb63faa0a1d654136c6486dba79e741927eb655f55fa1e9801ce85947fe4",
+  "parameter_schema": {
+    "entity_name": "string",
+    "entity_camel": "string",
+    "plural": "string",
+    "route_path": "string",
+    "ui_path": "string",
+    "writable_fields": "FieldContract[]",
+    "view_fields": "FieldContract[]"
+  },
+  "owned_paths": [
+    "src/api/",
+    "src/views/",
+    "src/router/modules/",
+    "test/"
+  ],
+  "dependencies": [],
+  "checks": [
+    "npm run build",
+    "npm test"
+  ],
+  "license": "internal",
+  "renders": [
+    {
+      "template": "api.js.j2",
+      "target": "src/api/{{ entity_camel }}.js"
+    },
+    {
+      "template": "view_list.vue.j2",
+      "target": "src/views/{{ entity_name }}ListView.vue"
+    },
+    {
+      "template": "router_module.js.j2",
+      "target": "src/router/modules/{{ entity_camel }}.js"
+    },
+    {
+      "template": "api_test.js.j2",
+      "target": "test/{{ entity_camel }}-api.spec.js"
+    }
+  ]
+}

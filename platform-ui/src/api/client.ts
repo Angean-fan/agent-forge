@@ -2,6 +2,8 @@ import type {
   AccountInfo,
   InterviewAnswer,
   InterviewView,
+  ProfileExplanation,
+  ProfileOption,
   ProjectDetail,
   ProjectSummary,
   RunDetail,
@@ -167,6 +169,19 @@ export const projectsApi = {
     return apiRequest(`/projects/${projectId}/confirm`, {
       method: 'POST',
       body: { version, draft_revision: draftRevision },
+    });
+  },
+};
+
+export const profilesApi = {
+  list(): Promise<ProfileOption[]> {
+    return apiRequest('/profiles');
+  },
+  /** 面向用户的选型通俗解释（后端只在需要时调用 DeepSeek）。 */
+  explain(projectId: number, profileId: string): Promise<ProfileExplanation> {
+    return apiRequest(`/projects/${projectId}/profile-explanation`, {
+      method: 'POST',
+      body: { profile_id: profileId },
     });
   },
 };

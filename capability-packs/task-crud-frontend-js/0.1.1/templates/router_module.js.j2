@@ -1,0 +1,10 @@
+import {{ entity_name }}ListView from '../../views/{{ entity_name }}ListView.vue';
+
+const route = {
+  path: '{{ ui_path }}',
+  name: '{{ entity_camel }}-list',
+  component: {{ entity_name }}ListView,
+  meta: { requiresAuth: true },
+};
+
+export default route;

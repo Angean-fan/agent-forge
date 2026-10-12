@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="{{ package }}.mapper.{{ entity_name }}Mapper">
+
+    <resultMap id="{{ entity_name }}Result" type="{{ package }}.entity.{{ entity_name }}">
+{% for f in fields %}
+        <{% if f.primary_key %}id{% else %}result{% endif %} column="{{ f.column }}" property="{{ f.java_name }}"/>
+{% endfor %}
+    </resultMap>
+
+    <sql id="{{ entity_name }}Columns">{{ entity_columns_sql }}</sql>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="{{ id_java }}">
+        INSERT INTO {{ table_name }} ({{ writable_columns_sql }}, {{ owner_column }})
+        VALUES ({{ writable_values_sql }}, {{ owner_ref }})
+    </insert>
+
+    <update id="update">
+        UPDATE {{ table_name }}
+        SET {{ writable_set_sql }}
+        WHERE {{ id_column }} = {{ id_ref }} AND {{ owner_column }} = {{ owner_ref }}
+    </update>
+
+    <select id="findById" resultMap="{{ entity_name }}Result">
+        SELECT <include refid="{{ entity_name }}Columns"/> FROM {{ table_name }}
+        WHERE {{ id_column }} = {{ id_ref }}
+    </select>
+
+    <select id="findByIdAndOwner" resultMap="{{ entity_name }}Result">
+        SELECT <include refid="{{ entity_name }}Columns"/> FROM {{ table_name }}
+        WHERE {{ id_column }} = {{ id_ref }} AND {{ owner_column }} = {{ owner_ref }}
+    </select>
+
+    <select id="findPage" resultMap="{{ entity_name }}Result">
+        SELECT <include refid="{{ entity_name }}Columns"/> FROM {{ table_name }}
+        WHERE {{ owner_column }} = {{ owner_ref }}
+{% if search_column %}
+        <if test="keyword != null">AND {{ search_column }} LIKE #{keyword}</if>
+{% endif %}
+        ORDER BY {{ id_column }} DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countPage" resultType="long">
+        SELECT COUNT(*) FROM {{ table_name }}
+        WHERE {{ owner_column }} = {{ owner_ref }}
+{% if search_column %}
+        <if test="keyword != null">AND {{ search_column }} LIKE #{keyword}</if>
+{% endif %}
+    </select>
+
+    <delete id="deleteByIdAndOwner">
+        DELETE FROM {{ table_name }}
+        WHERE {{ id_column }} = {{ id_ref }} AND {{ owner_column }} = {{ owner_ref }}
+    </delete>
+</mapper>

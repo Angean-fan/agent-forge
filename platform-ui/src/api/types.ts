@@ -205,3 +205,20 @@ export interface RunEventsData {
   items: RunEvent[];
   latest_sequence: number;
 }
+
+export interface ProfileOption {
+  profile_id: string;
+  profile_version: string;
+  template_version: string;
+  frontend_language: string | null;
+  orm: string | null;
+  recommended: boolean;
+  notes: string[];
+}
+
+export interface ProfileExplanation {
+  profile_id: string;
+  explanation: string;
+  thinking_mode: string;
+  reasoning_effort: string | null;
+}
