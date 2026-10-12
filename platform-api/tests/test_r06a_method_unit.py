@@ -54,6 +54,8 @@ def _method_unit(**overrides) -> dict:
         "symbol": "com.agentforge.template.util.DateNormalizer.normalize",
         "signature": "String normalize(String raw)",
         "layer": "util",
+        "language": "java",
+        "framework": "spring-boot",
         "source_provenance": "internal:agentforge/r06a-review",
     }
     manifest.update(overrides)

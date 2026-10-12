@@ -1,0 +1,51 @@
+{
+  "id": "field-validator",
+  "version": "1.0.0",
+  "kind": "method-unit",
+  "compatible_profiles": [
+    "demo-ts-mp"
+  ],
+  "requires": [],
+  "provides": [
+    "field_validation"
+  ],
+  "conflicts": [],
+  "parameter_schema": {
+    "field": "string",
+    "value": "object"
+  },
+  "extension_points": [],
+  "owned_paths": [
+    "backend/src/main/java/com/agentforge/template/util/"
+  ],
+  "checks": [
+    "mvn test"
+  ],
+  "checksum": "25cdee8177f5c04e6a266a69cf597202fc604bec03e377bcdc5f8d9735c28bf5",
+  "license": "internal",
+  "symbol": "com.agentforge.template.util.FieldValidator.validateRequired",
+  "signature": "static void validateRequired(String field, Object value)",
+  "layer": "util",
+  "language": "java",
+  "framework": "spring-boot",
+  "description": "必填字段校验：值为空时抛出业务异常。",
+  "tags": [
+    "validation",
+    "field"
+  ],
+  "imports": [
+    "java.util.Objects"
+  ],
+  "preconditions": [
+    "field 名非空"
+  ],
+  "postconditions": [
+    "为空则抛 IllegalArgumentException"
+  ],
+  "side_effects": [],
+  "security_constraints": [],
+  "acceptance_ids": [
+    "AC01"
+  ],
+  "source_provenance": "internal:agentforge/seed/r06b"
+}

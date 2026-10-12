@@ -1,0 +1,48 @@
+{
+  "id": "date-normalizer",
+  "version": "1.0.0",
+  "kind": "method-unit",
+  "compatible_profiles": [
+    "demo-ts-mp"
+  ],
+  "requires": [],
+  "provides": [
+    "date_normalization"
+  ],
+  "conflicts": [],
+  "parameter_schema": {
+    "raw": "string"
+  },
+  "extension_points": [],
+  "owned_paths": [
+    "backend/src/main/java/com/agentforge/template/util/"
+  ],
+  "checks": [
+    "mvn test"
+  ],
+  "checksum": "ba5eb7e32e7a3d8222a7efe17e5ff6c7f59f72b3818e987023ae519eeda0de39",
+  "license": "internal",
+  "symbol": "com.agentforge.template.util.DateNormalizer.normalize",
+  "signature": "static String normalize(String raw)",
+  "layer": "util",
+  "language": "java",
+  "framework": "spring-boot",
+  "description": "把常见日期字符串归一化为 ISO-8601（yyyy-MM-dd）。",
+  "tags": [
+    "date",
+    "normalize"
+  ],
+  "imports": [
+    "java.time.LocalDate"
+  ],
+  "preconditions": [
+    "raw 非空"
+  ],
+  "postconditions": [
+    "返回 ISO-8601 日期字符串"
+  ],
+  "side_effects": [],
+  "security_constraints": [],
+  "acceptance_ids": [],
+  "source_provenance": "internal:agentforge/seed/r06b"
+}

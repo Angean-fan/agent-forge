@@ -1,0 +1,52 @@
+{
+  "id": "status-guard",
+  "version": "1.0.0",
+  "kind": "method-unit",
+  "compatible_profiles": [
+    "demo-ts-mp"
+  ],
+  "requires": [],
+  "provides": [
+    "status_guard"
+  ],
+  "conflicts": [],
+  "parameter_schema": {
+    "from": "string",
+    "to": "string",
+    "allowed": "string[]"
+  },
+  "extension_points": [],
+  "owned_paths": [
+    "backend/src/main/java/com/agentforge/template/domain/"
+  ],
+  "checks": [
+    "mvn test"
+  ],
+  "checksum": "cf4fe9321bc2473d6edd0526a8fb8f9f4001e460d03e562649bb7db86e41136c",
+  "license": "internal",
+  "symbol": "com.agentforge.template.domain.StatusGuard.assertTransition",
+  "signature": "static void assertTransition(String from, String to, Set<String> allowed)",
+  "layer": "domain",
+  "language": "java",
+  "framework": "spring-boot",
+  "description": "业务状态转移守卫：非法转移抛出业务异常。",
+  "tags": [
+    "status",
+    "guard"
+  ],
+  "imports": [
+    "java.util.Set"
+  ],
+  "preconditions": [
+    "allowed 非空"
+  ],
+  "postconditions": [
+    "非法转移抛 IllegalStateException"
+  ],
+  "side_effects": [],
+  "security_constraints": [],
+  "acceptance_ids": [
+    "AC02"
+  ],
+  "source_provenance": "internal:agentforge/seed/r06b"
+}

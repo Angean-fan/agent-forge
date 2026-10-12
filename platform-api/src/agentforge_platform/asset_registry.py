@@ -37,6 +37,7 @@ METHOD_UNIT_LAYERS = frozenset({
 _FORBIDDEN_LICENSES = frozenset({"", "unknown", "unlicensed", "none", "proprietary-unknown"})
 _SAFE_SYMBOL = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\Z")
 _SAFE_IMPORT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\Z")
+_SAFE_TECH_TOKEN = re.compile(r"[a-z0-9][a-z0-9+.\-]*\Z")
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -62,7 +63,7 @@ def compute_checksum(asset_dir: str | Path) -> str:
     asset_dir = Path(asset_dir)
     hasher = hashlib.sha256()
     for path in sorted(asset_dir.rglob("*")):
-        if not path.is_file():
+        if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(asset_dir)
         if relative.name in _EXCLUDED_FILES:
@@ -122,10 +123,11 @@ class AssetManifest(_AssetBase):
 
 
 class MethodUnitManifest(_AssetBase):
-    """R06A：可复用方法/类/片段的结构化调用契约。
+    """R06A/R06B：可复用方法/类/片段的结构化调用契约。
 
-    ``symbol/signature/layer/source_provenance`` **必需**（缺失即 parse 失败，不用默认值掩盖）；
-    其余按需声明。是否能**安全植入**由 :func:`method_unit_issues` 依据 Profile/依赖/冲突/扩展点判定。
+    ``symbol/signature/layer/source_provenance/language/framework`` **必需**（缺失即 parse 失败，不用默认值掩盖）；
+    ``description/tags`` 供 R06B 索引检索；其余按需声明。是否能**安全植入**由 :func:`method_unit_issues`
+    依据 Profile/依赖/冲突/扩展点判定。
     """
 
     provided_capabilities: list[str] = []
@@ -137,12 +139,31 @@ class MethodUnitManifest(_AssetBase):
     signature: str
     layer: str
     source_provenance: str
+    language: str
+    framework: str
+    description: str = ""
+    tags: list[str] = []
     imports: list[str] = []
     preconditions: list[str] = []
     postconditions: list[str] = []
     side_effects: list[str] = []
     security_constraints: list[str] = []
     acceptance_ids: list[str] = []
+
+    @field_validator("language", "framework")
+    @classmethod
+    def _safe_tech_token(cls, value: str) -> str:
+        if _SAFE_TECH_TOKEN.fullmatch(value) is None:
+            raise ValueError(f"不安全的 language/framework 标识：{value!r}")
+        return value
+
+    @field_validator("tags")
+    @classmethod
+    def _safe_tags(cls, value: list[str]) -> list[str]:
+        unsafe = [tag for tag in value if _SAFE_TECH_TOKEN.fullmatch(tag) is None]
+        if unsafe:
+            raise ValueError(f"不安全的 tags：{unsafe}")
+        return list(dict.fromkeys(value))
 
     @field_validator("symbol")
     @classmethod

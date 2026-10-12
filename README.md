@@ -5,9 +5,9 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：MVP `AgentForge_01_MVP_分步开发.md`（M01—M28 已完成）；迭代增强 `AgentForge_02_迭代增强_分步开发Prompt_方法索引版.md`
-- 当前进度：**第二阶段 R06A**（需求访谈闭环 R01—R06 完成；方法单元契约 R06A 完成；见 `docs/R06_*.md`）；
+- 当前进度：**第二阶段 R06B**（需求访谈闭环 R01—R06 完成；方法单元契约 R06A、方法与 FTS5 索引 R06B 完成；见 `docs/R06*.md`）；
   MVP 冷启动验收见 `docs/MVP_ACCEPTANCE.md`、`docs/MVP_DEPLOY.md`
-- 下一步：**R06B**（方法代码仓库与可重建 SQLite/FTS5 索引）
+- 下一步：**R06C**（Asset Finder：精确检索 + FTS5 召回 + 确定性兼容筛选）
 
 ## 目录
 
@@ -19,6 +19,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 | `profiles/` | 锁定的 Platform Profile（当前 `demo-ts-mp-0.3`） | M08/M16 ✅ |
 | `templates/` | 生成项目基础模板（版本化 `demo-0.1/`、`demo-0.2/`） | M09/M13/M15A ✅ |
 | `capability-packs/` | 可参数化业务能力包（版本化 `<id>/<version>/`） | M11–M15A ✅ |
+| `methods/` | 可复用方法单元仓库（`<id>/<semver>/`，含 manifest/src/tests）；FTS5 索引为派生视图（`.index/`，gitignore） | R06A/R06B ✅ |
 | `schemas/` | 规格/契约协议与样例（`*.spec.json`、`*.contract.json`、`asset-lock.sample.json`） | M06/M10/M14 ✅ |
 | `scripts/` | 平台基础回归门禁（`ci_gate.sh`）+ 备份/恢复（`backup.py`/`restore.py`） | M08A/M28 ✅ |
 | `deploy/` | 平台部署编排（compose + Dockerfile + nginx） | M28 ✅ |
