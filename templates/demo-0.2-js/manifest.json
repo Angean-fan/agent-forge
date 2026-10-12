@@ -1,0 +1,43 @@
+{
+  "id": "base-template",
+  "version": "demo-0.2-js",
+  "kind": "template",
+  "compatible_profiles": [
+    "demo-js-mp"
+  ],
+  "requires": [],
+  "provides": [],
+  "parameter_schema": {},
+  "provided_capabilities": [
+    "auth",
+    "jwt-security",
+    "exception-handling",
+    "health",
+    "flyway-migration",
+    "router",
+    "api-client",
+    "login-page",
+    "base-layout",
+    "mybatis-plus"
+  ],
+  "conflicts": [],
+  "extension_points": [
+    "backend/pom.xml#CAPABILITY_PACK_DEPS",
+    "frontend/src/router/modules/*.js",
+    "frontend/src/api/",
+    "frontend/src/views/",
+    "frontend/src/types/"
+  ],
+  "owned_paths": [
+    "backend/",
+    "frontend/",
+    "compose.yaml",
+    ".env.example"
+  ],
+  "checks": [
+    "mvn test",
+    "npm run build"
+  ],
+  "checksum": "5e15afb9e843d76c4db41959fddedccdec2d565b16925d542cd2f537e42f27d0",
+  "license": "internal"
+}

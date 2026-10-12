@@ -1,0 +1,16 @@
+{
+  "certified": [
+    {
+      "profile_id": "demo-ts-mp",
+      "profile_version": "0.3",
+      "template_version": "demo-0.2",
+      "certified_at": "2026-10-11"
+    },
+    {
+      "profile_id": "demo-js-mp",
+      "profile_version": "0.1",
+      "template_version": "demo-0.2-js",
+      "certified_at": "2026-10-12"
+    }
+  ]
+}

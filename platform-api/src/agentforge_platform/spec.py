@@ -10,8 +10,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -164,12 +167,39 @@ class SoftwareSpecification(BaseModel):
         return list(dict.fromkeys(value))
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CERTIFIED_FILE = _REPO_ROOT / "profiles" / "certified.json"
+
+
+def certified_profiles() -> frozenset[tuple[str, str, str]]:
+    """已发布且**经构建认证**的 Profile 组合 `(profile_id, profile_version, template_version)`。
+
+    来源为认证清单 `profiles/certified.json`（确定性只读）；未列入的组合一律拒绝，
+    不因新增 Profile 而放宽既有判定。可用 ``AGENTFORGE_CERTIFIED_PROFILES`` 覆盖路径（测试）。
+    """
+    path = Path(os.environ.get("AGENTFORGE_CERTIFIED_PROFILES", str(_CERTIFIED_FILE)))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    combos: set[tuple[str, str, str]] = set()
+    for entry in payload.get("certified", []):
+        combos.add(
+            (
+                str(entry.get("profile_id", "")),
+                str(entry.get("profile_version", "")),
+                str(entry.get("template_version", "")),
+            )
+        )
+    return frozenset(combos)
+
+
 def is_supported_profile(profile: TechnicalProfile) -> bool:
     return (
-        profile.profile_id == MVP_PROFILE_ID
-        and profile.profile_version == MVP_PROFILE_VERSION
-        and profile.template_version == MVP_TEMPLATE_VERSION
-    )
+        profile.profile_id,
+        profile.profile_version,
+        profile.template_version,
+    ) in certified_profiles()
 
 
 def critical_pending_fields(spec: SoftwareSpecification) -> list[str]:
