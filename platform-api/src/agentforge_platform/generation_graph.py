@@ -19,14 +19,19 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentforge_platform.assembler import assemble
-from agentforge_platform.asset_finder import derive_capability_query, find_assets
+from agentforge_platform.asset_finder import (
+    AssetSearchResult,
+    derive_capability_query,
+    find_assets,
+)
 from agentforge_platform.asset_registry import AssetRegistry, default_registry
+from agentforge_platform.clients import ModelClient
 from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.db import session_scope
 from agentforge_platform.errors import AppException
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.method_lock import resolve_lock
-from agentforge_platform.models import Run, SpecVersion
+from agentforge_platform.models import Project, Run, SpecVersion
 from agentforge_platform.packaging import (
     PackagingError,
     build_cost_report,
@@ -45,6 +50,7 @@ from agentforge_platform.runs import (
 )
 from agentforge_platform.spec import SoftwareSpecification
 from agentforge_platform.spec_service import require_frozen_spec
+from agentforge_platform.task_planning import plan_tasks
 
 
 class GenerationError(Exception):
@@ -68,6 +74,8 @@ class GenerationState(TypedDict, total=False):
     verification: dict
     acceptance: dict
     asset_search: dict
+    search_result: AssetSearchResult
+    task_plan: dict
     error_code: str
     ok: bool
 
@@ -79,6 +87,8 @@ class GenerationContext:
     work_root: Path
     registry: AssetRegistry
     methods_root: Path = Path(DEFAULT_METHODS_ROOT)
+    # R13：技术规划客户端（默认 None → 确定性转换，不调用 Qwen）；测试可注入假客户端。
+    planning_client: ModelClient | None = None
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
@@ -166,7 +176,30 @@ def build_graph(context: GenerationContext):
                 "selected_refs": audit["selected_refs"],
                 "uncovered_acceptance_ids": audit["uncovered_acceptance_ids"],
             }))
-        return {"lock_hash": lock.lock_hash, "lock": lock, "asset_search": audit}
+        return {
+            "lock_hash": lock.lock_hash, "lock": lock,
+            "asset_search": audit, "search_result": search,
+        }
+
+    def plan_tasks_node(state: GenerationState) -> GenerationState:
+        run_id = state["run_id"]
+        with session_scope(context.session_factory) as db:
+            run = _require_active(db, run_id, RunStatus.PLANNING)
+            project = db.get(Project, run.project_id)
+            assert project is not None
+            plan, fallback_reasons = plan_tasks(
+                db, project, state["spec"], state["contract"],
+                state["search_result"], state["lock"],
+                run_id=run_id, client=context.planning_client,
+            )
+            record_task(db, run, "plan_tasks", status="DONE")
+            append_event(db, run, "task_plan", json.dumps({
+                "execution_mode": plan.execution_mode,
+                "task_ids": [task.task_id for task in plan.tasks],
+                "uncovered_acceptance_ids": plan.uncovered_acceptance_ids,
+                "fallback_reasons": fallback_reasons,
+            }))
+        return {"task_plan": plan.model_dump(mode="json")}
 
     def assemble_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
@@ -218,6 +251,11 @@ def build_graph(context: GenerationContext):
             (run_dir / "asset-search.json").write_text(
                 json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
+        task_plan = state.get("task_plan")
+        if task_plan is not None:
+            (run_dir / "task-plan.json").write_text(
+                json.dumps(task_plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
 
         with session_scope(context.session_factory) as db:
             cost_report = build_cost_report(db, project_id=state["project_id"], run_id=run_id)
@@ -261,12 +299,14 @@ def build_graph(context: GenerationContext):
     graph = StateGraph(GenerationState)
     graph.add_node("load_confirmed_spec", load_confirmed_spec)
     graph.add_node("resolve_assets", resolve_assets_node)
+    graph.add_node("plan_tasks", plan_tasks_node)
     graph.add_node("assemble", assemble_node)
     graph.add_node("verify", verify_node)
     graph.add_node("package_or_fail", package_or_fail)
     graph.add_edge(START, "load_confirmed_spec")
     graph.add_edge("load_confirmed_spec", "resolve_assets")
-    graph.add_edge("resolve_assets", "assemble")
+    graph.add_edge("resolve_assets", "plan_tasks")
+    graph.add_edge("plan_tasks", "assemble")
     graph.add_edge("assemble", "verify")
     graph.add_edge("verify", "package_or_fail")
     graph.add_edge("package_or_fail", END)

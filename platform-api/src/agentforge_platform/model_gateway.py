@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from agentforge_platform.clients import Completion, ModelClient, ProviderPreflightError, Usage
 from agentforge_platform.errors import AppException, ErrorCode
-from agentforge_platform.models import ModelCall, Project
+from agentforge_platform.models import ModelCall, Project, RunTask
 
 MICRO_PER_YUAN = 1_000_000
 UNKNOWN = "UNKNOWN"
@@ -63,9 +63,18 @@ class Price:
     output_micro_per_million: int
 
 
+def _role_enabled(model_role: str) -> bool:
+    """非 ``user_interaction`` 角色默认禁用；仅在其对应 R 步骤完成并按环境变量显式开启后才可用。"""
+    if model_role == "technical_planning":
+        return os.environ.get(
+            "AGENTFORGE_TECHNICAL_PLANNING_ENABLED", ""
+        ).strip().lower() in {"1", "true", "yes"}
+    return False  # coding / complex_repair 仍禁用（R16/R18）
+
+
 def resolve_route(model_role: str) -> Route:
     route = ROUTES.get(model_role)
-    if route is None or not route.enabled:
+    if route is None or not (route.enabled or _role_enabled(model_role)):
         raise AppException(
             ErrorCode.MODEL_ROLE_DISABLED, f"未启用或未知的模型角色：{model_role}", status_code=422
         )
@@ -233,6 +242,19 @@ def _enforce_draft_limits(db: Session, project_id: int) -> None:
             )
 
 
+def _require_task_context(db: Session, run_id: int, task_id: str) -> None:
+    """R13：任务内生成期调用必须携带属于该 run 的 ``task_id``（DAG 上下文），否则拒绝。"""
+    exists = db.scalar(
+        select(RunTask.id).where(RunTask.run_id == run_id, RunTask.task_id == task_id)
+    )
+    if exists is None:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            f"task_id '{task_id}' 不属于 run {run_id}",
+            status_code=422,
+        )
+
+
 def reserve(
     db: Session,
     *,
@@ -243,11 +265,18 @@ def reserve(
     max_output_tokens: int,
     draft_id: int | None = None,
     run_id: int | None = None,
+    task_id: str | None = None,
     thinking_mode: str | None = None,
     reasoning_effort: str | None = None,
 ) -> ModelCall:
     route = resolve_route(model_role)
     _validate_thinking(thinking_mode, reasoning_effort)
+    if run_id is None and task_id is not None:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR, "task_id 仅适用于带 run_id 的生成期调用", status_code=422
+        )
+    if run_id is not None and task_id is not None:
+        _require_task_context(db, run_id, task_id)
     if run_id is None:
         _enforce_draft_limits(db, project_id)
 
@@ -265,6 +294,7 @@ def reserve(
         project_id=project_id,
         draft_id=draft_id,
         run_id=run_id,
+        task_id=task_id,
         thinking_mode=thinking_mode,
         reasoning_effort=reasoning_effort,
         price_version=price.version if price else UNKNOWN,
@@ -330,6 +360,7 @@ def invoke(
     thinking_mode: str | None = None,
     json_mode: bool = False,
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ) -> Completion:
     route = resolve_route(model_role)
     _validate_thinking(thinking_mode, reasoning_effort)
@@ -347,6 +378,7 @@ def invoke(
         max_output_tokens=max_output_tokens,
         draft_id=draft_id,
         run_id=run_id,
+        task_id=task_id,
         thinking_mode=thinking_mode,
         reasoning_effort=reasoning_effort,
     )

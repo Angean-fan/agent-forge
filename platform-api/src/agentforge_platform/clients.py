@@ -116,3 +116,18 @@ class DeepSeekClient:
             usage=usage,
             finish_reason=choices[0].get("finish_reason") if choices else None,
         )
+
+
+class DashScopeClient(DeepSeekClient):
+    """阿里云百炼（DashScope）OpenAI 兼容模式客户端（如 Qwen3.7 Plus）。
+
+    与 DeepSeek 客户端同协议，仅默认环境变量与 base_url 不同；密钥同样只从环境变量读取、不落日志。
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key_env: str = "DASHSCOPE_API_KEY",
+        base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ) -> None:
+        super().__init__(api_key_env=api_key_env, base_url=base_url)
