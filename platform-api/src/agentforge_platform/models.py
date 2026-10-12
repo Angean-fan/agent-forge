@@ -184,6 +184,7 @@ class ModelCall(Base):
     draft_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     thinking_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     price_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_micro_per_million: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

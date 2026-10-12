@@ -24,6 +24,8 @@ from agentforge_platform.models import ModelCall, Project
 
 MICRO_PER_YUAN = 1_000_000
 UNKNOWN = "UNKNOWN"
+_ALLOWED_THINKING_MODES = frozenset({"disabled", "enabled"})
+_ALLOWED_REASONING_EFFORTS = frozenset({"low", "high"})
 
 
 def _now() -> datetime:
@@ -68,6 +70,43 @@ def resolve_route(model_role: str) -> Route:
             ErrorCode.MODEL_ROLE_DISABLED, f"未启用或未知的模型角色：{model_role}", status_code=422
         )
     return route
+
+
+def verified_reasoning_efforts() -> frozenset[str]:
+    """经真实接口探针验证可用的思考强度集合（R03）。
+
+    未列入 ``AGENTFORGE_VERIFIED_REASONING_EFFORTS``（逗号分隔）的强度一律**阻止启用**，
+    既不静默丢弃参数，也不假装已启用思考模式。
+    """
+    raw = os.environ.get("AGENTFORGE_VERIFIED_REASONING_EFFORTS", "")
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _validate_thinking(thinking_mode: str | None, reasoning_effort: str | None) -> None:
+    """校验思考模式与强度的组合；强度必须已经过探针验证。"""
+    if thinking_mode is not None and thinking_mode not in _ALLOWED_THINKING_MODES:
+        raise AppException(
+            ErrorCode.MODEL_UNAVAILABLE, f"未知思考模式：{thinking_mode}", status_code=422
+        )
+    if reasoning_effort is None:
+        return
+    if thinking_mode != "enabled":
+        raise AppException(
+            ErrorCode.MODEL_UNAVAILABLE,
+            "reasoning_effort 需与 thinking.type=enabled 同时使用。",
+            status_code=422,
+        )
+    if reasoning_effort not in _ALLOWED_REASONING_EFFORTS:
+        raise AppException(
+            ErrorCode.MODEL_UNAVAILABLE, f"未知思考强度：{reasoning_effort}", status_code=422
+        )
+    if reasoning_effort not in verified_reasoning_efforts():
+        raise AppException(
+            ErrorCode.MODEL_UNAVAILABLE,
+            f"思考强度 {reasoning_effort} 尚未通过接口探针验证，已阻止启用"
+            "（AGENTFORGE_VERIFIED_REASONING_EFFORTS）。",
+            status_code=503,
+        )
 
 
 def project_budget_micro() -> int:
@@ -205,8 +244,10 @@ def reserve(
     draft_id: int | None = None,
     run_id: int | None = None,
     thinking_mode: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> ModelCall:
     route = resolve_route(model_role)
+    _validate_thinking(thinking_mode, reasoning_effort)
     if run_id is None:
         _enforce_draft_limits(db, project_id)
 
@@ -225,6 +266,7 @@ def reserve(
         draft_id=draft_id,
         run_id=run_id,
         thinking_mode=thinking_mode,
+        reasoning_effort=reasoning_effort,
         price_version=price.version if price else UNKNOWN,
         input_micro_per_million=price.input_micro_per_million if price else None,
         output_micro_per_million=price.output_micro_per_million if price else None,
@@ -287,8 +329,10 @@ def invoke(
     run_id: int | None = None,
     thinking_mode: str | None = None,
     json_mode: bool = False,
+    reasoning_effort: str | None = None,
 ) -> Completion:
     route = resolve_route(model_role)
+    _validate_thinking(thinking_mode, reasoning_effort)
     # SQLite WAL 允许多读单写。先拿写锁，再检查预算/频率并写入预留，
     # 防止并发请求都从相同的旧余额通过检查。
     db.commit()
@@ -304,6 +348,7 @@ def invoke(
         draft_id=draft_id,
         run_id=run_id,
         thinking_mode=thinking_mode,
+        reasoning_effort=reasoning_effort,
     )
     # 先持久化预留；远程调用期间不能持有未提交的账本事务。
     db.commit()
@@ -312,7 +357,11 @@ def invoke(
         if json_mode:
             kwargs["json_mode"] = True
         result = client.complete(
-            model=route.model, prompt=prompt, thinking_mode=thinking_mode, **kwargs
+            model=route.model,
+            prompt=prompt,
+            thinking_mode=thinking_mode,
+            reasoning_effort=reasoning_effort,
+            **kwargs,
         )
     except ProviderPreflightError as exc:
         row = db.get(ModelCall, call_id)

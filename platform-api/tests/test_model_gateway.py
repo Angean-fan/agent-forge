@@ -31,11 +31,11 @@ class RecordingClient:
 
     def complete(
         self, *, model: str, prompt: str, thinking_mode: str | None = None,
-        max_output_tokens: int | None = None,
+        max_output_tokens: int | None = None, reasoning_effort: str | None = None,
     ) -> Completion:
         self.calls.append({
             "model": model, "prompt": prompt, "thinking_mode": thinking_mode,
-            "max_output_tokens": max_output_tokens,
+            "max_output_tokens": max_output_tokens, "reasoning_effort": reasoning_effort,
         })
         if self._fail:
             raise RuntimeError("provider unavailable")
@@ -378,14 +378,17 @@ def test_invoke_persists_reservation_before_network_and_settlement_after_outer_r
     _, factory = platform_app
 
     class ObservingClient(RecordingClient):
-        def complete(self, *, model, prompt, thinking_mode=None, max_output_tokens=None):
+        def complete(
+            self, *, model, prompt, thinking_mode=None, max_output_tokens=None,
+            reasoning_effort=None,
+        ):
             with session_scope(factory) as observer:
                 row = observer.get(ModelCall, "durable-call")
                 assert row is not None
                 assert row.status == "RESERVED"
             return super().complete(
                 model=model, prompt=prompt, thinking_mode=thinking_mode,
-                max_output_tokens=max_output_tokens,
+                max_output_tokens=max_output_tokens, reasoning_effort=reasoning_effort,
             )
 
     with pytest.raises(RuntimeError, match="later draft failure"), session_scope(factory) as session:
@@ -406,3 +409,69 @@ def test_invoke_persists_reservation_before_network_and_settlement_after_outer_r
         assert row is not None
         assert row.status == "UNKNOWN"  # 无价格文件，但 usage 仍须持久化
         assert row.input_tokens == 1000
+
+
+def test_unverified_reasoning_effort_is_blocked(platform_app) -> None:
+    _, factory = platform_app
+    client = RecordingClient()
+
+    with pytest.raises(AppException) as error, session_scope(factory) as session:
+        invoke(
+            session, call_id="c-eff", model_role="user_interaction", client=client,
+            prompt="x", project_id=1, max_input_tokens=100, max_output_tokens=100,
+            thinking_mode="enabled", reasoning_effort="low",
+        )
+
+    assert error.value.code == "MODEL_UNAVAILABLE"
+    assert client.calls == []  # 未验证强度：未发起外部请求
+    with session_scope(factory) as session:
+        assert session.get(ModelCall, "c-eff") is None
+
+
+def test_reasoning_effort_requires_enabled_thinking(platform_app) -> None:
+    _, factory = platform_app
+    client = RecordingClient()
+
+    with pytest.raises(AppException) as error, session_scope(factory) as session:
+        invoke(
+            session, call_id="c-bad", model_role="user_interaction", client=client,
+            prompt="x", project_id=1, max_input_tokens=100, max_output_tokens=100,
+            thinking_mode="disabled", reasoning_effort="low",
+        )
+
+    assert error.value.code == "MODEL_UNAVAILABLE"
+    assert client.calls == []
+
+
+def test_verified_reasoning_effort_is_sent_and_recorded(platform_app, monkeypatch) -> None:
+    _, factory = platform_app
+    monkeypatch.setenv("AGENTFORGE_VERIFIED_REASONING_EFFORTS", "low")
+    client = RecordingClient()
+
+    with session_scope(factory) as session:
+        invoke(
+            session, call_id="c-ok", model_role="user_interaction", client=client,
+            prompt="x", project_id=1, max_input_tokens=100, max_output_tokens=100,
+            thinking_mode="enabled", reasoning_effort="low",
+        )
+
+    assert client.calls[0]["thinking_mode"] == "enabled"
+    assert client.calls[0]["reasoning_effort"] == "low"
+    with session_scope(factory) as session:
+        row = session.get(ModelCall, "c-ok")
+        assert row.thinking_mode == "enabled" and row.reasoning_effort == "low"
+
+
+def test_default_call_records_null_reasoning_effort(platform_app) -> None:
+    _, factory = platform_app
+    client = RecordingClient()
+
+    with session_scope(factory) as session:
+        invoke(
+            session, call_id="c-null", model_role="user_interaction", client=client,
+            prompt="x", project_id=1, max_input_tokens=100, max_output_tokens=100,
+            thinking_mode="disabled",
+        )
+
+    with session_scope(factory) as session:
+        assert session.get(ModelCall, "c-null").reasoning_effort is None

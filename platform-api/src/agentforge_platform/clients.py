@@ -37,6 +37,7 @@ class ModelClient(Protocol):
         thinking_mode: str | None = None,
         json_mode: bool = False,
         max_output_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Completion: ...
 
 
@@ -61,6 +62,7 @@ class DeepSeekClient:
         thinking_mode: str | None = None,
         json_mode: bool = False,
         max_output_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Completion:
         api_key = os.environ.get(self._api_key_env)
         if not api_key:
@@ -73,6 +75,11 @@ class DeepSeekClient:
         }
         if thinking_mode:
             payload["thinking"] = {"type": thinking_mode}
+        # 思考强度独立于 thinking.type 传递；仅在思考模式下有效（调用方/网关负责组合校验）。
+        if reasoning_effort is not None:
+            if thinking_mode != "enabled":
+                raise ValueError("reasoning_effort 仅适用于 thinking.type=enabled")
+            payload["reasoning_effort"] = reasoning_effort
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         if max_output_tokens is not None:
@@ -95,6 +102,7 @@ class DeepSeekClient:
 
         choices = body.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}
+        # 仅取最终 content；思考模式返回的 reasoning_content 属隐藏思考，不读取、不落账、不回显。
         raw_usage = body.get("usage") or {}
         usage = (
             Usage(int(raw_usage["prompt_tokens"]), int(raw_usage["completion_tokens"]))
