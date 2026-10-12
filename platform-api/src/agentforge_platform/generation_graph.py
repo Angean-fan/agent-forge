@@ -23,6 +23,8 @@ from agentforge_platform.asset_registry import AssetRegistry, default_registry
 from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.db import session_scope
 from agentforge_platform.errors import AppException
+from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
+from agentforge_platform.method_lock import resolve_lock
 from agentforge_platform.models import Run, SpecVersion
 from agentforge_platform.packaging import (
     PackagingError,
@@ -30,7 +32,7 @@ from agentforge_platform.packaging import (
     package_run,
     verification_passed,
 )
-from agentforge_platform.resolver import AssetLock, resolve_assets
+from agentforge_platform.resolver import AssetLock
 from agentforge_platform.runner_client import RunnerClient
 from agentforge_platform.runs import (
     RunStatus,
@@ -74,6 +76,7 @@ class GenerationContext:
     runner: RunnerClient
     work_root: Path
     registry: AssetRegistry
+    methods_root: Path = Path(DEFAULT_METHODS_ROOT)
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
@@ -129,7 +132,11 @@ def build_graph(context: GenerationContext):
 
     def resolve_assets_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
-        lock = resolve_assets(context.registry, state["profile"])
+        # R06D：先在 MVP 路径锁定模板/能力包；规格显式请求的预审核方法经 Finder 筛选后并入（锁升 0.2）。
+        lock = resolve_lock(
+            context.registry, state["profile"], state["spec"], state["contract"],
+            methods_root_path=context.methods_root,
+        )
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.PLANNING)
             record_task(db, run, "resolve_assets", status="DONE")
@@ -146,7 +153,8 @@ def build_graph(context: GenerationContext):
             transition(db, run, RunStatus.GENERATING)
         target = run_directory(context.work_root, run_id)
         result = assemble(
-            state["contract"], state["lock"], context.registry, target, spec=state["spec"]
+            state["contract"], state["lock"], context.registry, target,
+            spec=state["spec"], methods_root=context.methods_root,
         )
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.GENERATING)
@@ -261,13 +269,18 @@ def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
 
 
 def default_context(
-    *, session_factory: sessionmaker[Session], work_root: str | Path, runner: RunnerClient
+    *,
+    session_factory: sessionmaker[Session],
+    work_root: str | Path,
+    runner: RunnerClient,
+    methods_root: str | Path = DEFAULT_METHODS_ROOT,
 ) -> GenerationContext:
     return GenerationContext(
         session_factory=session_factory,
         runner=runner,
         work_root=Path(work_root),
         registry=default_registry(),
+        methods_root=Path(methods_root),
     )
 
 

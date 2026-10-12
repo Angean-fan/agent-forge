@@ -67,6 +67,8 @@ class MethodRecord:
     acceptance_ids: list[str]
     conflicts: list[str] = field(default_factory=list)
     extension_points: list[str] = field(default_factory=list)
+    owned_paths: list[str] = field(default_factory=list)
+    target_dir: str = ""
     license: str = "internal"
 
 
@@ -130,6 +132,8 @@ def scan_methods(root: str | Path) -> list[MethodRecord]:
                 acceptance_ids=list(manifest.acceptance_ids),
                 conflicts=list(manifest.conflicts),
                 extension_points=list(manifest.extension_points),
+                owned_paths=list(manifest.owned_paths),
+                target_dir=manifest.target_dir,
                 license=manifest.license,
             )
         )

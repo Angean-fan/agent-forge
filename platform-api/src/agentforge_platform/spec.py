@@ -144,6 +144,8 @@ class SoftwareSpecification(BaseModel):
     recipe_requests: list[dict[str, Any]] = []
     integrations: list[dict[str, Any]] = []
     external_requirements: list[dict[str, Any]] = []
+    # R06D：显式请求的**预审核方法单元**（`id` 或 `id@version`）；默认空 → MVP 路径不变。
+    method_requests: list[str] = []
 
     @field_validator("schema_version")
     @classmethod
@@ -151,6 +153,15 @@ class SoftwareSpecification(BaseModel):
         if value not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(f"unsupported schema_version: {value!r}")
         return value
+
+    @field_validator("method_requests")
+    @classmethod
+    def _safe_method_requests(cls, value: list[str]) -> list[str]:
+        pattern = re.compile(r"[a-z][a-z0-9\-]*(?:@\d+(?:\.\d+)*)?\Z")
+        for item in value:
+            if pattern.fullmatch(item) is None:
+                raise ValueError(f"不安全的方法请求：{item!r}")
+        return list(dict.fromkeys(value))
 
 
 def is_supported_profile(profile: TechnicalProfile) -> bool:

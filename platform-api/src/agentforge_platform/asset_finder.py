@@ -167,12 +167,12 @@ def collect_candidates(
             )
         )
     for record in scan_methods(methods_root):
-        candidates.append(_candidate_from_method(record))
+        candidates.append(candidate_from_method(record))
     candidates.sort(key=lambda candidate: (candidate.kind, candidate.id, candidate.version))
     return candidates
 
 
-def _candidate_from_method(record: MethodRecord) -> Candidate:
+def candidate_from_method(record: MethodRecord) -> Candidate:
     return Candidate(
         kind="method-unit", id=record.id, version=record.version,
         provides=tuple(record.provides), requires=tuple(record.requires),
@@ -187,7 +187,7 @@ def _capability_name(requirement: str) -> str:
     return requirement.split(":", 1)[-1]
 
 
-def _rejections(
+def candidate_rejections(
     candidate: Candidate,
     query: CapabilityQuery,
     *,
@@ -269,7 +269,7 @@ def find_assets(
     selected: list[Candidate] = []
     for ref in candidate_refs:
         candidate = by_ref[ref]
-        reasons = _rejections(
+        reasons = candidate_rejections(
             candidate, query,
             available_capabilities=available, present_capabilities=present,
             registered_extension_points=registered_extension_points,
@@ -303,6 +303,8 @@ __all__ = [
     "AssetSearchResult",
     "Candidate",
     "CapabilityQuery",
+    "candidate_from_method",
+    "candidate_rejections",
     "collect_candidates",
     "derive_capability_query",
     "find_assets",

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from agentforge_platform.asset_registry import default_registry
 from agentforge_platform.db import SessionLocal, session_scope
 from agentforge_platform.generation_graph import GenerationContext, run_generation
+from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.runner_client import HttpRunnerClient
 from agentforge_platform.runs import claim_run, heartbeat
 
@@ -34,6 +35,7 @@ def build_generation_handler(session_factory: sessionmaker[Session]) -> Handler:
         ),
         work_root=Path(os.environ.get("RUNNER_WORK_ROOT", "./var/runs")),
         registry=default_registry(),
+        methods_root=Path(os.environ.get("AGENTFORGE_METHODS_ROOT", str(DEFAULT_METHODS_ROOT))),
     )
 
     def handler(run_id: int) -> None:

@@ -17,10 +17,15 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict
 
-from agentforge_platform.asset_registry import AssetRegistry, default_registry
+from agentforge_platform.asset_registry import (
+    AssetRegistry,
+    MethodUnitManifest,
+    default_registry,
+)
 from agentforge_platform.capability_packs import inject_dependencies, render_pack_files
 from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.resolver import AssetLock, resolve_assets
 from agentforge_platform.spec import SoftwareSpecification
 
@@ -136,6 +141,32 @@ def _render_packs(
             )
 
 
+def _copy_method_units(lock: AssetLock, writer: _Writer, methods_root: Path) -> None:
+    """把锁定的方法单元 ``src/`` 文件 COPY 到其 ``target_dir``/``owned_paths[0]``。
+
+    只做 COPY（不改写业务代码）；路径写重由 ``_Writer`` 拒绝（不覆盖原能力）。
+    """
+    for unit in lock.method_units:
+        directory = Path(methods_root) / unit.id / unit.version
+        if not directory.is_dir():
+            raise AssemblyError(f"方法单元缺失：{unit.id}@{unit.version}")
+        manifest = MethodUnitManifest.model_validate_json(
+            (directory / "manifest.json").read_text(encoding="utf-8")
+        )
+        target = manifest.target_dir or (manifest.owned_paths[0] if manifest.owned_paths else "")
+        target = target.rstrip("/")
+        if not target:
+            raise AssemblyError(f"方法单元未声明安装目标：{unit.id}@{unit.version}")
+        source = directory / "src"
+        for path in sorted(source.rglob("*")):
+            if path.is_symlink():
+                raise AssemblyError(f"方法单元包含符号链接，拒绝：{path}")
+            if not path.is_file():
+                continue
+            rel = path.relative_to(source).as_posix()
+            writer.write(target, rel, path.read_bytes())
+
+
 def _readme(spec: SoftwareSpecification, contract: BusinessContract, lock: AssetLock) -> str:
     entity = contract.permissions[0].entity if contract.permissions else "未知实体"
     lines = [
@@ -202,6 +233,7 @@ def assemble(
     *,
     spec: SoftwareSpecification,
     limits: AssemblyLimits | None = None,
+    methods_root: str | Path | None = None,
 ) -> AssemblyResult:
     limits = limits or AssemblyLimits()
     final = Path(output_dir)
@@ -220,6 +252,11 @@ def assemble(
     writer = _Writer(staging, limits)
     _copy_template(template_dir, writer)
     _render_packs(contract, lock, registry, writer)
+    if lock.method_units:
+        _copy_method_units(
+            lock, writer,
+            Path(methods_root) if methods_root is not None else Path(DEFAULT_METHODS_ROOT),
+        )
     writer.write("", _ASSET_LOCK_NAME, (lock.model_dump_json(indent=2) + "\n").encode("utf-8"))
     writer.write("", _SPEC_NAME, (spec.model_dump_json(indent=2) + "\n").encode("utf-8"))
     writer.write(

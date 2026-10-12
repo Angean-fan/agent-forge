@@ -23,11 +23,19 @@ from agentforge_platform.spec import (
     scope_issues,
 )
 
+# R06D 新增的可选字段：**为空时不参与 canonical hash**，使旧 spec 的冻结 hash 保持不变
+# （与 asset-lock 的 schema 版本化白名单同理）。非空时才纳入哈希。
+_HASH_OMIT_WHEN_EMPTY = ("method_requests",)
+
 
 def canonical_json(spec: SoftwareSpecification) -> str:
     """规范化 JSON：键排序、紧凑分隔符，保证同内容 hash 稳定。"""
+    payload = spec.model_dump(mode="json")
+    for key in _HASH_OMIT_WHEN_EMPTY:
+        if not payload.get(key):
+            payload.pop(key, None)
     return json.dumps(
-        spec.model_dump(mode="json"),
+        payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
