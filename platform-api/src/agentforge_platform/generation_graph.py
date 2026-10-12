@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentforge_platform.assembler import assemble
+from agentforge_platform.asset_finder import derive_capability_query, find_assets
 from agentforge_platform.asset_registry import AssetRegistry, default_registry
 from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.db import session_scope
@@ -66,6 +67,7 @@ class GenerationState(TypedDict, total=False):
     manifest_hash: str
     verification: dict
     acceptance: dict
+    asset_search: dict
     error_code: str
     ok: bool
 
@@ -137,6 +139,21 @@ def build_graph(context: GenerationContext):
             context.registry, state["profile"], state["spec"], state["contract"],
             methods_root_path=context.methods_root,
         )
+        # R12：记录 Finder 审计（候选方法 / 复用方法 ID+版本 / 未覆盖规则），随 run 报告留痕。
+        search = find_assets(
+            derive_capability_query(state["spec"], state["contract"]),
+            registry=context.registry, methods_root_path=context.methods_root,
+        )
+        audit = {
+            "query_hash": search.query_hash,
+            "index_revision": search.index_revision,
+            "match_type": search.match_type,
+            "candidate_refs": list(search.candidate_refs),
+            "selected_refs": list(search.selected_refs),
+            "filter_reasons": {ref: list(reasons) for ref, reasons in search.filter_reasons.items()},
+            "uncovered_acceptance_ids": list(search.uncovered_acceptance_ids),
+            "reused_method_units": [unit.model_dump() for unit in lock.method_units],
+        }
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.PLANNING)
             record_task(db, run, "resolve_assets", status="DONE")
@@ -144,7 +161,12 @@ def build_graph(context: GenerationContext):
                 db, run, "stage",
                 json.dumps({"stage": "resolve_assets", "lock_hash": lock.lock_hash}),
             )
-        return {"lock_hash": lock.lock_hash, "lock": lock}
+            append_event(db, run, "asset_search", json.dumps({
+                "match_type": audit["match_type"],
+                "selected_refs": audit["selected_refs"],
+                "uncovered_acceptance_ids": audit["uncovered_acceptance_ids"],
+            }))
+        return {"lock_hash": lock.lock_hash, "lock": lock, "asset_search": audit}
 
     def assemble_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
@@ -189,6 +211,13 @@ def build_graph(context: GenerationContext):
         acceptance = state["acceptance"]
         ok = verification_passed(verification, acceptance)
         run_dir = run_directory(context.work_root, run_id)
+
+        # R12：Finder 审计随交付包留痕（候选方法 / 复用方法 ID+版本 / 未覆盖规则）。
+        audit = state.get("asset_search")
+        if audit is not None:
+            (run_dir / "asset-search.json").write_text(
+                json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
 
         with session_scope(context.session_factory) as db:
             cost_report = build_cost_report(db, project_id=state["project_id"], run_id=run_id)

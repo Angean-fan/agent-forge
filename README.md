@@ -5,10 +5,10 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：MVP `AgentForge_01_MVP_分步开发.md`（M01—M28 已完成）；迭代增强 `AgentForge_02_迭代增强_分步开发Prompt_方法索引版.md`
-- 当前进度：**第二阶段 R11**（访谈闭环 R01—R06、方法资产索引 R06A—R06D、JS R07、MyBatis R08、四组合 R09、
-  多实体 R10、唯一约束与状态守卫 R11 完成；见 `docs/R06*.md`—`docs/R11_*.md`）；
+- 当前进度：**第二阶段 R12**（R01—R06、R06A—R06D、JS R07、MyBatis R08、四组合 R09、多实体 R10、
+  唯一约束与状态守卫 R11、校园活动主线 R12 完成；真实 Runner HTTP 验收通过；见 `docs/R06*.md`—`docs/R12_*.md`）；
   MVP 冷启动验收见 `docs/MVP_ACCEPTANCE.md`、`docs/MVP_DEPLOY.md`
-- 下一步：**R12**（校园活动主线：角色、页面与固定业务验收）
+- 下一步：**R13**（接口契约先行的多任务 DAG 规划）
 
 ## 目录
 

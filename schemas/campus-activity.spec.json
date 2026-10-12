@@ -1,0 +1,71 @@
+{
+  "schema_version": "0.1",
+  "project_type": "crud_web",
+  "goal": "校园活动报名管理：管理员发布活动，成员报名（不可重复、活动结束不可报名），成员仅能查看自己的报名。",
+  "actors": ["ADMIN", "MEMBER"],
+  "entities": [
+    {
+      "name": "Activity",
+      "source": "user_confirmed",
+      "fields": [
+        {"name": "id", "type": "long", "required": true},
+        {"name": "title", "type": "string", "required": true},
+        {"name": "capacity", "type": "int", "required": true},
+        {"name": "status", "type": "string", "required": true},
+        {"name": "owner_id", "type": "long", "required": true},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ]
+    },
+    {
+      "name": "Enrollment",
+      "source": "user_confirmed",
+      "fields": [
+        {"name": "id", "type": "long", "required": true},
+        {"name": "member_name", "type": "string", "required": true},
+        {"name": "status", "type": "string", "required": true},
+        {"name": "owner_id", "type": "long", "required": true},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ]
+    }
+  ],
+  "relations": [
+    {"child": "Enrollment", "parent": "Activity", "kind": "many-to-one", "unique": true}
+  ],
+  "status_guards": [
+    {"child": "Enrollment", "parent": "Activity", "blocked_status": ["CLOSED", "ENDED"]}
+  ],
+  "pages": [],
+  "permissions": [
+    {"role": "ADMIN", "actions": ["create", "read", "update", "delete"], "source": "user_confirmed"},
+    {"role": "MEMBER", "actions": ["create", "read", "update", "delete"], "source": "user_confirmed"}
+  ],
+  "entity_permissions": [
+    {"entity": "Activity", "role": "ADMIN", "actions": ["create", "read", "update", "delete"]},
+    {"entity": "Activity", "role": "MEMBER", "actions": ["read"]},
+    {"entity": "Enrollment", "role": "ADMIN", "actions": ["read", "delete"]},
+    {"entity": "Enrollment", "role": "MEMBER", "actions": ["create", "read", "delete"]}
+  ],
+  "business_rules": [
+    {"id": "BR01", "text": "只有管理员可以发布活动", "source": "user_confirmed"},
+    {"id": "BR02", "text": "同一成员对同一活动不可重复报名", "source": "user_confirmed"},
+    {"id": "BR03", "text": "活动结束（CLOSED/ENDED）不可报名", "source": "user_confirmed"},
+    {"id": "BR04", "text": "成员仅能查看自己的报名", "source": "user_confirmed"}
+  ],
+  "acceptance_cases": [
+    {"id": "AC01", "scenario": "管理员发布活动", "expected": "创建成功", "source": "user_confirmed"},
+    {"id": "AC02", "scenario": "成员重复报名同一活动", "expected": "被拒（409）且仅一条记录", "source": "user_confirmed"},
+    {"id": "AC03", "scenario": "活动结束后成员报名", "expected": "被拒（409）", "source": "user_confirmed"},
+    {"id": "AC04", "scenario": "成员读取他人报名", "expected": "被拒（403）", "source": "user_confirmed"}
+  ],
+  "technical_profile": {
+    "profile_id": "demo-ts-mp",
+    "profile_version": "0.3",
+    "template_version": "demo-0.2"
+  },
+  "constraints": ["平台固定验收断言随本规格冻结，不由编码 Agent 修改"],
+  "exclusions": ["不做活动排期与通知"],
+  "capability_requests": [],
+  "recipe_requests": [],
+  "integrations": [],
+  "external_requirements": []
+}

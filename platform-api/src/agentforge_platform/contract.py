@@ -153,6 +153,15 @@ def _snake(name: str) -> str:
     return step2.lower()
 
 
+def plural_of(table_name: str) -> str:
+    """表名复数化（用于 REST 路径）：``y→ies``、``s/x/z/ch/sh→es``，否则 ``+s``。"""
+    if table_name.endswith("y") and table_name[-2:-1] not in "aeiou":
+        return table_name[:-1] + "ies"
+    if table_name.endswith(("s", "x", "z", "ch", "sh")):
+        return table_name + "es"
+    return table_name + "s"
+
+
 def _sql_type(entity_name: str, field_name: str, field_type: str) -> tuple[str, str]:
     mapped = _TYPE_MAP.get(field_type)
     if mapped is None:
@@ -191,7 +200,7 @@ def _build_routes(entity_name: str, plural: str, permissions: list[RolePermissio
 
 
 def _role_permissions(spec: SoftwareSpecification) -> list[RolePermission]:
-    """权限矩阵（角色去重，冲突即拒绝）；同一组角色适用于全部业务实体。"""
+    """全局权限矩阵（角色去重，冲突即拒绝）；未做实体覆盖时的默认角色集。"""
     seen_roles: set[str] = set()
     role_permissions: list[RolePermission] = []
     for permission in spec.permissions:
@@ -202,6 +211,35 @@ def _role_permissions(spec: SoftwareSpecification) -> list[RolePermission]:
         seen_roles.add(permission.role)
         role_permissions.append(
             RolePermission(role=permission.role, actions=sorted(set(permission.actions)))
+        )
+    role_permissions.sort(key=lambda p: p.role)
+    return role_permissions
+
+
+def _validate_entity_permissions(
+    spec: SoftwareSpecification, by_name: dict[str, object]
+) -> None:
+    for entry in spec.entity_permissions:
+        if entry.get("entity") not in by_name:
+            raise ContractError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"entity_permissions 引用了未知实体：{entry.get('entity')!r}"
+            )
+
+
+def _role_permissions_for(spec: SoftwareSpecification, entity_name: str) -> list[RolePermission]:
+    """按实体解析角色权限：`entity_permissions` 覆盖该实体，否则沿用全局 permissions。"""
+    entries = [e for e in spec.entity_permissions if e.get("entity") == entity_name]
+    if not entries:
+        return _role_permissions(spec)
+    seen_roles: set[str] = set()
+    role_permissions: list[RolePermission] = []
+    for entry in entries:
+        role = str(entry["role"])
+        if role in seen_roles:
+            raise ContractError(ErrorCode.CONTRACT_CONFLICT, f"实体 {entity_name} 角色 '{role}' 权限重复")
+        seen_roles.add(role)
+        role_permissions.append(
+            RolePermission(role=role, actions=sorted(set(entry["actions"])))
         )
     role_permissions.sort(key=lambda p: p.role)
     return role_permissions
@@ -296,7 +334,7 @@ def compile_contract(
 
     fk_by_child, unique_by_child, order = _resolve_relations(spec)
     _validate_status_guards(spec, fk_by_child)
-    role_permissions = _role_permissions(spec)
+    _validate_entity_permissions(spec, by_name)
 
     tables: list[TableContract] = []
     routes: list[RouteContract] = []
@@ -311,10 +349,11 @@ def compile_contract(
         if table_name in seen_tables:
             raise ContractError(ErrorCode.CONTRACT_CONFLICT, f"表名冲突：{table_name}")
         seen_tables.add(table_name)
-        plural = f"{table_name}s"
+        plural = plural_of(table_name)
         if plural in seen_plurals:
             raise ContractError(ErrorCode.CONTRACT_CONFLICT, f"路由路径冲突：/api/{plural}")
         seen_plurals.add(plural)
+        role_permissions = _role_permissions_for(spec, name)
 
         # 字段 = 实体自身字段（顺序保持）+ 关系外键列（追加）。
         named = [(field.name, field.type, bool(field.required)) for field in entity.fields]

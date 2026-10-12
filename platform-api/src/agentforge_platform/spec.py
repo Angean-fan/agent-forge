@@ -151,6 +151,8 @@ class SoftwareSpecification(BaseModel):
     method_requests: list[str] = []
     # R11：服务端状态守卫声明 `[{child, parent, blocked_status: [...]}]`；默认空 → MVP 路径不变。
     status_guards: list[dict[str, Any]] = []
+    # R12：按实体覆盖角色权限 `[{entity, role, actions}]`；默认空 → 沿用全局 permissions。
+    entity_permissions: list[dict[str, Any]] = []
 
     @field_validator("schema_version")
     @classmethod
@@ -174,6 +176,14 @@ class SoftwareSpecification(BaseModel):
         for guard in value:
             if not isinstance(guard, dict) or not {"child", "parent", "blocked_status"} <= guard.keys():
                 raise ValueError("状态守卫需为 {child, parent, blocked_status}")
+        return value
+
+    @field_validator("entity_permissions")
+    @classmethod
+    def _safe_entity_permissions(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for entry in value:
+            if not isinstance(entry, dict) or not {"entity", "role", "actions"} <= entry.keys():
+                raise ValueError("entity_permissions 需为 {entity, role, actions}")
         return value
 
 

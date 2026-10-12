@@ -260,7 +260,11 @@ def run_acceptance(artifact_dir: Path, config: RunnerConfig) -> AcceptanceResult
         )
         _sh(["docker", "exec", mysql_name, "mysql", f"-u{_DB_USER}", f"-p{_DB_PASSWORD}", _DB_NAME, "-e", seed])
 
-        _run_http_cases(base["url"], artifact_dir, case)
+        # R12：按生成项目形态分流——含校园活动实体（/api/activities）跑校园主线固定场景，否则跑原 Task 场景。
+        if _is_campus_project(base["url"]):
+            _run_campus_cases(base["url"], case)
+        else:
+            _run_http_cases(base["url"], artifact_dir, case)
     finally:
         teardown()
 
@@ -320,6 +324,71 @@ def _run_http_cases(base: str, artifact_dir: Path, case) -> None:
         f"dir={artifact_dir} contract={(artifact_dir / 'contract.json').is_file()}"
     )
     case("delete_own", delete_status == delete_expected, detail)
+
+
+def _is_campus_project(base: str) -> bool:
+    """形态检测：管理员可读 ``GET /api/activities`` → 校园活动主线；否则为原 Task 项目。"""
+    token = _login(base, *_ADMIN)
+    return bool(token) and _http("GET", f"{base}/api/activities", token)[0] == 200
+
+
+def _run_campus_cases(base: str, case) -> None:
+    """校园活动主线固定场景（R12）：管理员发布、成员报名、不可重复、越权拒绝、结束拒绝、持久化、分页总数。"""
+    admin_token = _login(base, *_ADMIN)
+    case("login_admin", admin_token is not None)
+    member_token = _login(base, *_MEMBER)
+    case("login_member", member_token is not None)
+    if not admin_token or not member_token:
+        return
+
+    # 管理员发布活动
+    status, activity = _http(
+        "POST", f"{base}/api/activities", admin_token,
+        {"title": "campus-open", "capacity": 10, "status": "OPEN"},
+    )
+    activity_id = activity.get("id") if isinstance(activity, dict) else None
+    case("campus_admin_publish", status == 200 and activity_id is not None)
+    # 成员不得发布
+    case("campus_member_cannot_publish", _http(
+        "POST", f"{base}/api/activities", member_token,
+        {"title": "x", "capacity": 1, "status": "OPEN"},
+    )[0] == 403)
+    if activity_id is None:
+        return
+
+    # 成员报名 + 不可重复
+    body = {"member_name": "m1", "status": "ACTIVE", "activity_id": activity_id}
+    status, enrollment = _http("POST", f"{base}/api/enrollments", member_token, body)
+    enrollment_id = enrollment.get("id") if isinstance(enrollment, dict) else None
+    case("campus_enroll", status == 200 and enrollment_id is not None)
+    case("campus_no_duplicate", _http("POST", f"{base}/api/enrollments", member_token, body)[0] == 409)
+
+    # 分页总数（成员仅见自己的报名）
+    status, listing = _http("GET", f"{base}/api/enrollments?page=1&size=10", member_token)
+    total = listing.get("total") if isinstance(listing, dict) else None
+    case("campus_list_total", status == 200 and total == 1, f"total={total}")
+
+    # 越权：他人（管理员）读取该报名 → 403
+    if enrollment_id is not None:
+        case("campus_cross_user_denied",
+             _http("GET", f"{base}/api/enrollments/{enrollment_id}", admin_token)[0] == 403)
+
+    # 持久化：刷新后活动仍在
+    case("campus_persists", _http("GET", f"{base}/api/activities/{activity_id}", admin_token)[0] == 200)
+
+    # 活动结束后拒绝报名（独立活动，避免与唯一约束混淆）
+    _, closed = _http(
+        "POST", f"{base}/api/activities", admin_token,
+        {"title": "campus-closed", "capacity": 1, "status": "OPEN"},
+    )
+    closed_id = closed.get("id") if isinstance(closed, dict) else None
+    if closed_id is not None:
+        _http("PUT", f"{base}/api/activities/{closed_id}", admin_token,
+              {"title": "campus-closed", "capacity": 1, "status": "CLOSED"})
+        case("campus_closed_rejected", _http(
+            "POST", f"{base}/api/enrollments", member_token,
+            {"member_name": "m2", "status": "ACTIVE", "activity_id": closed_id},
+        )[0] == 409)
 
 
 def _result(artifact_dir, reference, digest, reconciled, cases) -> AcceptanceResult:

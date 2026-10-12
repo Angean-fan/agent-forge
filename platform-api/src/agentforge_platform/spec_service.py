@@ -24,7 +24,7 @@ from agentforge_platform.spec import (
 
 # R06D 新增的可选字段：**为空时不参与 canonical hash**，使旧 spec 的冻结 hash 保持不变
 # （与 asset-lock 的 schema 版本化白名单同理）。非空时才纳入哈希。
-_HASH_OMIT_WHEN_EMPTY = ("method_requests", "status_guards")
+_HASH_OMIT_WHEN_EMPTY = ("method_requests", "status_guards", "entity_permissions")
 
 
 def canonical_json(spec: SoftwareSpecification) -> str:

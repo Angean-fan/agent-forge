@@ -15,7 +15,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from agentforge_platform.asset_registry import AssetManifest
-from agentforge_platform.contract import BusinessContract, TableContract
+from agentforge_platform.contract import BusinessContract, TableContract, plural_of
 from agentforge_platform.errors import AppException, ErrorCode
 
 PACKAGE = "com.agentforge.template"
@@ -239,7 +239,7 @@ def build_params(
     table = contract.tables[index]
     entity_name = entities[index]
     permission_matrix = contract.permissions[index]
-    plural = f"{table.table}s"
+    plural = plural_of(table.table)
     entity_routes = [
         route for route in contract.routes if route.path.startswith(f"/api/{plural}")
     ]
