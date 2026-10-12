@@ -1,7 +1,13 @@
-"""资产 manifest 与只读本地注册表（M13）。
+"""资产 manifest 与只读本地注册表（M13；R06A 扩展 Method Unit 分类）。
 
-统一模板与能力包的 manifest schema，并提供按 ``kind + id + version`` 定位、校验
-内容 checksum、按 Profile 判兼容的只读检索。资产内容只读，不做后台资产市场。
+统一模板、能力包与**方法单元（Method Unit）**的 manifest schema，并提供按
+``kind + id + version`` 定位、校验内容 checksum、按 Profile 判兼容的只读检索。
+
+- 旧 Template/Capability Pack 的字段与读取语义**保持不变**（:class:`AssetManifest`）；
+- R06A 新增 :class:`MethodUnitManifest`：方法/类/片段的稳定 ID + 不可变版本 + 结构化调用契约，
+  其 ``symbol/signature/layer/source_provenance`` 为**必需**字段（缺失即拒，不用默认值掩盖签名/来源），
+  并按 kind 分支解析。方法单元是否**可安全植入**由 :func:`method_unit_issues` 按 Profile/依赖/冲突/
+  扩展点确定性判定；源码仓库与索引归 R06B。
 """
 
 from __future__ import annotations
@@ -9,10 +15,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from agentforge_platform.errors import AppException, ErrorCode
 
@@ -22,7 +29,29 @@ _EXCLUDED_DIRS = {"node_modules", "target", "dist", "build", "__pycache__", ".gi
 _MANIFEST_NAME = "manifest.json"
 _EXCLUDED_FILES = {_MANIFEST_NAME, ".DS_Store", "Thumbs.db"}
 
+# R06A：Method Unit 的层归属与来源/许可证约束（与 Profile/契约同名概念保持一致）。
+METHOD_UNIT_LAYERS = frozenset({
+    "controller", "service", "repository", "domain", "dto", "config",
+    "util", "frontend", "scheduler", "integration",
+})
+_FORBIDDEN_LICENSES = frozenset({"", "unknown", "unlicensed", "none", "proprietary-unknown"})
+_SAFE_SYMBOL = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\Z")
+_SAFE_IMPORT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\Z")
+
 _STRICT = ConfigDict(extra="forbid")
+
+
+def is_safe_owned_path(path: str) -> bool:
+    """``owned_paths`` 只描述**资产可安装的目标范围**：相对、无 ``..`` / 绝对路径 / 盘符 / 反斜杠。
+
+    该字段不赋予 Agent 任意目录权限；危险路径一律拒绝。
+    """
+    if not path or path.startswith(("/", "~")) or "\\" in path:
+        return False
+    stripped = path.rstrip("/")
+    if not stripped or re.match(r"^[A-Za-z]:", stripped):
+        return False
+    return all(part not in ("", ".", "..") for part in stripped.split("/"))
 
 
 def compute_checksum(asset_dir: str | Path) -> str:
@@ -55,8 +84,8 @@ class RenderEntry(BaseModel):
     target: str
 
 
-class AssetManifest(BaseModel):
-    """模板 / 能力包统一 manifest。契约字段全部保留。"""
+class _AssetBase(BaseModel):
+    """模板/能力包/方法单元共有的 manifest 字段（顺序与原 ``AssetManifest`` 一致）。"""
 
     model_config = _STRICT
 
@@ -73,17 +102,97 @@ class AssetManifest(BaseModel):
     checks: list[str]
     checksum: str
     license: str
+
+    @field_validator("owned_paths")
+    @classmethod
+    def _safe_owned_paths(cls, value: list[str]) -> list[str]:
+        unsafe = [path for path in value if not is_safe_owned_path(path)]
+        if unsafe:
+            raise ValueError(f"危险的 owned_paths（绝对路径/越界/盘符）：{unsafe}")
+        return value
+
+
+class AssetManifest(_AssetBase):
+    """模板 / 能力包 manifest。契约字段全部保留（MVP 语义不变）。"""
+
     provided_capabilities: list[str] = []
     target_dir: str = ""
     renders: list[RenderEntry] = []
     dependencies: list[dict[str, str]] = []
 
 
+class MethodUnitManifest(_AssetBase):
+    """R06A：可复用方法/类/片段的结构化调用契约。
+
+    ``symbol/signature/layer/source_provenance`` **必需**（缺失即 parse 失败，不用默认值掩盖）；
+    其余按需声明。是否能**安全植入**由 :func:`method_unit_issues` 依据 Profile/依赖/冲突/扩展点判定。
+    """
+
+    provided_capabilities: list[str] = []
+    target_dir: str = ""
+    renders: list[RenderEntry] = []
+    dependencies: list[dict[str, str]] = []
+
+    symbol: str
+    signature: str
+    layer: str
+    source_provenance: str
+    imports: list[str] = []
+    preconditions: list[str] = []
+    postconditions: list[str] = []
+    side_effects: list[str] = []
+    security_constraints: list[str] = []
+    acceptance_ids: list[str] = []
+
+    @field_validator("symbol")
+    @classmethod
+    def _safe_symbol(cls, value: str) -> str:
+        if _SAFE_SYMBOL.fullmatch(value) is None:
+            raise ValueError(f"不安全的 symbol：{value!r}")
+        return value
+
+    @field_validator("signature")
+    @classmethod
+    def _non_empty_signature(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("signature 不能为空")
+        return value
+
+    @field_validator("layer")
+    @classmethod
+    def _known_layer(cls, value: str) -> str:
+        if value not in METHOD_UNIT_LAYERS:
+            raise ValueError(f"未知 layer：{value!r}")
+        return value
+
+    @field_validator("source_provenance")
+    @classmethod
+    def _non_empty_provenance(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source_provenance（来源证明）不能为空")
+        return value
+
+    @field_validator("imports")
+    @classmethod
+    def _safe_imports(cls, value: list[str]) -> list[str]:
+        unsafe = [item for item in value if _SAFE_IMPORT.fullmatch(item) is None]
+        if unsafe:
+            raise ValueError(f"不安全的 imports：{unsafe}")
+        return value
+
+
+# 注册表读接口可返回的 manifest 类型（按 kind 分支解析）。
+Manifest = AssetManifest | MethodUnitManifest
+
+
 class AssetRegistry:
-    """只读本地资产注册表：扫描根目录与其一级子目录中的 manifest.json。"""
+    """只读本地资产注册表：扫描根目录与其一级子目录中的 manifest.json。
+
+    manifest 按 ``kind`` 分支解析：``method-unit`` → :class:`MethodUnitManifest`，其余 → :class:`AssetManifest`。
+    """
 
     def __init__(self, roots: list[str | Path] | None = None) -> None:
-        self._assets: dict[tuple[str, str, str], tuple[AssetManifest, Path]] = {}
+        self._assets: dict[tuple[str, str, str], tuple[Manifest, Path]] = {}
         for root in roots if roots is not None else DEFAULT_ROOTS:
             self._scan(Path(root))
 
@@ -96,24 +205,26 @@ class AssetRegistry:
             if _MANIFEST_NAME not in filenames:
                 continue
             directory = Path(dirpath)
-            manifest = AssetManifest.model_validate_json(
-                (directory / _MANIFEST_NAME).read_text(encoding="utf-8")
+            payload = json.loads((directory / _MANIFEST_NAME).read_text(encoding="utf-8"))
+            model: type[Manifest] = (
+                MethodUnitManifest if payload.get("kind") == "method-unit" else AssetManifest
             )
+            manifest = model.model_validate(payload)
             self._assets[(manifest.kind, manifest.id, manifest.version)] = (manifest, directory)
 
-    def all(self) -> list[AssetManifest]:
+    def all(self) -> list[Manifest]:
         return sorted(
             (manifest for manifest, _ in self._assets.values()),
             key=lambda m: (m.kind, m.id, m.version),
         )
 
-    def all_with_paths(self) -> list[tuple[AssetManifest, Path]]:
+    def all_with_paths(self) -> list[tuple[Manifest, Path]]:
         return sorted(
             self._assets.values(),
             key=lambda item: (item[0].kind, item[0].id, item[0].version),
         )
 
-    def get(self, kind: str, asset_id: str, version: str) -> tuple[AssetManifest, Path]:
+    def get(self, kind: str, asset_id: str, version: str) -> tuple[Manifest, Path]:
         key = (kind, asset_id, version)
         if key not in self._assets:
             raise AppException(
@@ -123,7 +234,7 @@ class AssetRegistry:
             )
         return self._assets[key]
 
-    def verify_checksum(self, kind: str, asset_id: str, version: str) -> AssetManifest:
+    def verify_checksum(self, kind: str, asset_id: str, version: str) -> Manifest:
         manifest, directory = self.get(kind, asset_id, version)
         actual = compute_checksum(directory)
         if actual != manifest.checksum:
@@ -136,7 +247,7 @@ class AssetRegistry:
 
     def resolve(
         self, kind: str, asset_id: str, version: str, profile: str
-    ) -> tuple[AssetManifest, Path]:
+    ) -> tuple[Manifest, Path]:
         manifest, directory = self.get(kind, asset_id, version)
         if profile not in manifest.compatible_profiles:
             raise AppException(
@@ -145,6 +256,79 @@ class AssetRegistry:
                 status_code=422,
             )
         return manifest, directory
+
+
+def _capability_name(requirement: str) -> str:
+    return requirement.split(":", 1)[-1]
+
+
+def known_capabilities(registry: AssetRegistry, profile: str) -> set[str]:
+    """某 Profile 下已存在的安全能力集合（模板 ``provided_capabilities`` + 各资产 ``provides``）。"""
+    names: set[str] = set()
+    for manifest in registry.all():
+        if profile in manifest.compatible_profiles:
+            names.update(manifest.provided_capabilities)
+            names.update(manifest.provides)
+    return names
+
+
+def known_extension_points(registry: AssetRegistry, profile: str) -> set[str]:
+    """某 Profile 下兼容资产已声明的扩展点集合（方法单元只允许挂载到这些扩展点）。"""
+    points: set[str] = set()
+    for manifest in registry.all():
+        if profile in manifest.compatible_profiles:
+            points.update(manifest.extension_points)
+    return points
+
+
+def method_unit_issues(
+    manifest: MethodUnitManifest,
+    *,
+    known_profiles: set[str],
+    available_capabilities: set[str],
+    present_capabilities: set[str] | None = None,
+    registered_extension_points: set[str] | None = None,
+) -> list[str]:
+    """确定性判定方法单元是否可发布/安全植入；返回拒绝理由（空 = 通过）。
+
+    覆盖：许可证/来源、Profile 兼容、依赖是否合法、是否与现有能力冲突、扩展点是否已注册。
+    签名/符号/层/危险路径等结构性问题在 :class:`MethodUnitManifest` parse 阶段即被拒绝。
+    """
+    issues: list[str] = []
+    if manifest.license.strip().lower() in _FORBIDDEN_LICENSES:
+        issues.append(f"许可证/来源不明，拒绝发布：license={manifest.license!r}")
+    if not manifest.source_provenance.strip():
+        issues.append("缺少来源证明（source_provenance）")
+    if known_profiles and not (set(manifest.compatible_profiles) & known_profiles):
+        issues.append("未知 Profile：" + "、".join(manifest.compatible_profiles))
+    illegal = [
+        requirement
+        for requirement in manifest.requires
+        if _capability_name(requirement) not in available_capabilities
+    ]
+    if illegal:
+        issues.append("非法依赖：" + "、".join(illegal))
+    conflicts = sorted(set(manifest.conflicts) & set(present_capabilities or ()))
+    if conflicts:
+        issues.append("与现有能力冲突：" + "、".join(conflicts))
+    if registered_extension_points is not None:
+        # 只允许声明已存在于 Profile/契约的扩展点；未提供上下文时（None）不做此判定。
+        unknown = [p for p in manifest.extension_points if p not in registered_extension_points]
+        if unknown:
+            issues.append("声明了未注册的扩展点：" + "、".join(unknown))
+    return issues
+
+
+def require_valid_method_unit(manifest: MethodUnitManifest, **kwargs: object) -> MethodUnitManifest:
+    """校验方法单元；不通过则抛 ``ASSET_CONFLICT``（422），理由可追溯。"""
+    issues = method_unit_issues(manifest, **kwargs)  # type: ignore[arg-type]
+    if issues:
+        raise AppException(
+            ErrorCode.ASSET_CONFLICT,
+            "Method Unit 校验未通过：" + "；".join(issues),
+            status_code=422,
+        )
+    return manifest
 
 
 def default_registry() -> AssetRegistry:

@@ -25,6 +25,12 @@ from agentforge_platform.asset_registry import (
 from agentforge_platform.errors import AppException, ErrorCode
 
 LOCK_SCHEMA_VERSION = "0.1"
+# R06A：按 schema_version 指定**参与哈希**的字段白名单。旧 0.1 锁只哈希原字段集，
+# 显式排除 R06A 新增字段（method_units/index_*/selection_reason）的默认值，保证旧锁字节与哈希不变。
+# 未列入白名单的新版本（如 0.2）按“全部字段（除 lock_hash）”计算。
+LOCK_HASH_FIELDS: dict[str, tuple[str, ...]] = {
+    "0.1": ("schema_version", "profile", "mysql_image", "assets"),
+}
 _STRICT = ConfigDict(extra="forbid")
 
 
@@ -53,6 +59,11 @@ class AssetLock(BaseModel):
     mysql_image: ImageRef
     assets: list[LockedAsset]
     lock_hash: str
+    # R06A 新增（均可选）：方法单元锁与索引/选择审计；0.1 锁哈希不含这些字段。
+    method_units: list[LockedAsset] = []
+    index_schema_version: str | None = None
+    index_revision: str | None = None
+    selection_reason: str | None = None
 
 
 def _canonical(payload: object) -> str:
@@ -60,9 +71,25 @@ def _canonical(payload: object) -> str:
 
 
 def lock_hash_of(lock: AssetLock) -> str:
-    payload = lock.model_dump(mode="json")
-    payload.pop("lock_hash", None)
+    full = lock.model_dump(mode="json")
+    fields = LOCK_HASH_FIELDS.get(lock.schema_version)
+    if fields is None:
+        payload = {key: value for key, value in full.items() if key != "lock_hash"}
+    else:
+        payload = {key: full[key] for key in fields}
     return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+
+
+def verify_lock_hash(lock: AssetLock) -> AssetLock:
+    """校验锁哈希与内容一致（按 ``schema_version`` 的字段白名单）；不一致即拒绝（疑似被篡改）。"""
+    actual = lock_hash_of(lock)
+    if actual != lock.lock_hash:
+        raise AppException(
+            ErrorCode.ASSET_CHECKSUM_MISMATCH,
+            "asset-lock 哈希校验未通过（疑似被篡改）。",
+            status_code=409,
+        )
+    return lock
 
 
 def _asset_path(directory: Path) -> str:
