@@ -1,7 +1,7 @@
 {
   "schema_version": "0.1",
   "project_type": "crud_web",
-  "spec_hash": "ed88b117ad5ccd51648ad0136a34aea0fb1ae6219c72f9ba490d90f45d4060f8",
+  "spec_hash": "31c56158b34b3c68b10ffba0bd181cc32b11d95a5ba0c4292aa2be56759d6953",
   "profile_ref": "demo-ts-mp@0.3",
   "tables": [
     {
@@ -254,5 +254,5 @@
       "description": "服务器内部错误"
     }
   ],
-  "contract_hash": "0a8875c7ac908d926be75112a95e918451fd0f107254b01d096bf9719fb5fc85"
+  "contract_hash": "1465754ae10715a6369afba26eef8ce7cc1d35deb769d5ef07004c936d3d2bdd"
 }

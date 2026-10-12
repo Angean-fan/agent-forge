@@ -2,17 +2,49 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from agentforge_platform.db import session_scope
-from agentforge_platform.models import Project, Run, Worker
+from agentforge_platform.models import Project, Run, SpecVersion, Worker
 from agentforge_platform.runs import RunStatus, _now, claim_run, transition
+from agentforge_platform.spec import SoftwareSpecification
+from agentforge_platform.spec_service import canonical_json, content_hash
 from agentforge_platform.worker import run_worker
 
 ALICE_CREDS = {"username": "alice", "password": "alice-secret"}
 BOB_CREDS = {"username": "bob", "password": "bob-secret"}
+
+SAMPLE_PATH = (
+    Path(__file__).resolve().parents[2] / "schemas" / "task-management.spec.json"
+)
+
+
+def _spec_body(*entity_names: str) -> dict:
+    """构造一份已确认规格的 body；默认取库中 Task 样例，可克隆出多个实体。"""
+    raw = json.loads(SAMPLE_PATH.read_text(encoding="utf-8"))
+    if entity_names:
+        base = raw["entities"][0]
+        raw["entities"] = [{**base, "name": name} for name in entity_names]
+    return raw
+
+
+def _seed_confirmed_spec(factory, *, project_id: int, body: dict) -> int:
+    spec = SoftwareSpecification.model_validate(body)
+    with session_scope(factory) as session:
+        row = SpecVersion(
+            project_id=project_id,
+            version=1,
+            body_json=canonical_json(spec),
+            hash=content_hash(spec),
+            confirmed_at=_now(),
+        )
+        session.add(row)
+        session.flush()
+        return row.id
 
 
 def _failing_handler(factory):
@@ -218,3 +250,37 @@ def test_worker_processes_persisted_run_without_api(platform_app) -> None:
     with session_scope(factory) as session:
         run = session.query(Run).one()
         assert RunStatus(run.status) is RunStatus.FAILED
+
+
+def test_start_run_allows_legacy_task_spec(platform_app) -> None:
+    # 旧单实体 Task 规格：确认后照旧可提交生成（MVP 回归）。
+    app, factory = platform_app
+    project_id = _seed_project(factory, active_spec_id=None)
+    spec_id = _seed_confirmed_spec(factory, project_id=project_id, body=_spec_body())
+    with session_scope(factory) as session:
+        session.get(Project, project_id).active_spec_id = spec_id
+    client = _auth_client(app, ALICE_CREDS)
+
+    response = _submit(client, project_id, "k-task")
+
+    assert response.status_code == 202
+    assert response.json()["data"]["spec_id"] == spec_id
+
+
+def test_start_run_blocks_multi_entity_until_r10(platform_app) -> None:
+    # R01：合法的 2 实体候选可确认，但生成入口必须返回 SCOPE_CAPABILITY_NOT_READY。
+    app, factory = platform_app
+    project_id = _seed_project(factory, active_spec_id=None)
+    spec_id = _seed_confirmed_spec(
+        factory, project_id=project_id, body=_spec_body("Task", "Project")
+    )
+    with session_scope(factory) as session:
+        session.get(Project, project_id).active_spec_id = spec_id
+    client = _auth_client(app, ALICE_CREDS)
+
+    response = _submit(client, project_id, "k-multi")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SCOPE_CAPABILITY_NOT_READY"
+    with session_scope(factory) as session:
+        assert session.query(Run).count() == 0  # 未创建 run

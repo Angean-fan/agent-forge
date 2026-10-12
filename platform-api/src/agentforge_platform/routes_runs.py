@@ -16,7 +16,7 @@ from agentforge_platform.auth import get_current_account, require_csrf, require_
 from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.middleware import get_request_id
-from agentforge_platform.models import Artifact, Project, Run, RunEvent, Worker
+from agentforge_platform.models import Artifact, Project, Run, RunEvent, SpecVersion, Worker
 from agentforge_platform.responses import ApiResponse
 from agentforge_platform.retention import ensure_run_storage_available
 from agentforge_platform.runs import (
@@ -36,6 +36,8 @@ from agentforge_platform.runs import (
     verification_report,
     work_root,
 )
+from agentforge_platform.spec import is_legacy_task_spec, scope_issues
+from agentforge_platform.spec_service import load_spec
 
 router = APIRouter(prefix="/api", tags=["runs"])
 _STRICT = ConfigDict(extra="forbid")
@@ -220,6 +222,25 @@ def start_run(
     existing = find_run_by_idempotency(db, project.id, idempotency_key)
     if existing is not None:
         return ApiResponse(request_id=get_request_id(request), data=_run_view(existing))
+
+    # 生成入口能力门禁（R01）：合法多实体候选在 R10 能力就绪前不得生成，
+    # 也不得落入旧 contract.py 单实体路径。旧 Task 单实体路径照旧放行。
+    spec_row = db.get(SpecVersion, active_spec_id)
+    if spec_row is not None:
+        spec = load_spec(spec_row)
+        scope = scope_issues(spec)
+        if scope:
+            raise AppException(
+                ErrorCode.UNSUPPORTED_SCOPE,
+                "超出 Demo 范围：" + "；".join(scope) + "。",
+                status_code=422,
+            )
+        if not is_legacy_task_spec(spec):
+            raise AppException(
+                ErrorCode.SCOPE_CAPABILITY_NOT_READY,
+                "多业务实体生成能力尚未就绪（计划于 R10 提供）。",
+                status_code=422,
+            )
 
     # 配额/剩余空间达标才接受新运行（超限拒绝；过期产物由维护任务清理）。
     ensure_run_storage_available()

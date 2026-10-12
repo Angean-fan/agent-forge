@@ -1,6 +1,9 @@
-"""版本化 Software Specification schema（M06）。
+"""版本化 Software Specification schema（M06；R01 扩充通用业务范围校验）。
 
-按技术文档第 4 节定义契约字段；MVP 仅支持 1 个业务实体与固定技术 Profile。
+按技术文档第 4 节定义契约字段。R01 起：
+- **通用范围**（业务实体 ≤3、角色 ≤2、页面 ≤8，认证部分另计）见 :func:`scope_issues`；
+- **通用有效性**（字段名安全/类型白名单、权限动作）见 :func:`confirmation_issues`；
+- **仅旧 Task 单实体**的固定字段/角色规则见 :func:`is_legacy_task_spec` 与 ``_legacy_task_issues``。
 推断/不确定项以 ``source=pending`` 标注；冻结前关键 ``pending`` 必须为零。
 契约字段不得删去；暂不使用的字段以空数组表示；不接受超范围输入后静默裁剪。
 """
@@ -18,7 +21,15 @@ SUPPORTED_SCHEMA_VERSIONS = frozenset({SPEC_SCHEMA_VERSION})
 MVP_PROFILE_ID = "demo-ts-mp"
 MVP_PROFILE_VERSION = "0.3"
 MVP_TEMPLATE_VERSION = "demo-0.2"
-MVP_ENTITY_LIMIT = 1
+# R01：Demo 通用业务范围上限（认证实体/页面单独计算，不占业务限额）。
+MAX_BUSINESS_ENTITIES = 3
+MAX_BUSINESS_ROLES = 2
+MAX_BUSINESS_PAGES = 8
+_ALLOWED_FIELD_TYPES = frozenset({
+    "long", "int", "integer", "string", "text", "bool", "boolean",
+    "datetime", "date", "decimal",
+})
+_ALLOWED_ACTIONS = frozenset({"create", "read", "update", "delete"})
 MVP_TASK_FIELDS = {
     "id": ("long", True),
     "title": ("string", True),
@@ -92,6 +103,19 @@ class AcceptanceCase(BaseModel):
     source: Source = Source.PENDING
 
 
+class BusinessPage(BaseModel):
+    """业务页面（R01）：面向用户的界面单元，用于业务范围计数。
+
+    认证相关页面由模板提供，不计入 ``pages``；``entity``/``path`` 为可选的归属与路由提示。
+    """
+
+    model_config = _STRICT
+
+    name: str
+    entity: str | None = None
+    path: str | None = None
+
+
 class TechnicalProfile(BaseModel):
     model_config = _STRICT
 
@@ -109,6 +133,7 @@ class SoftwareSpecification(BaseModel):
     actors: list[str] = []
     entities: list[Entity] = []
     relations: list[dict[str, Any]] = []
+    pages: list[BusinessPage] = []
     permissions: list[Permission] = []
     business_rules: list[BusinessRule] = []
     acceptance_cases: list[AcceptanceCase] = []
@@ -154,65 +179,98 @@ def critical_pending_fields(spec: SoftwareSpecification) -> list[str]:
     return pending
 
 
+def business_roles(spec: SoftwareSpecification) -> list[str]:
+    """业务角色集合：actors 与 permissions 声明的角色去重（认证实体/角色另计）。"""
+    return sorted({p.role for p in spec.permissions} | set(spec.actors))
+
+
+def is_legacy_task_spec(spec: SoftwareSpecification) -> bool:
+    """是否为旧 MVP 的单实体 ``Task`` 规格；固定字段/单实体规则仅对它适用。"""
+    return len(spec.entities) == 1 and spec.entities[0].name == "Task"
+
+
+def scope_issues(spec: SoftwareSpecification) -> list[str]:
+    """Demo **通用**业务范围违规（超出 → ``UNSUPPORTED_SCOPE``）。
+
+    仅校验业务实体/角色/页面**数量**是否超出 Demo 上限；认证相关部分单独计算、不占限额。
+    字段安全性/类型与权限动作属通用**有效性**（见 :func:`confirmation_issues`），
+    不含仅属于旧 Task MVP 的固定字段/单实体规则（见 :func:`is_legacy_task_spec`）。
+    """
+    issues: list[str] = []
+    if len(spec.entities) > MAX_BUSINESS_ENTITIES:
+        issues.append(
+            f"业务实体最多 {MAX_BUSINESS_ENTITIES} 个，收到 {len(spec.entities)} 个，请缩减实体"
+        )
+    roles = business_roles(spec)
+    if len(roles) > MAX_BUSINESS_ROLES:
+        issues.append(f"业务角色最多 {MAX_BUSINESS_ROLES} 个，收到 {len(roles)} 个，请合并角色")
+    if len(spec.pages) > MAX_BUSINESS_PAGES:
+        issues.append(
+            f"业务页面最多 {MAX_BUSINESS_PAGES} 个，收到 {len(spec.pages)} 个，请缩减页面"
+        )
+    return issues
+
+
+def _legacy_task_issues(spec: SoftwareSpecification) -> list[str]:
+    """仅适用于旧单实体 ``Task`` 规格的固定字段/角色规则（保持 MVP 语义不变）。"""
+    entity = spec.entities[0]
+    issues: list[str] = []
+    fields_by_name = {field.name: field for field in entity.fields}
+    for name, (type_name, required) in MVP_TASK_FIELDS.items():
+        field = fields_by_name.get(name)
+        if field is None or field.type != type_name or field.required != required:
+            issues.append(f"Task 固定字段缺失或类型不匹配：{name}")
+    if not any(
+        field.type == "string" and field.name not in {"id", "owner_id", "created_at"}
+        for field in entity.fields
+    ):
+        issues.append("Task 需要至少一个可搜索的字符串字段")
+    if any(role not in {"ADMIN", "MEMBER"} for role in spec.actors):
+        issues.append("MVP 仅支持 ADMIN/MEMBER 角色")
+    if any(permission.role not in {"ADMIN", "MEMBER"} for permission in spec.permissions):
+        issues.append("MVP 仅支持 ADMIN/MEMBER 权限角色")
+    return issues
+
+
 def confirmation_issues(spec: SoftwareSpecification) -> list[str]:
-    """返回阻止确认的问题列表；为空表示可确认。"""
+    """返回阻止确认的问题列表（``SPEC_NOT_READY``）；通用**数量**超限另经 ``scope_issues`` 判定。"""
     issues: list[str] = []
 
     if len(spec.entities) == 0:
         issues.append("缺少业务实体")
-    elif len(spec.entities) > MVP_ENTITY_LIMIT:
-        issues.append(
-            f"MVP 仅支持 {MVP_ENTITY_LIMIT} 个业务实体，收到 {len(spec.entities)} 个"
-        )
-
     if not spec.permissions:
         issues.append("缺少角色权限定义")
     if not spec.business_rules:
         issues.append("缺少关键业务规则")
     if spec.project_type != "crud_web":
         issues.append("MVP 仅支持 crud_web 项目类型")
-    if len(spec.entities) == 1:
-        entity = spec.entities[0]
-        if entity.name != "Task":
-            issues.append("MVP 仅支持 Task 实体")
-        fields_by_name = {field.name: field for field in entity.fields}
-        for name, (type_name, required) in MVP_TASK_FIELDS.items():
-            field = fields_by_name.get(name)
-            if field is None or field.type != type_name or field.required != required:
-                issues.append(f"Task 固定字段缺失或类型不匹配：{name}")
+    if not any({"create", "read"} <= set(permission.actions) for permission in spec.permissions):
+        issues.append("需要同时可创建和读取的角色")
+    # 通用有效性：字段名安全与类型白名单对所有实体生效（不限于旧 Task）。
+    for entity in spec.entities:
         for field in entity.fields:
             if (len(field.name) > 64 or _SAFE_FIELD_NAME.fullmatch(field.name) is None
                     or field.name in _JAVA_KEYWORDS):
-                issues.append(f"不安全的字段名：{field.name}")
-            if field.type not in {
-                "long", "int", "integer", "string", "text", "bool", "boolean",
-                "datetime", "date", "decimal",
-            }:
-                issues.append(f"不支持的字段类型：{field.name} {field.type}")
-        if not any(
-            field.type == "string" and field.name not in {"id", "owner_id", "created_at"}
-            for field in entity.fields
-        ):
-            issues.append("Task 需要至少一个可搜索的字符串字段")
-    if any(role not in {"ADMIN", "MEMBER"} for role in spec.actors):
-        issues.append("MVP 仅支持 ADMIN/MEMBER 角色")
-    if any(permission.role not in {"ADMIN", "MEMBER"} for permission in spec.permissions):
-        issues.append("MVP 仅支持 ADMIN/MEMBER 权限角色")
-    if not any({"create", "read"} <= set(permission.actions) for permission in spec.permissions):
-        issues.append("Task 需要同时可创建和读取的角色")
+                issues.append(f"不安全的字段名：{entity.name}.{field.name}")
+            if field.type not in _ALLOWED_FIELD_TYPES:
+                issues.append(f"不支持的字段类型：{entity.name}.{field.name} {field.type}")
     if any(
-        action not in {"create", "read", "update", "delete"}
+        action not in _ALLOWED_ACTIONS
         for permission in spec.permissions for action in permission.actions
     ):
         issues.append("存在不支持的权限操作")
-    if any((spec.relations, spec.capability_requests, spec.recipe_requests,
+    # relations 为 R10 多实体所需，允许保留；其余扩展能力仍不在 Demo 范围内。
+    if any((spec.capability_requests, spec.recipe_requests,
             spec.integrations, spec.external_requirements)):
-        issues.append("MVP 不支持额外关系、能力请求或外部集成")
+        issues.append("MVP 不支持能力请求、Recipe、外部集成或外部需求")
     if not is_supported_profile(spec.technical_profile):
         issues.append(
             "不支持的技术 Profile: "
             f"{spec.technical_profile.profile_id}@{spec.technical_profile.profile_version}"
         )
+
+    if is_legacy_task_spec(spec):
+        issues.extend(_legacy_task_issues(spec))
 
     pending = critical_pending_fields(spec)
     if pending:
@@ -222,4 +280,4 @@ def confirmation_issues(spec: SoftwareSpecification) -> list[str]:
 
 
 def is_confirmable(spec: SoftwareSpecification) -> bool:
-    return not confirmation_issues(spec)
+    return not scope_issues(spec) and not confirmation_issues(spec)

@@ -16,7 +16,12 @@ from sqlalchemy.orm import Session
 
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.models import Project, SpecVersion
-from agentforge_platform.spec import SoftwareSpecification, confirmation_issues
+from agentforge_platform.spec import (
+    SoftwareSpecification,
+    confirmation_issues,
+    is_legacy_task_spec,
+    scope_issues,
+)
 
 
 def canonical_json(spec: SoftwareSpecification) -> str:
@@ -125,9 +130,17 @@ def confirm_draft(
         raise AppException(ErrorCode.SPEC_CONFLICT, "草稿已被修改，请重新读取。", status_code=409)
 
     spec = load_spec(latest)
+    scope = scope_issues(spec)
+    if scope:
+        raise AppException(
+            ErrorCode.UNSUPPORTED_SCOPE,
+            "超出 Demo 范围：" + "；".join(scope) + "。",
+            status_code=422,
+        )
     issues = confirmation_issues(spec)
-    if not issues:
-        # M23 将直接消费冻结规格；确认前先验证契约与固定 Task 能力包能接收它。
+    if not issues and is_legacy_task_spec(spec):
+        # 旧 Task 单实体路径：确认前先验证契约与固定能力包能接收它。
+        # 合法多实体候选可确认但不在此编译（生成入口按 R10 能力门禁拦截）。
         from agentforge_platform.capability_packs import build_params
         from agentforge_platform.contract import compile_from_spec
 

@@ -18,6 +18,7 @@
     }
   ],
   "relations": [],
+  "pages": [],
   "permissions": [
     {"role": "ADMIN", "actions": ["create", "read", "update", "delete"], "source": "user_confirmed"},
     {"role": "MEMBER", "actions": ["create", "read", "update", "delete"], "source": "user_confirmed"}
