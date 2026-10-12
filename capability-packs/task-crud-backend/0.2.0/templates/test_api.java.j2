@@ -1,0 +1,158 @@
+package {{ package }};
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import {{ package }}.entity.AppUser;
+import {{ package }}.mapper.AppUserMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+@Transactional
+class {{ entity_name }}ApiTest {
+
+    @Autowired private MockMvc mockMvc;
+    @Autowired private ObjectMapper objectMapper;
+    @Autowired private AppUserMapper userMapper;
+    @Autowired private PasswordEncoder passwordEncoder;
+
+    private String aliceToken;
+    private String bobToken;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        aliceToken = createUserAndLogin("alice", "alice123", "{{ creator_role }}");
+        bobToken = createUserAndLogin("bob", "bob123", "{% if readonly_role %}{{ readonly_role }}{% else %}{{ creator_role }}{% endif %}");
+    }
+
+    private String createUserAndLogin(String username, String password, String role) throws Exception {
+        AppUser user = new AppUser();
+        user.setUsername(username);
+        user.setPasswordHash(passwordEncoder.encode(password));
+        user.setRole(role);
+        user.setEnabled(true);
+        userMapper.insert(user);
+        String body = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).get("token").asText();
+    }
+
+    private String payload(String {{ search_java }}) throws Exception {
+        Map<String, Object> map = new LinkedHashMap<>();
+{% for f in writable_fields %}
+{% if f.java_name not in fk_java_names %}
+        map.put("{{ f.java_name }}", {% if f.java_name == search_field_name %}{{ search_java }}{% elif f.java_type == "String" %}"x"{% elif f.java_type == "Boolean" %}true{% elif f.java_type == "LocalDate" %}"2026-01-01"{% elif f.java_type == "LocalDateTime" %}"2026-01-01T00:00:00"{% else %}1{% endif %});
+{% endif %}
+{% endfor %}
+        return objectMapper.writeValueAsString(map);
+    }
+
+    private long createRecord(String token, String {{ search_java }}) throws Exception {
+        String body = mockMvc.perform(post("{{ route_path }}")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload({{ search_java }})))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).get("id").asLong();
+    }
+
+    @Test
+    void paginationReturnsCorrectTotal() throws Exception {
+        createRecord(aliceToken, "t1");
+        createRecord(aliceToken, "t2");
+        createRecord(aliceToken, "t3");
+
+        mockMvc.perform(get("{{ route_path }}?page=1&size=2")
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(3))
+                .andExpect(jsonPath("$.items.length()").value(2));
+    }
+
+    @Test
+    void paginationRejectsOutOfRange() throws Exception {
+        for (String query : new String[] {"page=0&size=10", "page=1&size=0", "page=1&size=1000000"}) {
+            mockMvc.perform(get("{{ route_path }}?" + query)
+                            .header("Authorization", "Bearer " + aliceToken))
+                    .andExpect(status().isBadRequest());
+        }
+    }
+
+    @Test
+    void searchFiltersByField() throws Exception {
+        createRecord(aliceToken, "alpha-task");
+        createRecord(aliceToken, "beta-task");
+
+        mockMvc.perform(get("{{ route_path }}?keyword=alpha")
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(1));
+    }
+
+    @Test
+    void memberCannotAccessOthersRecord() throws Exception {
+        long recordId = createRecord(aliceToken, "alice-only");
+
+        mockMvc.perform(get("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + bobToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(put("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + bobToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload("bob-edit")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isOk());
+    }
+{% if readonly_role %}
+
+    @Test
+    void readonlyRoleCanReadOwnScope() throws Exception {
+        mockMvc.perform(get("{{ route_path }}")
+                        .header("Authorization", "Bearer " + bobToken))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void readonlyRoleCannotCreate() throws Exception {
+        mockMvc.perform(post("{{ route_path }}")
+                        .header("Authorization", "Bearer " + bobToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload("bob-write")))
+                .andExpect(status().isForbidden());
+    }
+{% endif %}
+{% if op_roles['delete'] | length == 0 %}
+
+    @Test
+    void operationWithEmptyRolesIsDenied() throws Exception {
+        long recordId = createRecord(aliceToken, "to-remove");
+        mockMvc.perform(delete("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isForbidden());
+    }
+{% endif %}
+}

@@ -120,9 +120,40 @@ def test_missing_primary_key_is_rejected() -> None:
     assert error.value.code == "CONTRACT_UNSUPPORTED"
 
 
-def test_multiple_entities_are_rejected() -> None:
+def test_multiple_entities_compile_with_foreign_key() -> None:
+    # R10：支持确定性一对多/多对一——父实体（Task）先于子实体（Project），子表持有父外键。
     first = _spec_with().entities[0].model_dump()
-    spec = _spec_with(entities=[first, {**first, "name": "Project"}])
+    spec = _spec_with(
+        entities=[first, {**first, "name": "Project"}],
+        relations=[{"child": "Project", "parent": "Task", "kind": "many-to-one"}],
+    )
+
+    contract = compile_from_spec(spec)
+
+    assert [table.table for table in contract.tables] == ["task", "project"]
+    project = contract.tables[1]
+    assert any(column.name == "task_id" for column in project.columns)
+    assert [matrix.entity for matrix in contract.permissions] == ["Task", "Project"]
+    assert any(route.path == "/api/projects" for route in contract.routes)
+    assert any(dto.name == "ProjectCreateRequest" for dto in contract.dtos)
+
+
+def test_too_many_entities_are_rejected() -> None:
+    base = _spec_with().entities[0].model_dump()
+    spec = _spec_with(entities=[{**base, "name": name} for name in "ABCD"])
+
+    with pytest.raises(ContractError) as error:
+        compile_from_spec(spec)
+
+    assert error.value.code == "CONTRACT_UNSUPPORTED"
+
+
+def test_unknown_relation_target_is_rejected() -> None:
+    first = _spec_with().entities[0].model_dump()
+    spec = _spec_with(
+        entities=[first, {**first, "name": "Project"}],
+        relations=[{"child": "Project", "parent": "Missing", "kind": "many-to-one"}],
+    )
 
     with pytest.raises(ContractError) as error:
         compile_from_spec(spec)

@@ -1,0 +1,12 @@
+package {{ package }}.dto;
+
+{% for imp in writable_imports %}
+import {{ imp }};
+{% endfor %}
+
+public record {{ entity_name }}UpdateRequest(
+{% for d in writable_decls %}
+{{ d }}
+{% endfor %}
+) {
+}

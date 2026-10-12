@@ -136,5 +136,5 @@ def test_legacy_ts_profile_and_lock_replay() -> None:
     assert lock.lock_hash == committed.lock_hash
     # 新增 JS 资产不改变 TS 组合（后端 0.1.3 仅兼容 demo-js-mp）
     assert {a.id for a in lock.assets} == {"base-template", "task-crud-backend", "task-crud-frontend"}
-    assert next(a for a in lock.assets if a.id == "task-crud-backend").version == "0.1.2"
+    assert next(a for a in lock.assets if a.id == "task-crud-backend").version == "0.2.0"
     verify_lock_hash(lock)

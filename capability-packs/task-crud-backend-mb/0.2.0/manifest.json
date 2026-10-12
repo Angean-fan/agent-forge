@@ -1,0 +1,95 @@
+{
+  "id": "task-crud-backend-mb",
+  "version": "0.2.0",
+  "kind": "capability-pack",
+  "compatible_profiles": [
+    "demo-ts-mb",
+    "demo-js-mb"
+  ],
+  "requires": [
+    "template:auth",
+    "template:exception-handling",
+    "template:mybatis"
+  ],
+  "provides": [
+    "crud",
+    "pagination",
+    "search",
+    "data_ownership"
+  ],
+  "conflicts": [],
+  "extension_points": [],
+  "target_dir": "backend",
+  "checksum": "cf4c21a2e3c6594906381afdac8e82bf327770647155c67cce162ce69c0791cf",
+  "parameter_schema": {
+    "entity_name": "string",
+    "table_name": "string",
+    "plural": "string",
+    "fields": "ColumnContract[]",
+    "writable_fields": "FieldContract[]",
+    "view_fields": "FieldContract[]"
+  },
+  "owned_paths": [
+    "src/main/java/com/agentforge/template/entity/",
+    "src/main/java/com/agentforge/template/mapper/",
+    "src/main/java/com/agentforge/template/service/",
+    "src/main/java/com/agentforge/template/controller/",
+    "src/main/java/com/agentforge/template/dto/",
+    "src/main/java/com/agentforge/template/vo/",
+    "src/main/resources/mapper/",
+    "src/main/resources/db/migration/V2__create_*.sql",
+    "src/test/java/com/agentforge/template/"
+  ],
+  "dependencies": [],
+  "checks": [
+    "mvn test",
+    "mvn package"
+  ],
+  "license": "internal",
+  "renders": [
+    {
+      "template": "entity.java.j2",
+      "target": "src/main/java/{{ package_dir }}/entity/{{ entity_name }}.java"
+    },
+    {
+      "template": "mapper.java.j2",
+      "target": "src/main/java/{{ package_dir }}/mapper/{{ entity_name }}Mapper.java"
+    },
+    {
+      "template": "mapper_xml.xml.j2",
+      "target": "src/main/resources/mapper/{{ entity_name }}Mapper.xml"
+    },
+    {
+      "template": "dto_create.java.j2",
+      "target": "src/main/java/{{ package_dir }}/dto/{{ entity_name }}CreateRequest.java"
+    },
+    {
+      "template": "dto_update.java.j2",
+      "target": "src/main/java/{{ package_dir }}/dto/{{ entity_name }}UpdateRequest.java"
+    },
+    {
+      "template": "vo_view.java.j2",
+      "target": "src/main/java/{{ package_dir }}/vo/{{ entity_name }}View.java"
+    },
+    {
+      "template": "vo_page.java.j2",
+      "target": "src/main/java/{{ package_dir }}/vo/PageResult.java"
+    },
+    {
+      "template": "service.java.j2",
+      "target": "src/main/java/{{ package_dir }}/service/{{ entity_name }}Service.java"
+    },
+    {
+      "template": "controller.java.j2",
+      "target": "src/main/java/{{ package_dir }}/controller/{{ entity_name }}Controller.java"
+    },
+    {
+      "template": "migration.sql.j2",
+      "target": "src/main/resources/db/migration/V{{ migration_version }}__create_{{ table_name }}.sql"
+    },
+    {
+      "template": "test_api.java.j2",
+      "target": "src/test/java/{{ package_dir }}/{{ entity_name }}ApiTest.java"
+    }
+  ]
+}

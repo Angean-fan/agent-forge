@@ -68,7 +68,7 @@ def test_mybatis_spec_confirmable_and_resolves() -> None:
         "base-template", "task-crud-backend-mb", "task-crud-frontend"
     }
     assert next(a for a in lock.assets if a.id == "base-template").version == "demo-0.2-mb"
-    assert next(a for a in lock.assets if a.id == "task-crud-backend-mb").version == "0.1.0"
+    assert next(a for a in lock.assets if a.id == "task-crud-backend-mb").version == "0.2.0"
 
 
 def test_mybatis_lock_matches_committed_sample() -> None:
@@ -105,7 +105,7 @@ def test_plus_and_mybatis_backends_are_not_mixed() -> None:
     plus = resolve_assets(default_registry(), "demo-ts-mp")
     plus_ids = {a.id for a in plus.assets}
     assert "task-crud-backend-mb" not in plus_ids
-    assert next(a for a in plus.assets if a.id == "task-crud-backend").version == "0.1.2"
+    assert next(a for a in plus.assets if a.id == "task-crud-backend").version == "0.2.0"
 
     mb_ids = {a.id for a in resolve_assets(default_registry(), "demo-ts-mb").assets}
     assert "task-crud-backend" not in mb_ids  # 不复用 Plus 后端

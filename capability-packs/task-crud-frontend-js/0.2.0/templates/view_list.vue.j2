@@ -1,0 +1,160 @@
+<template>
+  <div class="page">
+    <el-card>
+      <template #header>
+        <div class="header">
+          <span>{{ entity_name }} 列表</span>
+          <div class="actions">
+            <el-input
+              v-model="keyword"
+              placeholder="搜索{{ search_java }}"
+              clearable
+              style="width: 200px"
+              @keyup.enter="reload"
+            />
+            <el-button @click="reload">搜索</el-button>
+            <el-button type="primary" @click="openCreate">新增</el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-table v-loading="loading" :data="rows">
+{% for f in view_fields %}
+        <el-table-column prop="{{ f.java_name }}" label="{{ f.java_name }}" />
+{% endfor %}
+        <el-table-column label="操作" width="180">
+          <template #default="{ row }">
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" @click="onDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <el-pagination
+        class="pager"
+        layout="total, prev, pager, next"
+        :total="total"
+        :page-size="size"
+        :current-page="page"
+        @current-change="onPageChange"
+      />
+    </el-card>
+
+    <el-dialog v-model="dialogVisible" :title="editingId === null ? '新增' : '编辑'" width="480px">
+      <el-form label-width="100px">
+{% for f in writable_fields %}
+        <el-form-item label="{{ f.java_name }}">
+          <el-input v-model="form.{{ f.java_name }}" />
+        </el-form-item>
+{% endfor %}
+      </el-form>
+      <template #footer>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="onSubmit">保存</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { ElMessage } from 'element-plus';
+import { onMounted, reactive, ref } from 'vue';
+
+import {
+  create{{ entity_name }},
+  list{{ entity_name }}s,
+  remove{{ entity_name }},
+  update{{ entity_name }},
+} from '../api/{{ entity_camel }}';
+
+const rows = ref([]);
+const total = ref(0);
+const page = ref(1);
+const size = ref(10);
+const keyword = ref('');
+const loading = ref(false);
+
+const dialogVisible = ref(false);
+const editingId = ref(null);
+const form = reactive({
+{% for f in writable_fields %}
+  {{ f.java_name }}: {% if f.ts_type == 'string' %}''{% elif f.ts_type == 'boolean' %}false{% else %}0{% endif %},
+{% endfor %}
+});
+
+async function reload() {
+  loading.value = true;
+  try {
+    const result = await list{{ entity_name }}s(page.value, size.value, keyword.value);
+    rows.value = result.items;
+    total.value = result.total;
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '加载失败');
+  } finally {
+    loading.value = false;
+  }
+}
+
+function onPageChange(next) {
+  page.value = next;
+  void reload();
+}
+
+function openCreate() {
+  editingId.value = null;
+  dialogVisible.value = true;
+}
+
+function openEdit(row) {
+  editingId.value = row.id;
+{% for f in writable_fields %}
+  form.{{ f.java_name }} = row.{{ f.java_name }};
+{% endfor %}
+  dialogVisible.value = true;
+}
+
+async function onSubmit() {
+  try {
+    if (editingId.value === null) {
+      await create{{ entity_name }}({ ...form });
+    } else {
+      await update{{ entity_name }}(editingId.value, { ...form });
+    }
+    dialogVisible.value = false;
+    ElMessage.success('已保存');
+    await reload();
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '保存失败');
+  }
+}
+
+async function onDelete(row) {
+  try {
+    await remove{{ entity_name }}(row.id);
+    ElMessage.success('已删除');
+    await reload();
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '删除失败');
+  }
+}
+
+onMounted(reload);
+</script>
+
+<style scoped>
+.page {
+  padding: 24px;
+}
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+}
+.pager {
+  margin-top: 16px;
+}
+</style>

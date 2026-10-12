@@ -67,14 +67,11 @@ def _method_unit(**overrides) -> dict:
 def test_mvp_baseline_lock_replays_unchanged() -> None:
     lock = AssetLock.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
 
-    # 哈希校验（不编辑、不重算）通过
+    # 哈希校验（不编辑、不重算）通过；该夹具是 MVP 基线原版锁，独立于后续新增版本。
     verify_lock_hash(lock)
     assert lock.method_units == []
-    assert lock.lock_hash == AssetLock.model_validate_json(
-        SAMPLE_LOCK.read_text(encoding="utf-8")
-    ).lock_hash
 
-    # 按固定 ID/version/checksum 重放：注册表定位 + 内容 checksum 对账
+    # 按固定 ID/version/checksum 重放：注册表定位 + 内容 checksum 对账（旧版本仍发布）
     registry = default_registry()
     for asset in lock.assets:
         manifest, directory = registry.get(asset.kind, asset.id, asset.version)
@@ -84,10 +81,13 @@ def test_mvp_baseline_lock_replays_unchanged() -> None:
         registry.verify_checksum(asset.kind, asset.id, asset.version)
 
 
-def test_resolver_output_matches_frozen_baseline() -> None:
+def test_resolver_output_matches_current_sample() -> None:
+    # 冻结基线夹具独立重放（旧版本仍发布）；当前 resolve 对应**当前**样例。
     frozen = AssetLock.model_validate_json(FIXTURE.read_text(encoding="utf-8"))
+    verify_lock_hash(frozen)
 
-    assert resolve_assets(default_registry(), "demo-ts-mp").lock_hash == frozen.lock_hash
+    current = AssetLock.model_validate_json(SAMPLE_LOCK.read_text(encoding="utf-8"))
+    assert resolve_assets(default_registry(), "demo-ts-mp").lock_hash == current.lock_hash
 
 
 def test_new_optional_fields_do_not_change_0_1_hash() -> None:

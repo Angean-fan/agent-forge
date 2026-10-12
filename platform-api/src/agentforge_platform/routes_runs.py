@@ -37,7 +37,7 @@ from agentforge_platform.runs import (
     verification_report,
     work_root,
 )
-from agentforge_platform.spec import is_legacy_task_spec, scope_issues
+from agentforge_platform.spec import scope_issues
 from agentforge_platform.spec_service import require_frozen_spec
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -228,12 +228,11 @@ def start_run(
     if existing is not None:
         return ApiResponse(request_id=get_request_id(request), data=_run_view(db, existing))
 
-    # 生成入口能力门禁（R01）：合法多实体候选在 R10 能力就绪前不得生成，
-    # 也不得落入旧 contract.py 单实体路径。旧 Task 单实体路径照旧放行。
+    # R06：运行只接收**未被篡改**的冻结规格；其冻结 hash 记入 run 并随生成校验。
+    # R10：多实体生成能力已就绪，门禁解除；仅保留通用业务范围校验。
     spec_hash: str | None = None
     spec_row = db.get(SpecVersion, active_spec_id)
     if spec_row is not None:
-        # R06：运行只接收**未被篡改**的冻结规格；其冻结 hash 记入 run 并随生成校验。
         spec = require_frozen_spec(spec_row)
         spec_hash = spec_row.hash
         scope = scope_issues(spec)
@@ -241,12 +240,6 @@ def start_run(
             raise AppException(
                 ErrorCode.UNSUPPORTED_SCOPE,
                 "超出 Demo 范围：" + "；".join(scope) + "。",
-                status_code=422,
-            )
-        if not is_legacy_task_spec(spec):
-            raise AppException(
-                ErrorCode.SCOPE_CAPABILITY_NOT_READY,
-                "多业务实体生成能力尚未就绪（计划于 R10 提供）。",
                 status_code=422,
             )
 

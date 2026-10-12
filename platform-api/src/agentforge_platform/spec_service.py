@@ -19,7 +19,6 @@ from agentforge_platform.models import Project, SpecVersion
 from agentforge_platform.spec import (
     SoftwareSpecification,
     confirmation_issues,
-    is_legacy_task_spec,
     scope_issues,
 )
 
@@ -155,14 +154,15 @@ def confirm_draft(
             status_code=422,
         )
     issues = confirmation_issues(spec)
-    if not issues and is_legacy_task_spec(spec):
-        # 旧 Task 单实体路径：确认前先验证契约与固定能力包能接收它。
-        # 合法多实体候选可确认但不在此编译（生成入口按 R10 能力门禁拦截）。
+    if not issues:
+        # 确认前先验证契约与能力包能接收它（R10 起对每个业务实体逐一验证）。
         from agentforge_platform.capability_packs import build_params
         from agentforge_platform.contract import compile_from_spec
 
         try:
-            build_params(compile_from_spec(spec))
+            contract = compile_from_spec(spec)
+            for matrix in contract.permissions:
+                build_params(contract, matrix.entity)
         except AppException as exc:
             issues.append(exc.message)
     if issues:

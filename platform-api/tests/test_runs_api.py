@@ -267,8 +267,8 @@ def test_start_run_allows_legacy_task_spec(platform_app) -> None:
     assert response.json()["data"]["spec_id"] == spec_id
 
 
-def test_start_run_blocks_multi_entity_until_r10(platform_app) -> None:
-    # R01：合法的 2 实体候选可确认，但生成入口必须返回 SCOPE_CAPABILITY_NOT_READY。
+def test_start_run_supports_multi_entity(platform_app) -> None:
+    # R10：多实体生成能力已就绪，生成入口接受合法的 2 实体规格（R01 门禁解除）。
     app, factory = platform_app
     project_id = _seed_project(factory, active_spec_id=None)
     spec_id = _seed_confirmed_spec(
@@ -280,7 +280,7 @@ def test_start_run_blocks_multi_entity_until_r10(platform_app) -> None:
 
     response = _submit(client, project_id, "k-multi")
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "SCOPE_CAPABILITY_NOT_READY"
+    assert response.status_code == 202, response.text
+    assert response.json()["data"]["spec_id"] == spec_id
     with session_scope(factory) as session:
-        assert session.query(Run).count() == 0  # 未创建 run
+        assert session.query(Run).count() == 1

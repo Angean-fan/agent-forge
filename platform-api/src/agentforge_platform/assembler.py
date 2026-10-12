@@ -129,12 +129,26 @@ def _copy_template(template_dir: Path, writer: _Writer) -> None:
 def _render_packs(
     contract: BusinessContract, lock: AssetLock, registry: AssetRegistry, writer: _Writer
 ) -> None:
+    # R10：多实体逐实体渲染；共享文件（如 PageResult）内容一致，去重写入一次。
+    entity_names = [matrix.entity for matrix in contract.permissions] or [None]
     for asset in lock.assets:
         if asset.kind != "capability-pack":
             continue
         manifest, pack_dir = registry.get("capability-pack", asset.id, asset.version)
-        for rel, content in render_pack_files(pack_dir, contract):
-            writer.write(manifest.target_dir, rel, content.encode("utf-8"))
+        rendered: dict[str, bytes] = {}
+        for entity_name in entity_names:
+            per_entity: dict[str, bytes] = {}
+            for rel, content in render_pack_files(pack_dir, contract, entity_name=entity_name):
+                if rel in per_entity:  # 同一实体内重复目标：能力包编写错误，拒绝
+                    raise AssemblyError(f"能力包渲染出重复目标：{rel}")
+                per_entity[rel] = content.encode("utf-8")
+            for rel, data in per_entity.items():
+                # 跨实体同路径：内容一致（如 PageResult）则去重，不一致即冲突。
+                if rel in rendered and rendered[rel] != data:
+                    raise AssemblyError(f"能力包渲染冲突（跨实体同路径不同内容）：{rel}")
+                rendered[rel] = data
+        for rel, data in rendered.items():
+            writer.write(manifest.target_dir, rel, data)
         if manifest.target_dir and manifest.dependencies:
             inject_dependencies(
                 writer.root / manifest.target_dir / "pom.xml", manifest.dependencies

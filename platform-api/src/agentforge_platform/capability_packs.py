@@ -14,7 +14,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from agentforge_platform.asset_registry import AssetManifest
-from agentforge_platform.contract import BusinessContract
+from agentforge_platform.contract import BusinessContract, TableContract
 from agentforge_platform.errors import AppException, ErrorCode
 
 PACKAGE = "com.agentforge.template"
@@ -104,13 +104,45 @@ def _render_getters(fields: list[dict], indent: str) -> list[str]:
     return lines
 
 
-def build_params(contract: BusinessContract) -> dict:
-    if len(contract.tables) != 1 or len(contract.permissions) != 1:
-        raise PackRenderError(ErrorCode.CONTRACT_UNSUPPORTED, "能力包仅支持单表单实体契约")
+def _foreign_keys_sql(contract: BusinessContract, table: TableContract) -> str:
+    """子表外键约束：仅当 ``<parent_snake>_id`` 前缀命中本契约的另一张表（排除 owner_id/id）。"""
+    table_names = {item.table for item in contract.tables}
+    clauses = [
+        f",\n    FOREIGN KEY ({column.name}) REFERENCES {column.name[:-3]}(id)"
+        for column in table.columns
+        if column.name.endswith("_id") and column.name[:-3] in table_names
+    ]
+    return "".join(clauses)
 
-    table = contract.tables[0]
-    entity_name = contract.permissions[0].entity
-    plural = contract.routes[0].path.rsplit("/", 1)[-1]
+
+def build_params(contract: BusinessContract, entity_name: str | None = None) -> dict:
+    """为某个业务实体渲染参数（R10：多实体逐实体渲染）。
+
+    ``entity_name=None`` 时要求契约恰好单实体（MVP 语义不变）；指定实体则按该实体渲染。
+    """
+    entities = [matrix.entity for matrix in contract.permissions]
+    if entity_name is None:
+        if len(contract.tables) != 1 or len(entities) != 1:
+            raise PackRenderError(
+                ErrorCode.CONTRACT_UNSUPPORTED, "未指定实体时能力包仅支持单表单实体契约"
+            )
+        index = 0
+    else:
+        if entity_name not in entities:
+            raise PackRenderError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"契约中不存在实体 {entity_name!r}"
+            )
+        index = entities.index(entity_name)
+
+    table = contract.tables[index]
+    entity_name = entities[index]
+    permission_matrix = contract.permissions[index]
+    plural = f"{table.table}s"
+    entity_routes = [
+        route for route in contract.routes if route.path.startswith(f"/api/{plural}")
+    ]
+    if not entity_routes:
+        raise PackRenderError(ErrorCode.CONTRACT_UNSUPPORTED, f"契约缺少 {entity_name} 的路由")
 
     create_dto = next((d for d in contract.dtos if d.name == f"{entity_name}CreateRequest"), None)
     view_dto = next((d for d in contract.dtos if d.name == f"{entity_name}View"), None)
@@ -200,9 +232,9 @@ def build_params(contract: BusinessContract) -> dict:
     indexes = [group[0] for group in table.indexes if len(group) == 1]
 
     # 角色 → 允许操作；每条契约路由的 allowed_roles 必须与权限矩阵一致，否则拒绝装配。
-    role_actions = {entry.role: set(entry.actions) for entry in contract.permissions[0].roles}
+    role_actions = {entry.role: set(entry.actions) for entry in permission_matrix.roles}
     op_roles: dict[str, list[str]] = {}
-    for route in contract.routes:
+    for route in entity_routes:
         action = _OPERATION_ACTION[route.operation]
         expected = sorted(role for role, actions in role_actions.items() if action in actions)
         if expected != sorted(route.allowed_roles):
@@ -263,6 +295,8 @@ def build_params(contract: BusinessContract) -> dict:
         "owner_java": _camel(owner_column_name),
         "owner_ref": "#{" + _camel(owner_column_name) + "}",
         "search_column": search_column.name if search_column else None,
+        # DTO 字段名为 snake；模板比较需用 snake 名，Java 变量名用 search_java（camel）。
+        "search_field_name": search_column.name if search_column else None,
         "writable_fields": writable_fields,
         "view_fields": view_fields,
         "id_pascal": _pascal(id_column.name),
@@ -279,6 +313,14 @@ def build_params(contract: BusinessContract) -> dict:
         "view_decls": _render_decls(view_fields, "        ", with_validation=False),
         "view_getters": _render_getters(view_fields, "                "),
         "columns_sql": ",\n    ".join(f["ddl"] for f in fields),
+        "migration_version": 2 + index,
+        "foreign_keys_sql": _foreign_keys_sql(contract, table),
+        # DTO 字段名与列名同为 snake；外键列在生成的测试 payload 中跳过（外键列默认可空）。
+        "fk_java_names": [
+            field["column"] for field in fields
+            if field["column"].endswith("_id")
+            and field["column"][:-3] in {item.table for item in contract.tables}
+        ],
         "indexes_sql": "\n".join(
             f"CREATE INDEX idx_{table.table}_{name} ON {table.table} ({name});"
             for name in indexes
@@ -323,10 +365,15 @@ def _environment(pack_dir: Path) -> Environment:
     )
 
 
-def render_pack_files(pack_dir: str | Path, contract: BusinessContract) -> list[tuple[str, str]]:
-    """返回 [(相对路径, 内容)]，不做任何写入（供装配器带守卫地写入）。"""
+def render_pack_files(
+    pack_dir: str | Path, contract: BusinessContract, *, entity_name: str | None = None
+) -> list[tuple[str, str]]:
+    """返回 [(相对路径, 内容)]，不做任何写入（供装配器带守卫地写入）。
+
+    ``entity_name`` 指定时按该实体渲染（R10 多实体逐实体）；默认单实体（MVP 语义不变）。
+    """
     pack_dir = Path(pack_dir)
-    params = build_params(contract)
+    params = build_params(contract, entity_name)
     environment = _environment(pack_dir)
     return [
         (

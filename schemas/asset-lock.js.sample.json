@@ -9,16 +9,16 @@
     {
       "kind": "capability-pack",
       "id": "task-crud-backend",
-      "version": "0.1.3",
-      "checksum": "40ec8c39933055895fc9057c9cb271f17ea90ecc4fdc5cf75996efd157ca1438",
-      "path": "capability-packs/task-crud-backend/0.1.3"
+      "version": "0.2.0",
+      "checksum": "4d76eef799dadd855ef934c252959e40c72cf4940897de4a1e4a91e7585c7181",
+      "path": "capability-packs/task-crud-backend/0.2.0"
     },
     {
       "kind": "capability-pack",
       "id": "task-crud-frontend-js",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "checksum": "b707fb63faa0a1d654136c6486dba79e741927eb655f55fa1e9801ce85947fe4",
-      "path": "capability-packs/task-crud-frontend-js/0.1.0"
+      "path": "capability-packs/task-crud-frontend-js/0.2.0"
     },
     {
       "kind": "template",
@@ -28,7 +28,7 @@
       "path": "templates/demo-0.2-js"
     }
   ],
-  "lock_hash": "dcca2c92ad656808fd7f84199ea0abbf36ffaebf51087e4c6781a2055b3fdafa",
+  "lock_hash": "33d5b71f880c0cbc240aabae9fffff41d9d6bd1c1628a67a6cba4be6e9cb0a47",
   "method_units": [],
   "index_schema_version": null,
   "index_revision": null,

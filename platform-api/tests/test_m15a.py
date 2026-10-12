@@ -53,7 +53,7 @@ def test_resolver_selects_latest_and_locks_mysql_digest() -> None:
 
     versions = {(a.id, a.version) for a in lock.assets}
     assert ("base-template", "demo-0.2") in versions
-    assert ("task-crud-backend", "0.1.2") in versions
+    assert ("task-crud-backend", "0.2.0") in versions
     assert lock.mysql_image.reference == "mysql:8.0.43"
     assert lock.mysql_image.digest.startswith("sha256:")
 

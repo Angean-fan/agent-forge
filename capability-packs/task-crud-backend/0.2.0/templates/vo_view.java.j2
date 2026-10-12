@@ -1,0 +1,12 @@
+package {{ package }}.vo;
+
+{% for imp in java_imports %}
+import {{ imp }};
+{% endfor %}
+
+public record {{ entity_name }}View(
+{% for d in view_decls %}
+{{ d }}
+{% endfor %}
+) {
+}

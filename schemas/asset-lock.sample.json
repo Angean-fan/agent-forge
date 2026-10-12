@@ -9,16 +9,16 @@
     {
       "kind": "capability-pack",
       "id": "task-crud-backend",
-      "version": "0.1.2",
-      "checksum": "40ec8c39933055895fc9057c9cb271f17ea90ecc4fdc5cf75996efd157ca1438",
-      "path": "capability-packs/task-crud-backend/0.1.2"
+      "version": "0.2.0",
+      "checksum": "4d76eef799dadd855ef934c252959e40c72cf4940897de4a1e4a91e7585c7181",
+      "path": "capability-packs/task-crud-backend/0.2.0"
     },
     {
       "kind": "capability-pack",
       "id": "task-crud-frontend",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "checksum": "bb6e0267fa8f8f04a01262ca65d42b0aaec1dbea10aa34a321873dc5410673f9",
-      "path": "capability-packs/task-crud-frontend/0.1.0"
+      "path": "capability-packs/task-crud-frontend/0.2.0"
     },
     {
       "kind": "template",
@@ -28,5 +28,9 @@
       "path": "templates/demo-0.2"
     }
   ],
-  "lock_hash": "0e95e049465ac4235c54d518055d29b88662ecf361b237a4bc0fb4e862111c90"
+  "lock_hash": "8f6f98b65a8394c8a190f9b6ccc7806c703be55290047f119939028bd7b0881d",
+  "method_units": [],
+  "index_schema_version": null,
+  "index_revision": null,
+  "selection_reason": null
 }

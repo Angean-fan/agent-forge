@@ -1,0 +1,66 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  create{{ entity_name }},
+  list{{ entity_name }}s,
+  remove{{ entity_name }},
+} from '../src/api/{{ entity_camel }}';
+
+function stubBrowserGlobals(): void {
+  vi.stubGlobal('localStorage', {
+    getItem: () => 'test-token',
+    setItem: () => undefined,
+    removeItem: () => undefined,
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('{{ entity_camel }} api module', () => {
+  it('lists with page/size/keyword query', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ items: [], total: 0, page: 1, size: 10 }),
+    });
+    stubBrowserGlobals();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await list{{ entity_name }}s(2, 5, 'kw');
+
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toContain('/api/{{ plural }}?');
+    expect(url).toContain('page=2');
+    expect(url).toContain('keyword=kw');
+  });
+
+  it('creates with POST and a JSON body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '{}' });
+    stubBrowserGlobals();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await create{{ entity_name }}({
+{% for f in writable_fields %}
+      {{ f.java_name }}: {% if f.ts_type == 'string' %}'x'{% elif f.ts_type == 'boolean' %}false{% else %}0{% endif %},
+{% endfor %}
+    });
+
+    const options = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/{{ plural }}');
+    expect(options.method).toBe('POST');
+  });
+
+  it('deletes without a response body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    stubBrowserGlobals();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await remove{{ entity_name }}(7);
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/{{ plural }}/7');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('DELETE');
+  });
+});

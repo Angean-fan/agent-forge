@@ -18,11 +18,10 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from agentforge_platform.errors import AppException, ErrorCode
-from agentforge_platform.spec import SoftwareSpecification
+from agentforge_platform.spec import MAX_BUSINESS_ENTITIES, SoftwareSpecification
 from agentforge_platform.spec_service import content_hash
 
 CONTRACT_SCHEMA_VERSION = "0.1"
-MVP_ENTITY_LIMIT = 1
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -191,43 +190,8 @@ def _build_routes(entity_name: str, plural: str, permissions: list[RolePermissio
     ]
 
 
-def compile_contract(
-    spec: SoftwareSpecification, *, profile_ref: str, spec_hash: str
-) -> BusinessContract:
-    if len(spec.entities) != MVP_ENTITY_LIMIT:
-        raise ContractError(
-            ErrorCode.CONTRACT_UNSUPPORTED,
-            f"MVP 仅支持 {MVP_ENTITY_LIMIT} 个业务实体，收到 {len(spec.entities)} 个",
-        )
-    entity = spec.entities[0]
-    table_name = _snake(entity.name)
-
-    columns: list[ColumnContract] = []
-    seen: dict[str, str] = {}
-    for field in entity.fields:
-        column = _snake(field.name)
-        if column in seen:
-            raise ContractError(
-                ErrorCode.CONTRACT_CONFLICT,
-                f"实体 {entity.name} 字段名冲突：'{field.name}' 与 '{seen[column]}' 均映射为列 '{column}'",
-            )
-        seen[column] = field.name
-        sql_type, _ = _sql_type(entity.name, field.name, field.type)
-        is_pk = column == "id"
-        columns.append(
-            ColumnContract(
-                name=column,
-                sql_type=sql_type,
-                nullable=(not field.required) and not is_pk,
-                primary_key=is_pk,
-            )
-        )
-    if not any(c.primary_key for c in columns):
-        raise ContractError(
-            ErrorCode.CONTRACT_UNSUPPORTED, f"实体 {entity.name} 缺少主键列 'id'"
-        )
-
-    # 权限矩阵（角色去重，冲突即拒绝）
+def _role_permissions(spec: SoftwareSpecification) -> list[RolePermission]:
+    """权限矩阵（角色去重，冲突即拒绝）；同一组角色适用于全部业务实体。"""
     seen_roles: set[str] = set()
     role_permissions: list[RolePermission] = []
     for permission in spec.permissions:
@@ -240,44 +204,155 @@ def compile_contract(
             RolePermission(role=permission.role, actions=sorted(set(permission.actions)))
         )
     role_permissions.sort(key=lambda p: p.role)
+    return role_permissions
 
-    plural = f"{table_name}s"
-    routes = _build_routes(entity.name, plural, role_permissions)
 
-    all_fields = [
-        FieldContract(
-            name=_snake(f.name),
-            json_type=_sql_type(entity.name, f.name, f.type)[1],
-            required=bool(f.required),
+def _resolve_relations(
+    spec: SoftwareSpecification,
+) -> tuple[dict[str, list[dict[str, str]]], list[str]]:
+    """解析确定性关系（一对多/多对一，统一为**子实体持有父外键**）。
+
+    返回 ``(子实体 → 外键列定义, 实体拓扑序)``：父实体必须排在子实体之前；未知实体/自关联/环一律拒绝。
+    """
+    names = [entity.name for entity in spec.entities]
+    parents_of: dict[str, set[str]] = {name: set() for name in names}
+    fk_by_child: dict[str, list[dict[str, str]]] = {name: [] for name in names}
+    seen: set[tuple[str, str]] = set()
+    for relation in spec.relations:
+        child = relation.get("child")
+        parent = relation.get("parent")
+        kind = relation.get("kind", "many-to-one")
+        if kind not in {"many-to-one", "one-to-many"}:
+            raise ContractError(ErrorCode.CONTRACT_UNSUPPORTED, f"不支持的关系类型：{kind!r}")
+        if child not in parents_of or parent not in parents_of:
+            raise ContractError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"关系引用了未知实体：{child!r} -> {parent!r}"
+            )
+        if child == parent:
+            raise ContractError(ErrorCode.CONTRACT_UNSUPPORTED, "不支持自关联")
+        if (child, parent) in seen:
+            continue
+        seen.add((child, parent))
+        parents_of[child].add(parent)
+        fk_by_child[child].append(
+            {
+                "name": f"{_snake(parent)}_id",
+                "nullable": not bool(relation.get("required", False)),
+            }
         )
-        for f in entity.fields
-    ]
-    # 主键/时间戳/归属列由服务端管理，不出现在 create/update 请求 DTO 中（防止伪造归属）。
-    server_managed = {"id", "created_at", "owner_id"}
-    view_fields = all_fields
-    writable_fields = [f for f in all_fields if f.name not in server_managed]
-    dtos = [
-        DtoContract(name=f"{entity.name}CreateRequest", fields=writable_fields),
-        DtoContract(name=f"{entity.name}UpdateRequest", fields=writable_fields),
-        DtoContract(name=f"{entity.name}View", fields=view_fields),
-    ]
+    order: list[str] = []
+    remaining = set(names)
+    while remaining:
+        ready = [n for n in names if n in remaining and not (parents_of[n] & remaining)]
+        if not ready:
+            raise ContractError(ErrorCode.CONTRACT_UNSUPPORTED, "实体关系存在环")
+        for name in ready:
+            remaining.discard(name)
+        order.extend(ready)
+    return fk_by_child, order
+
+
+def compile_contract(
+    spec: SoftwareSpecification, *, profile_ref: str, spec_hash: str
+) -> BusinessContract:
+    if not 1 <= len(spec.entities) <= MAX_BUSINESS_ENTITIES:
+        raise ContractError(
+            ErrorCode.CONTRACT_UNSUPPORTED,
+            f"业务实体数量需为 1—{MAX_BUSINESS_ENTITIES}，收到 {len(spec.entities)} 个",
+        )
+    by_name = {entity.name: entity for entity in spec.entities}
+    if len(by_name) != len(spec.entities):
+        raise ContractError(ErrorCode.CONTRACT_CONFLICT, "业务实体名重复")
+
+    fk_by_child, order = _resolve_relations(spec)
+    role_permissions = _role_permissions(spec)
+
+    tables: list[TableContract] = []
+    routes: list[RouteContract] = []
+    dtos: list[DtoContract] = []
+    permissions: list[PermissionMatrix] = []
+    seen_tables: set[str] = set()
+    seen_plurals: set[str] = set()
+
+    for name in order:
+        entity = by_name[name]
+        table_name = _snake(name)
+        if table_name in seen_tables:
+            raise ContractError(ErrorCode.CONTRACT_CONFLICT, f"表名冲突：{table_name}")
+        seen_tables.add(table_name)
+        plural = f"{table_name}s"
+        if plural in seen_plurals:
+            raise ContractError(ErrorCode.CONTRACT_CONFLICT, f"路由路径冲突：/api/{plural}")
+        seen_plurals.add(plural)
+
+        # 字段 = 实体自身字段（顺序保持）+ 关系外键列（追加）。
+        named = [(field.name, field.type, bool(field.required)) for field in entity.fields]
+        named += [(fk["name"], "long", not fk["nullable"]) for fk in fk_by_child.get(name, [])]
+
+        columns: list[ColumnContract] = []
+        seen_columns: dict[str, str] = {}
+        for field_name, field_type, required in named:
+            column = _snake(field_name)
+            if column in seen_columns:
+                raise ContractError(
+                    ErrorCode.CONTRACT_CONFLICT,
+                    f"实体 {name} 字段名冲突：'{field_name}' 与 '{seen_columns[column]}' "
+                    f"均映射为列 '{column}'",
+                )
+            seen_columns[column] = field_name
+            sql_type, _ = _sql_type(name, field_name, field_type)
+            is_pk = column == "id"
+            columns.append(
+                ColumnContract(
+                    name=column,
+                    sql_type=sql_type,
+                    nullable=(not required) and not is_pk,
+                    primary_key=is_pk,
+                )
+            )
+        if not any(column.primary_key for column in columns):
+            raise ContractError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"实体 {name} 缺少主键列 'id'"
+            )
+        tables.append(
+            TableContract(
+                table=table_name,
+                columns=columns,
+                unique_constraints=[],
+                indexes=[[column.name] for column in columns if column.name.endswith("_id")],
+            )
+        )
+        routes.extend(_build_routes(name, plural, role_permissions))
+
+        all_fields = [
+            FieldContract(
+                name=_snake(field_name),
+                json_type=_sql_type(name, field_name, field_type)[1],
+                required=required,
+            )
+            for field_name, field_type, required in named
+        ]
+        # 主键/时间戳/归属列由服务端管理，不出现在 create/update 请求 DTO 中（防止伪造归属）。
+        server_managed = {"id", "created_at", "owner_id"}
+        writable_fields = [f for f in all_fields if f.name not in server_managed]
+        dtos.extend(
+            [
+                DtoContract(name=f"{name}CreateRequest", fields=writable_fields),
+                DtoContract(name=f"{name}UpdateRequest", fields=writable_fields),
+                DtoContract(name=f"{name}View", fields=all_fields),
+            ]
+        )
+        permissions.append(PermissionMatrix(entity=name, roles=role_permissions))
 
     contract = BusinessContract(
         schema_version=CONTRACT_SCHEMA_VERSION,
         project_type=spec.project_type,
         spec_hash=spec_hash,
         profile_ref=profile_ref,
-        tables=[
-            TableContract(
-                table=table_name,
-                columns=columns,
-                unique_constraints=[],
-                indexes=[[c.name] for c in columns if c.name.endswith("_id")],
-            )
-        ],
+        tables=tables,
         routes=routes,
         dtos=dtos,
-        permissions=[PermissionMatrix(entity=entity.name, roles=role_permissions)],
+        permissions=permissions,
         error_codes=[
             ErrorCodeContract(code=code, http_status=status, description=desc)
             for code, status, desc in _ERROR_CODES
