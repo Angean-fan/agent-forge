@@ -1,0 +1,36 @@
+{
+  "schema_version": "0.1",
+  "profile": "demo-ts-mb",
+  "mysql_image": {
+    "reference": "mysql:8.0.43",
+    "digest": "sha256:3e646bcda0d9448ffa3d2024eef04e1bca95528ec19b9e8b76749da9d97d4a10"
+  },
+  "assets": [
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-backend-mb",
+      "version": "0.1.0",
+      "checksum": "66f1147868c6f341470cc9d85ca0ec4a884007a6801b996d286e6514fb1fbe99",
+      "path": "capability-packs/task-crud-backend-mb/0.1.0"
+    },
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-frontend",
+      "version": "0.1.1",
+      "checksum": "bb6e0267fa8f8f04a01262ca65d42b0aaec1dbea10aa34a321873dc5410673f9",
+      "path": "capability-packs/task-crud-frontend/0.1.1"
+    },
+    {
+      "kind": "template",
+      "id": "base-template",
+      "version": "demo-0.2-mb",
+      "checksum": "8bf40e2de260df8e03b6bb6446ecf420d54f11c68c525ca5814b09ea23f3615a",
+      "path": "templates/demo-0.2-mb"
+    }
+  ],
+  "lock_hash": "94f749150cd8b3676df5670108ef23028f7f1b5ca8f440f104ddc99e9bde3429",
+  "method_units": [],
+  "index_schema_version": null,
+  "index_revision": null,
+  "selection_reason": null
+}

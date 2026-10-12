@@ -1,0 +1,69 @@
+{
+  "id": "task-crud-frontend",
+  "version": "0.1.1",
+  "kind": "capability-pack",
+  "compatible_profiles": [
+    "demo-ts-mb"
+  ],
+  "requires": [
+    "template:router",
+    "template:auth",
+    "template:api-client"
+  ],
+  "provides": [
+    "crud-ui",
+    "list",
+    "form",
+    "search-ui",
+    "pagination-ui"
+  ],
+  "conflicts": [],
+  "extension_points": [],
+  "target_dir": "frontend",
+  "checksum": "bb6e0267fa8f8f04a01262ca65d42b0aaec1dbea10aa34a321873dc5410673f9",
+  "parameter_schema": {
+    "entity_name": "string",
+    "entity_camel": "string",
+    "plural": "string",
+    "route_path": "string",
+    "ui_path": "string",
+    "writable_fields": "FieldContract[]",
+    "view_fields": "FieldContract[]"
+  },
+  "owned_paths": [
+    "src/api/",
+    "src/views/",
+    "src/types/",
+    "src/router/modules/",
+    "test/"
+  ],
+  "dependencies": [],
+  "checks": [
+    "npm run type-check",
+    "npm run build",
+    "npm test"
+  ],
+  "license": "internal",
+  "renders": [
+    {
+      "template": "types.ts.j2",
+      "target": "src/types/{{ entity_camel }}.ts"
+    },
+    {
+      "template": "api.ts.j2",
+      "target": "src/api/{{ entity_camel }}.ts"
+    },
+    {
+      "template": "view_list.vue.j2",
+      "target": "src/views/{{ entity_name }}ListView.vue"
+    },
+    {
+      "template": "router_module.ts.j2",
+      "target": "src/router/modules/{{ entity_camel }}.ts"
+    },
+    {
+      "template": "api_test.ts.j2",
+      "target": "test/{{ entity_camel }}-api.spec.ts"
+    }
+  ]
+}

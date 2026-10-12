@@ -230,6 +230,13 @@ def build_params(contract: BusinessContract) -> dict:
     if creator_role is None:
         raise PackRenderError(ErrorCode.CONTRACT_UNSUPPORTED, "Task 测试需要同时可创建和读取的角色")
 
+    # 显式 SQL（MyBatis 非 Plus 能力包）所需：列名与 #{} 绑定串由 contract 确定性派生。
+    writable_columns = [
+        field for field in fields
+        if not field["primary_key"] and field["column"] not in {"created_at", "owner_id"}
+    ]
+    id_column_name = id_column.name
+    owner_column_name = owner_column.name
     return {
         "package": PACKAGE,
         "package_dir": PACKAGE_DIR,
@@ -241,6 +248,21 @@ def build_params(contract: BusinessContract) -> dict:
         "api_path": f"/{plural}",
         "ui_path": f"/{plural}",
         "fields": fields,
+        "entity_columns_sql": ", ".join(field["column"] for field in fields),
+        "writable_columns_sql": ", ".join(field["column"] for field in writable_columns),
+        "writable_values_sql": ", ".join(
+            f"#{{{field['java_name']}}}" for field in writable_columns
+        ),
+        "writable_set_sql": ", ".join(
+            f"{field['column']} = #{{{field['java_name']}}}" for field in writable_columns
+        ),
+        "id_column": id_column_name,
+        "id_java": _camel(id_column_name),
+        "id_ref": "#{" + _camel(id_column_name) + "}",
+        "owner_column": owner_column_name,
+        "owner_java": _camel(owner_column_name),
+        "owner_ref": "#{" + _camel(owner_column_name) + "}",
+        "search_column": search_column.name if search_column else None,
         "writable_fields": writable_fields,
         "view_fields": view_fields,
         "id_pascal": _pascal(id_column.name),

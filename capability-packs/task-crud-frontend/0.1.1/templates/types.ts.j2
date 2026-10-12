@@ -1,0 +1,11 @@
+export interface {{ entity_name }}View {
+{% for f in view_fields %}
+  {{ f.java_name }}: {{ f.ts_type }}{% if not f.required %} | null{% endif %};
+{% endfor %}
+}
+
+export interface {{ entity_name }}Input {
+{% for f in writable_fields %}
+  {{ f.java_name }}{% if not f.required %}?{% endif %}: {{ f.ts_type }};
+{% endfor %}
+}

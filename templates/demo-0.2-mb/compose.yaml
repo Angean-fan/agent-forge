@@ -1,0 +1,49 @@
+# 生成项目基础模板的本地/演示编排。
+#
+# 重要：MySQL 镜像锁定“仓库引用 + 不可变 digest”，不使用 database.version 或可变 tag 代替镜像锁。
+#   对应 Profile(demo-ts-mp) 的 database.version = 8.0.43。
+#   其余基础镜像（maven/node/nginx/temurin）当前用 tag；在 M16/M24 前应同样锁定 digest。
+#
+# 用法：复制 .env.example 为 .env 并填写必填项，然后 `docker compose up -d`。
+services:
+  mysql:
+    image: mysql:8.0.43@sha256:3e646bcda0d9448ffa3d2024eef04e1bca95528ec19b9e8b76749da9d97d4a10
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-agentforge}
+      MYSQL_USER: ${DB_USERNAME:-agentforge}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD required}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD required}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build: ./backend
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/${DB_NAME:-agentforge}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      DB_USERNAME: ${DB_USERNAME:-agentforge}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      APP_ADMIN_USERNAME: ${APP_ADMIN_USERNAME:-admin}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?APP_ADMIN_PASSWORD required}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  mysql-data:
