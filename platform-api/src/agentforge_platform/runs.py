@@ -28,6 +28,7 @@ from agentforge_platform.models import (
     Run,
     RunEvent,
     RunTask,
+    SpecVersion,
     Worker,
 )
 
@@ -59,11 +60,17 @@ def _now() -> datetime:
 
 
 def create_run(
-    db: Session, project: Project, spec_id: int, *, idempotency_key: str | None = None
+    db: Session,
+    project: Project,
+    spec_id: int,
+    *,
+    idempotency_key: str | None = None,
+    spec_hash: str | None = None,
 ) -> Run:
     run = Run(
         project_id=project.id,
         spec_id=spec_id,
+        spec_hash=spec_hash,
         status=RunStatus.QUEUED,
         idempotency_key=idempotency_key,
     )
@@ -77,6 +84,14 @@ def find_run_by_idempotency(db: Session, project_id: int, key: str) -> Run | Non
     return db.scalars(
         select(Run).where(Run.project_id == project_id, Run.idempotency_key == key)
     ).first()
+
+
+def run_spec_hash(db: Session, run: Run) -> str | None:
+    """运行绑定的**冻结** spec hash；R06 之前的旧 run 无记录时按 spec_id 回退解析。"""
+    if run.spec_hash:
+        return run.spec_hash
+    row = db.get(SpecVersion, run.spec_id)
+    return row.hash if row is not None else None
 
 
 def claim_run(db: Session, worker_id: str, *, lease_seconds: int = 60) -> Run | None:

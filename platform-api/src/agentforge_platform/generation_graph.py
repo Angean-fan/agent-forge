@@ -22,6 +22,7 @@ from agentforge_platform.assembler import assemble
 from agentforge_platform.asset_registry import AssetRegistry, default_registry
 from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.db import session_scope
+from agentforge_platform.errors import AppException
 from agentforge_platform.models import Run, SpecVersion
 from agentforge_platform.packaging import (
     PackagingError,
@@ -40,7 +41,7 @@ from agentforge_platform.runs import (
     transition,
 )
 from agentforge_platform.spec import SoftwareSpecification
-from agentforge_platform.spec_service import content_hash
+from agentforge_platform.spec_service import require_frozen_spec
 
 
 class GenerationError(Exception):
@@ -102,9 +103,15 @@ def build_graph(context: GenerationContext):
             spec_row = db.get(SpecVersion, run.spec_id)
             if spec_row is None or spec_row.confirmed_at is None:
                 raise GenerationError("SPEC_NOT_FOUND", "缺少已确认（冻结）规格")
-            spec = SoftwareSpecification.model_validate_json(spec_row.body_json)
-            if content_hash(spec) != spec_row.hash:
-                raise GenerationError("SPEC_CONFLICT", "规格 hash 与冻结值不一致")
+            # R06：冻结规格必须未被篡改，且仍与本 run 记录的冻结 hash 一致。
+            try:
+                spec = require_frozen_spec(spec_row)
+            except AppException as exc:
+                raise GenerationError(str(exc.code), exc.message) from exc
+            if run.spec_hash is not None and run.spec_hash != spec_row.hash:
+                raise GenerationError(
+                    "SPEC_TAMPERED", "冻结规格 hash 与运行时记录不一致（疑似被篡改）"
+                )
             contract = compile_from_spec(spec)
             record_task(db, run, "load_confirmed_spec", status="DONE")
             append_event(

@@ -85,6 +85,8 @@ class Run(Base):
         ForeignKey("project.id", ondelete="CASCADE"), nullable=False, index=True
     )
     spec_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # R06：提交时记录的**冻结** spec hash；旧 run 为 NULL，按 spec_id 回退解析。
+    spec_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)

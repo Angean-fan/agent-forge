@@ -50,6 +50,15 @@ def latest_spec(db: Session, project_id: int) -> SpecVersion | None:
     ).first()
 
 
+def spec_version(db: Session, project_id: int, version: int) -> SpecVersion | None:
+    """按项目 + 版本号精确取一份规格版本（用于版本差异比对）。"""
+    return db.scalars(
+        select(SpecVersion).where(
+            SpecVersion.project_id == project_id, SpecVersion.version == version
+        )
+    ).first()
+
+
 def put_draft(
     db: Session, project: Project, expected_version: int, spec: SoftwareSpecification,
     *, expected_revision: int | None = None,
@@ -170,11 +179,165 @@ def confirm_draft(
     return latest
 
 
+def frozen_spec_issues(row: SpecVersion) -> list[str]:
+    """R06 冻结完整性检查：重算 hash + 独立验收场景/业务规则结构完整性。
+
+    若冻结（已确认）规格的 body 被原地篡改（含验收断言），重算 hash 将不等于冻结值，
+    或结构校验失败，从而在**生成前**暴露篡改。
+    """
+    try:
+        spec = load_spec(row)
+    except Exception:  # noqa: BLE001  被改坏成非法 JSON/结构
+        return ["冻结规格无法按 schema 解析（疑似被篡改）"]
+    issues: list[str] = []
+    if content_hash(spec) != row.hash:
+        issues.append("冻结规格内容与冻结 hash 不一致（疑似被篡改）")
+    seen_cases: set[str] = set()
+    for case in spec.acceptance_cases:
+        if not case.id.strip() or not case.scenario.strip() or not case.expected.strip():
+            issues.append(f"验收场景 {case.id!r} 缺少 id/场景/期望")
+        if case.id in seen_cases:
+            issues.append(f"验收场景 id 重复：{case.id}")
+        seen_cases.add(case.id)
+    seen_rules: set[str] = set()
+    for rule in spec.business_rules:
+        if not rule.id.strip() or not rule.text.strip():
+            issues.append(f"业务规则 {rule.id!r} 缺少 id/文本")
+        if rule.id in seen_rules:
+            issues.append(f"业务规则 id 重复：{rule.id}")
+        seen_rules.add(rule.id)
+    return issues
+
+
+def require_frozen_spec(row: SpecVersion) -> SoftwareSpecification:
+    """校验冻结规格未被篡改；否则抛 ``SPEC_TAMPERED``（409）并给出可追溯理由。"""
+    issues = frozen_spec_issues(row)
+    if issues:
+        raise AppException(
+            ErrorCode.SPEC_TAMPERED,
+            "冻结规格完整性校验未通过：" + "；".join(issues),
+            status_code=409,
+        )
+    return load_spec(row)
+
+
+def _entity_view(spec: SoftwareSpecification) -> dict[str, dict]:
+    return {
+        entity.name: {
+            "source": entity.source.value,
+            "fields": sorted(
+                (
+                    {"name": field.name, "type": field.type, "required": field.required}
+                    for field in entity.fields
+                ),
+                key=lambda item: item["name"],
+            ),
+        }
+        for entity in spec.entities
+    }
+
+
+def _page_view(spec: SoftwareSpecification) -> dict[str, dict]:
+    return {
+        page.name: {"entity": page.entity, "path": page.path} for page in spec.pages
+    }
+
+
+def _permission_view(spec: SoftwareSpecification) -> dict[str, dict]:
+    return {
+        permission.role: {
+            "source": permission.source.value,
+            "actions": sorted(permission.actions),
+        }
+        for permission in spec.permissions
+    }
+
+
+def _rule_view(spec: SoftwareSpecification) -> dict[str, dict]:
+    return {
+        rule.id: {"text": rule.text, "source": rule.source.value}
+        for rule in spec.business_rules
+    }
+
+
+def _case_view(spec: SoftwareSpecification) -> dict[str, dict]:
+    return {
+        case.id: {
+            "scenario": case.scenario,
+            "expected": case.expected,
+            "source": case.source.value,
+        }
+        for case in spec.acceptance_cases
+    }
+
+
+def _diff_keyed(section: str, before: dict[str, object], after: dict[str, object]) -> list[dict]:
+    changes: list[dict] = []
+    for key in sorted(set(before) | set(after)):
+        if key not in before:
+            changes.append({"section": section, "key": key, "kind": "added",
+                            "before": None, "after": after[key]})
+        elif key not in after:
+            changes.append({"section": section, "key": key, "kind": "removed",
+                            "before": before[key], "after": None})
+        elif before[key] != after[key]:
+            changes.append({"section": section, "key": key, "kind": "changed",
+                            "before": before[key], "after": after[key]})
+    return changes
+
+
+def _diff_scalar(section: str, before: object, after: object) -> list[dict]:
+    if before == after:
+        return []
+    return [{"section": section, "key": section, "kind": "changed",
+             "before": before, "after": after}]
+
+
+def _diff_items(section: str, before: list[str], after: list[str]) -> list[dict]:
+    changes: list[dict] = []
+    before_set, after_set = set(before), set(after)
+    for item in sorted(after_set - before_set):
+        changes.append({"section": section, "key": item, "kind": "added",
+                        "before": None, "after": item})
+    for item in sorted(before_set - after_set):
+        changes.append({"section": section, "key": item, "kind": "removed",
+                        "before": item, "after": None})
+    return changes
+
+
+def spec_diff(from_row: SpecVersion, to_row: SpecVersion) -> dict:
+    """两份规格版本的结构化差异（功能/排除项/业务规则/验收场景等）。
+
+    每项变更以 ``section/key/kind(added|removed|changed)/before/after`` 表达，便于前端展示与追溯。
+    """
+    before = load_spec(from_row)
+    after = load_spec(to_row)
+    changes: list[dict] = []
+    changes += _diff_scalar("goal", before.goal, after.goal)
+    changes += _diff_items("actors", before.actors, after.actors)
+    changes += _diff_keyed("entities", _entity_view(before), _entity_view(after))
+    changes += _diff_keyed("pages", _page_view(before), _page_view(after))
+    changes += _diff_keyed("permissions", _permission_view(before), _permission_view(after))
+    changes += _diff_keyed("business_rules", _rule_view(before), _rule_view(after))
+    changes += _diff_keyed("acceptance_cases", _case_view(before), _case_view(after))
+    changes += _diff_items("constraints", before.constraints, after.constraints)
+    changes += _diff_items("exclusions", before.exclusions, after.exclusions)
+    return {
+        "from": {"version": from_row.version, "hash": from_row.hash},
+        "to": {"version": to_row.version, "hash": to_row.hash},
+        "changes": changes,
+    }
+
+
 __all__ = [
     "canonical_json",
     "confirm_draft",
     "content_hash",
+    "frozen_spec_issues",
     "latest_spec",
     "load_spec",
     "put_draft",
+    "require_frozen_spec",
+    "spec_diff",
+    "spec_version",
 ]

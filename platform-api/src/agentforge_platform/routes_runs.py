@@ -32,12 +32,13 @@ from agentforge_platform.runs import (
     require_run_owner,
     resolve_artifact_path,
     run_cost,
+    run_spec_hash,
     task_counts,
     verification_report,
     work_root,
 )
 from agentforge_platform.spec import is_legacy_task_spec, scope_issues
-from agentforge_platform.spec_service import load_spec
+from agentforge_platform.spec_service import require_frozen_spec
 
 router = APIRouter(prefix="/api", tags=["runs"])
 _STRICT = ConfigDict(extra="forbid")
@@ -55,6 +56,7 @@ class RunView(BaseModel):
     id: int
     project_id: int
     spec_id: int
+    spec_hash: str | None
     status: str
     error_code: str | None
     lease_owner: str | None
@@ -97,6 +99,7 @@ class RunDetailView(BaseModel):
     id: int
     project_id: int
     spec_id: int
+    spec_hash: str | None
     status: str
     phase: str | None
     error_code: str | None
@@ -140,11 +143,12 @@ class WorkerListData(BaseModel):
     items: list[WorkerView]
 
 
-def _run_view(run: Run) -> RunView:
+def _run_view(db: Session, run: Run) -> RunView:
     return RunView(
         id=run.id,
         project_id=run.project_id,
         spec_id=run.spec_id,
+        spec_hash=run_spec_hash(db, run),
         status=run.status,
         error_code=run.error_code,
         lease_owner=run.lease_owner,
@@ -171,6 +175,7 @@ def _detail_view(db: Session, run: Run) -> RunDetailView:
         id=run.id,
         project_id=run.project_id,
         spec_id=run.spec_id,
+        spec_hash=run_spec_hash(db, run),
         status=run.status,
         phase=current_phase(db, run.id),
         error_code=run.error_code,
@@ -221,13 +226,16 @@ def start_run(
 
     existing = find_run_by_idempotency(db, project.id, idempotency_key)
     if existing is not None:
-        return ApiResponse(request_id=get_request_id(request), data=_run_view(existing))
+        return ApiResponse(request_id=get_request_id(request), data=_run_view(db, existing))
 
     # 生成入口能力门禁（R01）：合法多实体候选在 R10 能力就绪前不得生成，
     # 也不得落入旧 contract.py 单实体路径。旧 Task 单实体路径照旧放行。
+    spec_hash: str | None = None
     spec_row = db.get(SpecVersion, active_spec_id)
     if spec_row is not None:
-        spec = load_spec(spec_row)
+        # R06：运行只接收**未被篡改**的冻结规格；其冻结 hash 记入 run 并随生成校验。
+        spec = require_frozen_spec(spec_row)
+        spec_hash = spec_row.hash
         scope = scope_issues(spec)
         if scope:
             raise AppException(
@@ -245,9 +253,11 @@ def start_run(
     # 配额/剩余空间达标才接受新运行（超限拒绝；过期产物由维护任务清理）。
     ensure_run_storage_available()
 
-    run = create_run(db, project, active_spec_id, idempotency_key=idempotency_key)
+    run = create_run(
+        db, project, active_spec_id, idempotency_key=idempotency_key, spec_hash=spec_hash
+    )
     append_event(db, run, "queued", "{}")
-    return ApiResponse(request_id=get_request_id(request), data=_run_view(run))
+    return ApiResponse(request_id=get_request_id(request), data=_run_view(db, run))
 
 
 @router.get("/runs/{run_id}", response_model=ApiResponse[RunDetailView])
