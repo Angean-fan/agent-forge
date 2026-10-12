@@ -209,14 +209,16 @@ def _role_permissions(spec: SoftwareSpecification) -> list[RolePermission]:
 
 def _resolve_relations(
     spec: SoftwareSpecification,
-) -> tuple[dict[str, list[dict[str, str]]], list[str]]:
+) -> tuple[dict[str, list[dict[str, str]]], dict[str, list[list[str]]], list[str]]:
     """解析确定性关系（一对多/多对一，统一为**子实体持有父外键**）。
 
-    返回 ``(子实体 → 外键列定义, 实体拓扑序)``：父实体必须排在子实体之前；未知实体/自关联/环一律拒绝。
+    返回 ``(子实体 → 外键列, 子实体 → 唯一约束, 实体拓扑序)``：``unique: true`` 的关系生成
+    ``UNIQUE (父外键, owner_id)``（“同一成员-父记录最多一条”）。父实体必须先于子实体。
     """
     names = [entity.name for entity in spec.entities]
     parents_of: dict[str, set[str]] = {name: set() for name in names}
     fk_by_child: dict[str, list[dict[str, str]]] = {name: [] for name in names}
+    unique_by_child: dict[str, list[list[str]]] = {name: [] for name in names}
     seen: set[tuple[str, str]] = set()
     for relation in spec.relations:
         child = relation.get("child")
@@ -234,12 +236,12 @@ def _resolve_relations(
             continue
         seen.add((child, parent))
         parents_of[child].add(parent)
+        fk_column = f"{_snake(parent)}_id"
         fk_by_child[child].append(
-            {
-                "name": f"{_snake(parent)}_id",
-                "nullable": not bool(relation.get("required", False)),
-            }
+            {"name": fk_column, "nullable": not bool(relation.get("required", False))}
         )
+        if relation.get("unique"):
+            unique_by_child[child].append(sorted([fk_column, "owner_id"]))
     order: list[str] = []
     remaining = set(names)
     while remaining:
@@ -249,7 +251,35 @@ def _resolve_relations(
         for name in ready:
             remaining.discard(name)
         order.extend(ready)
-    return fk_by_child, order
+    return fk_by_child, unique_by_child, order
+
+
+def _validate_status_guards(
+    spec: SoftwareSpecification, fk_by_child: dict[str, list[dict[str, str]]]
+) -> None:
+    """校验状态守卫声明：子/父实体存在、子实体经外键指向父实体、父实体有 ``status`` 列、禁止状态非空。"""
+    names = {entity.name for entity in spec.entities}
+    fk_columns = {name: {fk["name"] for fk in cols} for name, cols in fk_by_child.items()}
+    for guard in spec.status_guards:
+        child = guard.get("child")
+        parent = guard.get("parent")
+        blocked = guard.get("blocked_status")
+        if child not in names or parent not in names:
+            raise ContractError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"状态守卫引用了未知实体：{child!r}/{parent!r}"
+            )
+        fk_column = f"{_snake(parent)}_id"
+        if fk_column not in fk_columns.get(child, set()):
+            raise ContractError(
+                ErrorCode.CONTRACT_UNSUPPORTED,
+                f"状态守卫要求 {child} 经 {fk_column} 关联 {parent}",
+            )
+        if not isinstance(blocked, list) or not blocked or not all(
+            isinstance(item, str) and item for item in blocked
+        ):
+            raise ContractError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"状态守卫 {child} 的 blocked_status 必须为非空字符串列表"
+            )
 
 
 def compile_contract(
@@ -264,7 +294,8 @@ def compile_contract(
     if len(by_name) != len(spec.entities):
         raise ContractError(ErrorCode.CONTRACT_CONFLICT, "业务实体名重复")
 
-    fk_by_child, order = _resolve_relations(spec)
+    fk_by_child, unique_by_child, order = _resolve_relations(spec)
+    _validate_status_guards(spec, fk_by_child)
     role_permissions = _role_permissions(spec)
 
     tables: list[TableContract] = []
@@ -318,7 +349,7 @@ def compile_contract(
             TableContract(
                 table=table_name,
                 columns=columns,
-                unique_constraints=[],
+                unique_constraints=unique_by_child.get(name, []),
                 indexes=[[column.name] for column in columns if column.name.endswith("_id")],
             )
         )

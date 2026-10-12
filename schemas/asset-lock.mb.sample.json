@@ -9,9 +9,9 @@
     {
       "kind": "capability-pack",
       "id": "task-crud-backend-mb",
-      "version": "0.2.0",
-      "checksum": "cf4c21a2e3c6594906381afdac8e82bf327770647155c67cce162ce69c0791cf",
-      "path": "capability-packs/task-crud-backend-mb/0.2.0"
+      "version": "0.3.0",
+      "checksum": "0200f030ecaa4bfb72b882abb8a654f0347735511e42357e2914b41e1cb6b584",
+      "path": "capability-packs/task-crud-backend-mb/0.3.0"
     },
     {
       "kind": "capability-pack",
@@ -28,7 +28,7 @@
       "path": "templates/demo-0.2-mb"
     }
   ],
-  "lock_hash": "803b882c60818693ca3f3d659bdcb5d64744aa7a1793cdc872e0024edd775a99",
+  "lock_hash": "03e3ad5df6e7770aa82cd44cdab18a6a9675661c5874254a247afde1e31e6d7a",
   "method_units": [],
   "index_schema_version": null,
   "index_revision": null,

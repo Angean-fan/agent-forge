@@ -1,0 +1,113 @@
+package {{ package }}.service;
+
+import {{ package }}.dto.{{ entity_name }}CreateRequest;
+import {{ package }}.dto.{{ entity_name }}UpdateRequest;
+import {{ package }}.entity.{{ entity_name }};
+import {{ package }}.exception.ApiException;
+import {{ package }}.exception.ErrorCode;
+import {{ package }}.mapper.{{ entity_name }}Mapper;
+import {{ package }}.vo.{{ entity_name }}View;
+import {{ package }}.vo.PageResult;
+{% for g in status_guards %}
+import {{ package }}.entity.{{ g.parent_entity }};
+import {{ package }}.mapper.{{ g.parent_mapper }};
+{% endfor %}
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.springframework.stereotype.Service;
+
+/** {{ entity_name }} CRUD / 分页 / 搜索 / 数据归属 / 状态守卫（由能力包提供，复用模板的异常体系）。 */
+@Service
+public class {{ entity_name }}Service {
+
+    private final {{ entity_name }}Mapper mapper;
+{% for g in status_guards %}
+    private final {{ g.parent_mapper }} {{ g.parent_field }};
+{% endfor %}
+
+    public {{ entity_name }}Service({{ entity_name }}Mapper mapper{% for g in status_guards %}, {{ g.parent_mapper }} {{ g.parent_field }}{% endfor %}) {
+        this.mapper = mapper;
+{% for g in status_guards %}
+        this.{{ g.parent_field }} = {{ g.parent_field }};
+{% endfor %}
+    }
+
+    public PageResult<{{ entity_name }}View> list(long page, long size, String keyword, Long ownerId) {
+        LambdaQueryWrapper<{{ entity_name }}> query = new LambdaQueryWrapper<>();
+        query.eq({{ entity_name }}::get{{ owner_pascal }}, ownerId);
+{% if search_pascal %}
+        if (keyword != null && !keyword.isBlank()) {
+            query.like({{ entity_name }}::get{{ search_pascal }}, keyword);
+        }
+{% endif %}
+        query.orderByDesc({{ entity_name }}::get{{ id_pascal }});
+        Page<{{ entity_name }}> result = mapper.selectPage(new Page<>(page, size), query);
+        return new PageResult<>(
+                result.getRecords().stream().map(this::toView).toList(),
+                result.getTotal(), result.getCurrent(), result.getSize());
+    }
+
+    public {{ entity_name }}View create({{ entity_name }}CreateRequest request, Long ownerId) {
+        {{ entity_name }} entity = new {{ entity_name }}();
+{% for f in writable_fields %}
+        entity.set{{ f.pascal }}(request.{{ f.java_name }}());
+{% endfor %}
+        entity.set{{ owner_pascal }}(ownerId);
+        checkStatusGuards(entity);
+        mapper.insert(entity);
+        return toView(entity);
+    }
+
+    public {{ entity_name }}View get(Long id, Long ownerId) {
+        return toView(requireOwned(id, ownerId));
+    }
+
+    public {{ entity_name }}View update(Long id, {{ entity_name }}UpdateRequest request, Long ownerId) {
+        {{ entity_name }} entity = requireOwned(id, ownerId);
+{% for f in writable_fields %}
+        entity.set{{ f.pascal }}(request.{{ f.java_name }}());
+{% endfor %}
+        mapper.updateById(entity);
+        return toView(entity);
+    }
+
+    public void delete(Long id, Long ownerId) {
+        requireOwned(id, ownerId);
+        mapper.deleteById(id);
+    }
+
+    /** 服务端状态守卫：经外键读取父实体状态，命中禁止集合则拒绝（不返回成功）。 */
+    private void checkStatusGuards({{ entity_name }} entity) {
+{% for g in status_guards %}
+        if (entity.get{{ g.fk_pascal }}() != null) {
+            {{ g.parent_entity }} parent = {{ g.parent_field }}.selectById(entity.get{{ g.fk_pascal }}());
+            if (parent == null) {
+                throw new ApiException(ErrorCode.NOT_FOUND, "关联的{{ g.parent_entity }}不存在", 404);
+            }
+            String parentStatus = parent.getStatus();
+            if (parentStatus != null && java.util.Set.of({{ g.blocked_literals }}).contains(parentStatus)) {
+                throw new ApiException("CONFLICT", "{{ g.parent_entity }}状态不允许创建", 409);
+            }
+        }
+{% endfor %}
+    }
+
+    private {{ entity_name }} requireOwned(Long id, Long ownerId) {
+        {{ entity_name }} entity = mapper.selectById(id);
+        if (entity == null) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "记录不存在", 404);
+        }
+        if (entity.get{{ owner_pascal }}() == null || !entity.get{{ owner_pascal }}().equals(ownerId)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权访问该记录", 403);
+        }
+        return entity;
+    }
+
+    private {{ entity_name }}View toView({{ entity_name }} entity) {
+        return new {{ entity_name }}View(
+{% for a in view_getters %}
+{{ a }}
+{% endfor %}
+        );
+    }
+}

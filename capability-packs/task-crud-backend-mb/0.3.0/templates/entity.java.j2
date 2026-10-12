@@ -1,0 +1,21 @@
+package {{ package }}.entity;
+
+{% for imp in java_imports %}
+import {{ imp }};
+{% endfor %}
+
+/** 普通 POJO（MyBatis 非 Plus：无 ORM 注解；列名映射见 mapper XML 的 resultMap）。 */
+public class {{ entity_name }} {
+{% for f in fields %}
+    private {{ f.java_type }} {{ f.java_name }};
+{% endfor %}
+{% for f in fields %}
+    public {{ f.java_type }} get{{ f.pascal }}() {
+        return {{ f.java_name }};
+    }
+
+    public void set{{ f.pascal }}({{ f.java_type }} {{ f.java_name }}) {
+        this.{{ f.java_name }} = {{ f.java_name }};
+    }
+{% endfor %}
+}

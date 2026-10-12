@@ -1,0 +1,100 @@
+package {{ package }};
+{% if constraint_test %}
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import {{ package }}.entity.AppUser;
+import {{ package }}.mapper.AppUserMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
+
+/** {{ entity_name }} 数据库级约束验收：唯一约束（并发重复）与状态守卫（父状态禁止）。 */
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+@Transactional
+class {{ entity_name }}ConstraintTest {
+
+    @Autowired private MockMvc mockMvc;
+    @Autowired private ObjectMapper objectMapper;
+    @Autowired private AppUserMapper userMapper;
+    @Autowired private PasswordEncoder passwordEncoder;
+    @Autowired private JdbcTemplate jdbcTemplate;
+
+    private String token;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        AppUser user = new AppUser();
+        user.setUsername("member");
+        user.setPasswordHash(passwordEncoder.encode("member123"));
+        user.setRole("MEMBER");
+        user.setEnabled(true);
+        userMapper.insert(user);
+        String body = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"member\",\"password\":\"member123\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        token = objectMapper.readTree(body).get("token").asText();
+    }
+
+    private long seedParent(String status) {
+        jdbcTemplate.update("{{ constraint_test.seed_sql }}", {{ constraint_test.seed_args }});
+        Long id = jdbcTemplate.queryForObject(
+                "SELECT MAX(id) FROM {{ constraint_test.parent_table }}", Long.class);
+        return id == null ? 0L : id;
+    }
+
+    private String payload(long parentId, String value) throws Exception {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("{{ search_field_name }}", value);
+{% if child_has_status %}
+        map.put("status", "ACTIVE");
+{% endif %}
+        map.put("{{ constraint_test.fk_field }}", parentId);
+        return objectMapper.writeValueAsString(map);
+    }
+
+    private void create(String body, int expectedStatus) throws Exception {
+        mockMvc.perform(post("{{ route_path }}").header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().is(expectedStatus));
+    }
+{% if has_unique_constraint %}
+
+    @Test
+    void duplicateParentOwnerIsRejected() throws Exception {
+        long parentId = seedParent("OPEN");
+        String body = payload(parentId, "dup");
+        create(body, 200);
+        create(body, 409);  // 同一成员-父记录重复 → 数据库唯一约束兜底
+    }
+{% endif %}
+{% if status_guards %}
+
+    @Test
+    void blockedParentStatusIsRejected() throws Exception {
+        long parentId = seedParent("{{ status_guards[0].blocked_first }}");
+        create(payload(parentId, "blocked"), 409);
+    }
+{% endif %}
+}
+{% else %}
+/** 本实体无唯一约束/状态守卫，无需专门约束测试。 */
+class {{ entity_name }}ConstraintTest {
+}
+{% endif %}

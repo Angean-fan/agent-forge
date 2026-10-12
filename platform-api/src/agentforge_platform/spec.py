@@ -149,6 +149,8 @@ class SoftwareSpecification(BaseModel):
     external_requirements: list[dict[str, Any]] = []
     # R06D：显式请求的**预审核方法单元**（`id` 或 `id@version`）；默认空 → MVP 路径不变。
     method_requests: list[str] = []
+    # R11：服务端状态守卫声明 `[{child, parent, blocked_status: [...]}]`；默认空 → MVP 路径不变。
+    status_guards: list[dict[str, Any]] = []
 
     @field_validator("schema_version")
     @classmethod
@@ -165,6 +167,14 @@ class SoftwareSpecification(BaseModel):
             if pattern.fullmatch(item) is None:
                 raise ValueError(f"不安全的方法请求：{item!r}")
         return list(dict.fromkeys(value))
+
+    @field_validator("status_guards")
+    @classmethod
+    def _safe_status_guards(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for guard in value:
+            if not isinstance(guard, dict) or not {"child", "parent", "blocked_status"} <= guard.keys():
+                raise ValueError("状态守卫需为 {child, parent, blocked_status}")
+        return value
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]

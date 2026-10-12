@@ -1,0 +1,106 @@
+package {{ package }}.service;
+
+import {{ package }}.dto.{{ entity_name }}CreateRequest;
+import {{ package }}.dto.{{ entity_name }}UpdateRequest;
+import {{ package }}.entity.{{ entity_name }};
+import {{ package }}.exception.ApiException;
+import {{ package }}.exception.ErrorCode;
+import {{ package }}.mapper.{{ entity_name }}Mapper;
+import {{ package }}.vo.{{ entity_name }}View;
+import {{ package }}.vo.PageResult;
+{% for g in status_guards %}
+import {{ package }}.entity.{{ g.parent_entity }};
+import {{ package }}.mapper.{{ g.parent_mapper }};
+{% endfor %}
+import java.util.List;
+import org.springframework.stereotype.Service;
+
+/** {{ entity_name }} CRUD / 分页 / 搜索 / 数据归属 / 状态守卫（MyBatis 显式 SQL；结果与 Plus 版一致）。 */
+@Service
+public class {{ entity_name }}Service {
+
+    private final {{ entity_name }}Mapper mapper;
+{% for g in status_guards %}
+    private final {{ g.parent_mapper }} {{ g.parent_field }};
+{% endfor %}
+
+    public {{ entity_name }}Service({{ entity_name }}Mapper mapper{% for g in status_guards %}, {{ g.parent_mapper }} {{ g.parent_field }}{% endfor %}) {
+        this.mapper = mapper;
+{% for g in status_guards %}
+        this.{{ g.parent_field }} = {{ g.parent_field }};
+{% endfor %}
+    }
+
+    public PageResult<{{ entity_name }}View> list(long page, long size, String keyword, Long ownerId) {
+        String like = (keyword == null || keyword.isBlank()) ? null : "%" + keyword + "%";
+        long total = mapper.countPage(ownerId, like);
+        long offset = (page - 1) * size;
+        List<{{ entity_name }}> records = mapper.findPage(ownerId, like, size, offset);
+        return new PageResult<>(records.stream().map(this::toView).toList(), total, page, size);
+    }
+
+    public {{ entity_name }}View create({{ entity_name }}CreateRequest request, Long ownerId) {
+        {{ entity_name }} entity = new {{ entity_name }}();
+{% for f in writable_fields %}
+        entity.set{{ f.pascal }}(request.{{ f.java_name }}());
+{% endfor %}
+        entity.set{{ owner_pascal }}(ownerId);
+        checkStatusGuards(entity);
+        mapper.insert(entity);
+        return toView(mapper.findByIdAndOwner(entity.getId(), ownerId));
+    }
+
+    public {{ entity_name }}View get(Long id, Long ownerId) {
+        return toView(requireOwned(id, ownerId));
+    }
+
+    public {{ entity_name }}View update(Long id, {{ entity_name }}UpdateRequest request, Long ownerId) {
+        {{ entity_name }} entity = requireOwned(id, ownerId);
+{% for f in writable_fields %}
+        entity.set{{ f.pascal }}(request.{{ f.java_name }}());
+{% endfor %}
+        mapper.update(entity);
+        return toView(mapper.findByIdAndOwner(id, ownerId));
+    }
+
+    public void delete(Long id, Long ownerId) {
+        requireOwned(id, ownerId);
+        mapper.deleteByIdAndOwner(id, ownerId);
+    }
+
+    /** 服务端状态守卫：经外键读取父实体状态，命中禁止集合则拒绝（不返回成功）。 */
+    private void checkStatusGuards({{ entity_name }} entity) {
+{% for g in status_guards %}
+        if (entity.get{{ g.fk_pascal }}() != null) {
+            {{ g.parent_entity }} parent = {{ g.parent_field }}.findById(entity.get{{ g.fk_pascal }}());
+            if (parent == null) {
+                throw new ApiException(ErrorCode.NOT_FOUND, "关联的{{ g.parent_entity }}不存在", 404);
+            }
+            String parentStatus = parent.getStatus();
+            if (parentStatus != null && java.util.Set.of({{ g.blocked_literals }}).contains(parentStatus)) {
+                throw new ApiException("CONFLICT", "{{ g.parent_entity }}状态不允许创建", 409);
+            }
+        }
+{% endfor %}
+    }
+
+    private {{ entity_name }} requireOwned(Long id, Long ownerId) {
+        {{ entity_name }} entity = mapper.findByIdAndOwner(id, ownerId);
+        if (entity != null) {
+            return entity;
+        }
+        // 区分“不存在”（404）与“无权访问”（403），与固定验收断言一致。
+        if (mapper.findById(id) == null) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "记录不存在", 404);
+        }
+        throw new ApiException(ErrorCode.FORBIDDEN, "无权访问该记录", 403);
+    }
+
+    private {{ entity_name }}View toView({{ entity_name }} entity) {
+        return new {{ entity_name }}View(
+{% for a in view_getters %}
+{{ a }}
+{% endfor %}
+        );
+    }
+}

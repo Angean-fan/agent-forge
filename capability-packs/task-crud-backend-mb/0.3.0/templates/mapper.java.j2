@@ -1,0 +1,28 @@
+package {{ package }}.mapper;
+
+import {{ package }}.entity.{{ entity_name }};
+import java.util.List;
+import org.apache.ibatis.annotations.Param;
+
+/** MyBatis 映射接口（XML 提供显式 SQL；不使用任何 Plus 专属 API）。 */
+public interface {{ entity_name }}Mapper {
+
+    int insert({{ entity_name }} entity);
+
+    int update({{ entity_name }} entity);
+
+    {{ entity_name }} findById(@Param("{{ id_java }}") Long {{ id_java }});
+
+    {{ entity_name }} findByIdAndOwner(@Param("{{ id_java }}") Long {{ id_java }},
+            @Param("{{ owner_java }}") Long {{ owner_java }});
+
+    List<{{ entity_name }}> findPage(@Param("{{ owner_java }}") Long {{ owner_java }},
+            @Param("keyword") String keyword,
+            @Param("limit") long limit, @Param("offset") long offset);
+
+    long countPage(@Param("{{ owner_java }}") Long {{ owner_java }},
+            @Param("keyword") String keyword);
+
+    int deleteByIdAndOwner(@Param("{{ id_java }}") Long {{ id_java }},
+            @Param("{{ owner_java }}") Long {{ owner_java }});
+}

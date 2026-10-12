@@ -7,6 +7,7 @@ contract（不接受到模型输出或任意字符串），因此字段/命名�
 
 from __future__ import annotations
 
+import re as _re
 import shutil
 import sys
 from pathlib import Path
@@ -70,6 +71,12 @@ def _camel(column: str) -> str:
     return head + "".join(part.capitalize() for part in rest)
 
 
+def _snake(name: str) -> str:
+    step1 = _re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    step2 = _re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", step1)
+    return step2.lower()
+
+
 def _pascal(column: str) -> str:
     return "".join(part.capitalize() for part in column.split("_"))
 
@@ -115,7 +122,102 @@ def _foreign_keys_sql(contract: BusinessContract, table: TableContract) -> str:
     return "".join(clauses)
 
 
-def build_params(contract: BusinessContract, entity_name: str | None = None) -> dict:
+def _fk_column_names(contract: BusinessContract, table: TableContract) -> list[str]:
+    table_names = {item.table for item in contract.tables}
+    return [
+        column.name for column in table.columns
+        if column.name.endswith("_id") and column.name[:-3] in table_names
+    ]
+
+
+_JDBC_LITERAL = {
+    "BIGINT": "1L", "INT": "1", "VARCHAR(255)": '"seed"', "TEXT": '"seed"',
+    "BOOLEAN": "true", "DATETIME": "java.time.LocalDateTime.now()",
+    "DATE": "java.time.LocalDate.now()", "DECIMAL(18,2)": "java.math.BigDecimal.ONE",
+}
+
+
+def _java_literal(sql_type: str) -> str:
+    return _JDBC_LITERAL.get(sql_type, '"seed"')
+
+
+def _rendered_status_guards(
+    contract: BusinessContract, table: TableContract, entity_name: str,
+    status_guards: list[dict] | None,
+) -> list[dict]:
+    """把规格状态守卫渲染为服务端检查上下文（父实体/父 Mapper/外键/禁止状态）。"""
+    table_names = {item.table for item in contract.tables}
+    rendered: list[dict] = []
+    for guard in status_guards or []:
+        if guard.get("child") != entity_name:
+            continue
+        parent = guard.get("parent")
+        parent_table = _snake(str(parent))
+        if parent_table not in table_names:
+            raise PackRenderError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"状态守卫父实体不存在：{parent!r}"
+            )
+        parent_columns = next(t for t in contract.tables if t.table == parent_table).columns
+        if not any(column.name == "status" for column in parent_columns):
+            raise PackRenderError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"状态守卫要求 {parent} 含 status 列"
+            )
+        fk_column = f"{parent_table}_id"
+        if fk_column not in {column.name for column in table.columns}:
+            raise PackRenderError(
+                ErrorCode.CONTRACT_UNSUPPORTED, f"状态守卫要求 {entity_name} 含外键 {fk_column}"
+            )
+        blocked = guard.get("blocked_status") or []
+        rendered.append(
+            {
+                "parent_entity": str(parent),
+                "parent_mapper": f"{parent}Mapper",
+                "parent_field": f"{str(parent)[:1].lower()}{str(parent)[1:]}Mapper",
+                "fk_pascal": _pascal(fk_column),
+                "blocked_literals": ", ".join(f'"{item}"' for item in blocked),
+                "blocked_first": blocked[0] if blocked else "",
+            }
+        )
+    return rendered
+
+
+def _constraint_test_context(
+    contract: BusinessContract, table: TableContract, *, need_parent: bool
+) -> dict | None:
+    """生成工程内**数据库级**约束测试所需：父表种子 + 子外键字段（供 JdbcTemplate 插入真实父行）。"""
+    if not need_parent:
+        return None
+    fk_columns = _fk_column_names(contract, table)
+    if not fk_columns:
+        return None
+    parent_table_name = fk_columns[0][:-3]
+    parent_table = next(t for t in contract.tables if t.table == parent_table_name)
+    parent_fk = set(_fk_column_names(contract, parent_table))
+    columns = [
+        column for column in parent_table.columns
+        if not column.primary_key and column.name != "created_at" and column.name not in parent_fk
+    ]
+    if not columns:
+        return None
+    placeholders = ", ".join("?" for _ in columns)
+    args = ", ".join(
+        "status" if column.name == "status" else _java_literal(column.sql_type)
+        for column in columns
+    )
+    return {
+        "fk_field": fk_columns[0],
+        "parent_table": parent_table_name,
+        "seed_sql": (
+            f"INSERT INTO {parent_table_name} "
+            f"({', '.join(column.name for column in columns)}) VALUES ({placeholders})"
+        ),
+        "seed_args": args,
+    }
+
+
+def build_params(
+    contract: BusinessContract, entity_name: str | None = None, *, status_guards: list[dict] | None = None
+) -> dict:
     """为某个业务实体渲染参数（R10：多实体逐实体渲染）。
 
     ``entity_name=None`` 时要求契约恰好单实体（MVP 语义不变）；指定实体则按该实体渲染。
@@ -269,6 +371,9 @@ def build_params(contract: BusinessContract, entity_name: str | None = None) -> 
     ]
     id_column_name = id_column.name
     owner_column_name = owner_column.name
+    fk_cols = _fk_column_names(contract, table)
+    unique_with_fk = any(any(col in fk_cols for col in cols) for cols in table.unique_constraints)
+    guards_here = _rendered_status_guards(contract, table, entity_name, status_guards)
     return {
         "package": PACKAGE,
         "package_dir": PACKAGE_DIR,
@@ -315,6 +420,15 @@ def build_params(contract: BusinessContract, entity_name: str | None = None) -> 
         "columns_sql": ",\n    ".join(f["ddl"] for f in fields),
         "migration_version": 2 + index,
         "foreign_keys_sql": _foreign_keys_sql(contract, table),
+        "unique_constraints_sql": "".join(
+            f",\n    UNIQUE ({', '.join(cols)})" for cols in table.unique_constraints
+        ),
+        "status_guards": guards_here,
+        "has_unique_constraint": unique_with_fk,
+        "child_has_status": any(column.name == "status" for column in table.columns),
+        "constraint_test": _constraint_test_context(
+            contract, table, need_parent=unique_with_fk or bool(guards_here)
+        ),
         # DTO 字段名与列名同为 snake；外键列在生成的测试 payload 中跳过（外键列默认可空）。
         "fk_java_names": [
             field["column"] for field in fields
@@ -366,14 +480,18 @@ def _environment(pack_dir: Path) -> Environment:
 
 
 def render_pack_files(
-    pack_dir: str | Path, contract: BusinessContract, *, entity_name: str | None = None
+    pack_dir: str | Path,
+    contract: BusinessContract,
+    *,
+    entity_name: str | None = None,
+    status_guards: list[dict] | None = None,
 ) -> list[tuple[str, str]]:
     """返回 [(相对路径, 内容)]，不做任何写入（供装配器带守卫地写入）。
 
-    ``entity_name`` 指定时按该实体渲染（R10 多实体逐实体）；默认单实体（MVP 语义不变）。
+    ``entity_name`` 指定时按该实体渲染（R10 多实体逐实体）；``status_guards`` 为 R11 服务端状态守卫。
     """
     pack_dir = Path(pack_dir)
-    params = build_params(contract, entity_name)
+    params = build_params(contract, entity_name, status_guards=status_guards)
     environment = _environment(pack_dir)
     return [
         (

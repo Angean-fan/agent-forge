@@ -127,9 +127,14 @@ def _copy_template(template_dir: Path, writer: _Writer) -> None:
 
 
 def _render_packs(
-    contract: BusinessContract, lock: AssetLock, registry: AssetRegistry, writer: _Writer
+    contract: BusinessContract,
+    lock: AssetLock,
+    registry: AssetRegistry,
+    writer: _Writer,
+    spec: SoftwareSpecification,
 ) -> None:
     # R10：多实体逐实体渲染；共享文件（如 PageResult）内容一致，去重写入一次。
+    # R11：按实体传入服务端状态守卫（`spec.status_guards`）。
     entity_names = [matrix.entity for matrix in contract.permissions] or [None]
     for asset in lock.assets:
         if asset.kind != "capability-pack":
@@ -138,7 +143,9 @@ def _render_packs(
         rendered: dict[str, bytes] = {}
         for entity_name in entity_names:
             per_entity: dict[str, bytes] = {}
-            for rel, content in render_pack_files(pack_dir, contract, entity_name=entity_name):
+            for rel, content in render_pack_files(
+                pack_dir, contract, entity_name=entity_name, status_guards=spec.status_guards
+            ):
                 if rel in per_entity:  # 同一实体内重复目标：能力包编写错误，拒绝
                     raise AssemblyError(f"能力包渲染出重复目标：{rel}")
                 per_entity[rel] = content.encode("utf-8")
@@ -265,7 +272,7 @@ def assemble(
 
     writer = _Writer(staging, limits)
     _copy_template(template_dir, writer)
-    _render_packs(contract, lock, registry, writer)
+    _render_packs(contract, lock, registry, writer, spec)
     if lock.method_units:
         _copy_method_units(
             lock, writer,
