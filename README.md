@@ -5,9 +5,9 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 - 需求依据：《技术文档/Demo需求分析文档》v0.1
 - 技术依据：《技术文档/Demo技术文档_修订版_v0.3》
 - 分步实施说明：MVP `AgentForge_01_MVP_分步开发.md`（M01—M28 已完成）；迭代增强 `AgentForge_02_迭代增强_分步开发Prompt_方法索引版.md`
-- 当前进度：**第二阶段 R06B**（需求访谈闭环 R01—R06 完成；方法单元契约 R06A、方法与 FTS5 索引 R06B 完成；见 `docs/R06*.md`）；
+- 当前进度：**第二阶段 R06C**（需求访谈闭环 R01—R06 完成；方法契约 R06A、方法仓库+FTS5 索引 R06B、Asset Finder R06C 完成；见 `docs/R06*.md`）；
   MVP 冷启动验收见 `docs/MVP_ACCEPTANCE.md`、`docs/MVP_DEPLOY.md`
-- 下一步：**R06C**（Asset Finder：精确检索 + FTS5 召回 + 确定性兼容筛选）
+- 下一步：**R06D**（把方法索引接入 Resolver/装配器与 Asset Lock）
 
 ## 目录
 

@@ -17,7 +17,7 @@ import os
 import re
 import sqlite3
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agentforge_platform.asset_registry import (
@@ -46,7 +46,10 @@ def index_path() -> Path:
 
 @dataclass(frozen=True)
 class MethodRecord:
-    """一条可索引的方法单元（从 manifest + checksum 派生，不含源码正文）。"""
+    """一条可索引的方法单元（从 manifest + checksum 派生，不含源码正文）。
+
+    ``conflicts/extension_points/license`` 供 R06C Asset Finder 做兼容筛选；不写入索引。
+    """
 
     id: str
     version: str
@@ -62,6 +65,9 @@ class MethodRecord:
     requires: list[str]
     tags: list[str]
     acceptance_ids: list[str]
+    conflicts: list[str] = field(default_factory=list)
+    extension_points: list[str] = field(default_factory=list)
+    license: str = "internal"
 
 
 @dataclass(frozen=True)
@@ -122,6 +128,9 @@ def scan_methods(root: str | Path) -> list[MethodRecord]:
                 profiles=list(manifest.compatible_profiles), provides=list(manifest.provides),
                 requires=list(manifest.requires), tags=list(manifest.tags),
                 acceptance_ids=list(manifest.acceptance_ids),
+                conflicts=list(manifest.conflicts),
+                extension_points=list(manifest.extension_points),
+                license=manifest.license,
             )
         )
     records.sort(key=lambda record: (record.id, record.version))
