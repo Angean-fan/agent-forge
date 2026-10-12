@@ -27,6 +27,7 @@ from agentforge_platform.asset_finder import (
 from agentforge_platform.asset_registry import AssetRegistry, default_registry
 from agentforge_platform.clients import ModelClient
 from agentforge_platform.contract import BusinessContract, compile_from_spec
+from agentforge_platform.coverage import analyze_coverage
 from agentforge_platform.db import session_scope
 from agentforge_platform.errors import AppException
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
@@ -76,6 +77,7 @@ class GenerationState(TypedDict, total=False):
     asset_search: dict
     search_result: AssetSearchResult
     task_plan: dict
+    coverage: dict
     error_code: str
     ok: bool
 
@@ -238,6 +240,35 @@ def build_graph(context: GenerationContext):
             )
         return {"verification": verification, "acceptance": acceptance}
 
+    def check_coverage_node(state: GenerationState) -> GenerationState:
+        run_id = state["run_id"]
+        report = analyze_coverage(
+            state["spec"], state["contract"], state["lock"],
+            state["search_result"], state["acceptance"],
+            methods_root=context.methods_root,
+        )
+        with session_scope(context.session_factory) as db:
+            run = _require_active(db, run_id, RunStatus.VERIFYING)
+            record_task(db, run, "check_coverage", status="DONE")
+            for gap in report.gaps:  # 仅对真实缺口登记 AGENT_PATCH 任务（本步不执行）
+                record_task(db, run, gap.task_id, status="PENDING")
+            append_event(db, run, "coverage", json.dumps({
+                "mainline": report.mainline,
+                "acceptance_passed": report.acceptance_passed,
+                "covered_acceptance_ids": list(report.covered_acceptance_ids),
+                "gaps": [{"acceptance_id": g.acceptance_id, "code": g.code} for g in report.gaps],
+            }))
+        return {"coverage": {
+            "mainline": report.mainline,
+            "acceptance_passed": report.acceptance_passed,
+            "covered_acceptance_ids": list(report.covered_acceptance_ids),
+            "gaps": [
+                {"acceptance_id": g.acceptance_id, "code": g.code, "reason": g.reason,
+                 "allowed_paths": list(g.allowed_paths), "task_id": g.task_id, "mode": g.mode}
+                for g in report.gaps
+            ],
+        }}
+
     def package_or_fail(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
         verification = state["verification"]
@@ -255,6 +286,11 @@ def build_graph(context: GenerationContext):
         if task_plan is not None:
             (run_dir / "task-plan.json").write_text(
                 json.dumps(task_plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+        coverage = state.get("coverage")
+        if coverage is not None:
+            (run_dir / "coverage.json").write_text(
+                json.dumps(coverage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
 
         with session_scope(context.session_factory) as db:
@@ -302,13 +338,15 @@ def build_graph(context: GenerationContext):
     graph.add_node("plan_tasks", plan_tasks_node)
     graph.add_node("assemble", assemble_node)
     graph.add_node("verify", verify_node)
+    graph.add_node("check_coverage", check_coverage_node)
     graph.add_node("package_or_fail", package_or_fail)
     graph.add_edge(START, "load_confirmed_spec")
     graph.add_edge("load_confirmed_spec", "resolve_assets")
     graph.add_edge("resolve_assets", "plan_tasks")
     graph.add_edge("plan_tasks", "assemble")
     graph.add_edge("assemble", "verify")
-    graph.add_edge("verify", "package_or_fail")
+    graph.add_edge("verify", "check_coverage")
+    graph.add_edge("check_coverage", "package_or_fail")
     graph.add_edge("package_or_fail", END)
     return graph.compile()
 
