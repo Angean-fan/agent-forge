@@ -17,7 +17,7 @@
 执行要求：
 - 一次仅完成一个编号，不自行扩展需求，不重写 MVP，尽量只修改当前功能对应的模块；R06A—R06D 只是增量扩展 M13/M14/M15，不允许为了新索引推倒原 Registry/Resolver。
 - 给出本次增量的输入/输出契约和受影响文件；依赖代码不存在时先报告，不编造已实现上下文。
-- 保持旧的 Task MVP 冷启动回归通过；新增测试覆盖成功、失败、边界和权限场景。只读已发布资产不可原地修改；新版本、索引快照、兼容性结论、拒绝原因要可追溯。
+- 保持旧的 Task MVP 冷启动回归通过；新增测试覆盖成功、失败、边界和权限场景。只读已发布 Profile、模板、能力包及其 manifest 不可原地修改；旧 spec/asset-lock 须按原版本语义读取并重放，新版本、索引快照、兼容性结论、拒绝原因要可追溯。
 - 模型可以建议与补全，但程序负责版本、权限、资产选择、路径/预算校验、确定性验收及最终提交。按“已审核资产精确匹配 → 可参数化复用 → 受约束结构化适配 → 局部 Patch → 严格受限的新写”执行；索引命中不等于语义覆盖，不能为提高命中率绕过契约与验收。
 - 保留已经冻结的固定验收断言，禁止修改测试结果以制造 PASS。
 - 开发完成时报告：变更文件、运行命令、实际 PASS/FAIL/NOT_RUN、回归结果、费用/安全影响、WhenDone 判定以及下一步依赖。
@@ -54,7 +54,7 @@
 | `Recipe` | 组合多个资产和任务依赖的业务模式；先保留后续扩展边界 | 已锁定资产引用 + DAG |
 | `Integration Pack` | 第三方 API 的 Port/Adapter/Mock 和外部配置，仍归 E01—E07 | 优先复用适配器；Live 不等同 Mock |
 
-**Method Unit 最小 manifest：** `id/version/kind/language/framework/compatible_profiles/provides/requires/conflicts/parameter_schema/extension_points/owned_paths/checks/checksum/license`（与现有契约同名的字段保持一致）；额外记录 `symbol/signature/layer/imports/preconditions/postconditions/side_effects/security_constraints/acceptance_ids/source_provenance`。其中“已通过哪个独立测试”比“包含哪些关键词”更重要。`owned_paths` 仅描述资产可安装的目标范围，不赋予 Agent 任意目录权限；依赖许可证不兼容或来源不明时不入库。
+**Method Unit 最小 manifest：** `id/version/kind/language/framework/compatible_profiles/provides/requires/conflicts/parameter_schema/extension_points/owned_paths/checks/checksum/license`（与现有契约同名的字段保持一致）；额外记录 `symbol/signature/layer/imports/preconditions/postconditions/side_effects/security_constraints/acceptance_ids/source_provenance`。新增字段对旧 Template/Capability Pack 应有安全默认值或使用 `kind` 分支 schema；Method Unit 必需的签名/来源等仍须严格校验，不能因兼容默认值而放宽发布门槛。其中“已通过哪个独立测试”比“包含哪些关键词”更重要。`owned_paths` 仅描述资产可安装的目标范围，不赋予 Agent 任意目录权限；依赖许可证不兼容或来源不明时不入库。
 
 **建议存储形态：** 审核通过的 `methods/<asset-id>/<semver>/manifest.yaml`、`src/`、`tests/` 置于版本控制下（路径仅为建议）；SQLite/FTS5 仅存规范化索引键、标签、摘要、Profile/依赖关联和资产路径/哈希。索引支持从 manifest 全量重建与增量更新；源代码与 manifest 才是权威数据，丢失索引不能丢失资产。快照 `index_schema_version/index_revision` 用于检索审计；**锁重放只信 `asset-lock.json` 内的不可变 ID/版本/checksum，不依赖再次搜索得出同样排名**。
 
@@ -95,15 +95,15 @@ Python Resolver/Validator 选择不可变资产与任务 DAG → asset-lock.json
 **接口与实现要求：**
 
 1. 增强 MVP M21 的统一路由表，新增 `technical_planning`、`coding`、`complex_repair`（默认禁用，达到对应 R 步骤且完成探针后逐一启用）；`user_interaction` 始终指向 DeepSeek 官方的 `deepseek-flash`。所有任务按**任务类型/失败等级**由 Python 静态路由，不新增“路由决策模型”。
-2. `ModelCallResult` 记录 Provider、API 模型 ID、任务角色、思考模式、请求标识、usage、价格版本与错误分类；访谈发生在 run 前须用 `project_id + draft_id` 记录费用，生成期以 `run_id + task_id` 记录；每次内部 Agent 模型请求独立计账。
-3. 在 DeepSeek SDK 适配层实测 `thinking.type=disabled/enabled` 与 `reasoning_effort=low/high`。非思考模式用于简单问答，思考模式由缺失/冲突等**确定性规则**触发；不得把隐藏思考文本记录在提示词、日志或结果包。原始中文访谈不转交 Qwen，Qwen 不重新判定用户已确认的业务意图。
+2. `ModelCallResult` 记录 Provider、API 模型 ID、任务角色、思考模式、请求标识、usage、价格版本与错误分类；访谈发生在 run 前须用 `project_id + draft_id` 记录费用。现有 `ModelCall` 只有可空 `run_id`，R13 给生成期增加可空 `task_id` 并逐次传递，R20 再完成按 `run_id + task_id` 的汇总/对账；旧账本行与无任务上下文的 run 级调用仍可读取，不能伪造 task_id。每次内部 Agent 模型请求独立计账。
+3. R03 在 DeepSeek 客户端与统一网关实测 `thinking.type=disabled/enabled` 与 `reasoning_effort=low/high`，并记录实际请求模式；普通问题非思考，已识别冲突按确定性规则选择已验证的 `enabled + low`，复杂最终汇总的 `high` 留给 R06。若所用接口不支持强度参数，明确记录探针结论并阻止该模式启用，不能静默忽略后声称已支持。不得把隐藏思考文本记录在提示词、日志或结果包。原始中文访谈不转交 Qwen，Qwen 不重新判定用户已确认的业务意图。
 4. DeepSeek 的用户可读说明只能重述可信结构化状态（例如真实 `FAIL` / `NOT_RUN` / 成本），不能将失败写成成功；如 DeepSeek 不可用，使用确定性模板说明并暴露“AI 解释不可用”，不静默改用 Qwen。
 5. **模型可用性按地域验证。** `qwen3-coder-flash` 的 Function Calling 能力随部署地域/服务方式有差异；必须在准备运行 R16 时用真实工具调用测试，不可仅依据型号名称。Provider ID、版本、区域、支持能力、定价版本及验证日期都要归档；不可硬编码当前价格或接入真实密钥。
 
 6. 新增 `AssetFinder` 作为 MVP M13/M14 的只读检索适配层；Registry 提供资产真值，索引只做召回，Resolver 最终判定并生成锁，避免新旧两套互不一致的资产选择规则。
 7. `AssetSearchResult` 至少记录 `query_hash/index_revision/candidate_refs/match_type/filter_reasons/selected_refs/uncovered_acceptance_ids`；查询日志仅含脱敏结构化条件，不保存用户原文或第三方秘密。方法声明的 `provides` 必须能够映射到冻结契约与受保护验收 ID。
 8. 限定 `Method Unit` 的适配边界：只有匹配已声明 `extension_points` 的参数化渲染或经过测试的结构化源码修改可以自动执行；任意拼接源码、简单全文替换、写到模板原件或覆盖生成项目固定测试均被拒绝。兼容但无法安全植入时仍应产生 gap。
-9. `asset-lock.json` 新增可选的 `method_units` 及 `index_schema_version/index_revision/selection_reason` 审计字段时必须保持旧锁可读取；发布后的 asset ID+版本+checksum 不可更改；检索索引变化不能修改正在执行的 run 已冻结的资产选择。
+9. `asset-lock.json` 新增可选的 `method_units` 及 `index_schema_version/index_revision/selection_reason` 审计字段时必须保持旧锁可读取；`schema_version=0.1` 的锁哈希只使用原 0.1 字段集，明确排除新增字段的默认值，不得直接对扩展后的模型做无版本区分的 `model_dump()` 再哈希，也不得笼统用 `exclude_unset` 改变旧字段的原有序列化结果；新锁按新版本字段集计算。发布后的 asset ID+版本+checksum 不可更改；检索索引变化不能修改正在执行的 run 已冻结的资产选择。
 10. 代码生成成功不是公共资产发布成功。公共方法入库应在后续 E10 执行提取、最小依赖声明、通用化、许可证与安全审核、独立测试/兼容矩阵、人工确认、发布新版本和更新索引；不让运行中的 Agent 直接写 Registry。
 
 **建议配置示意（角色在完成指定步骤前保持 disabled）：**
@@ -156,9 +156,9 @@ model_routes:
 ### R01｜扩充业务范围校验器
 
 - **Goal：** 把 MVP 固定 `Task` 的限制升级为规则可配置的 1—3 业务实体、最多 2 角色、最多 8 业务页面，同时建立明确的超范围反馈。
-- **Context：** 参考 MVP M06 的 `SoftwareSpecification` 和 M07 确认 API；需求文档第 2、4 节 FR01；技术文档第 9 节细化相同限制。
-- **Constraints：** 不直接开始多实体源码生成；不自动删除超范围功能；要求用户确认缩减后的规格才可以进入下一阶段；认证实体/页面从业务限额中排除。
-- **WhenDone：** 三个边界的内/外测试通过；超限可返回 `UNSUPPORTED_SCOPE` 和可解释的缩减建议；未确认的缩减绝不能直接提交 run。
+- **Context：** 参考 MVP M06/M07 与 `spec.py` 的 `MVP_ENTITY_LIMIT=1`、固定 Task 字段/角色规则，以及 `contract.py` 的单实体编译门禁；需求文档 FR01 与技术文档第 9 节要求 1—3 个业务实体。R10 才扩展契约和装配，不把范围校验通过误当作当前生成器已支持。
+- **Constraints：** 在 `errors.py:ErrorCode` 统一新增 `UNSUPPORTED_SCOPE`（超出 Demo 范围）与 `SCOPE_CAPABILITY_NOT_READY`（规格合法，但 R10 多实体生成能力未就绪），固定各自 HTTP 422 响应；R10 解除门禁时复用同一代码，不另造错误名。将通用的实体数、角色数、业务页面数、字段安全性和权限规则，与仅属于旧 `Task` MVP 的固定字段/单实体规则分离；旧版已确认 Task spec 及冻结 hash 不改写。R01 可识别并校验 2—3 实体候选，但 R10 前生成入口必须返回 `SCOPE_CAPABILITY_NOT_READY`，不得落入旧 `contract.py` 单实体路径或宣称可生成。不自动删除超范围功能；要求用户确认缩减后的规格；认证实体/页面从业务限额中排除。
+- **WhenDone：** 1/3/4 实体、2/3 角色、8/9 页面边界与字段/权限规则测试通过；旧 Task 确认与生成回归 PASS；合法多实体候选不被 MVP 固定 Task 校验误拒，而 R10 前提交生成返回 HTTP 422/`SCOPE_CAPABILITY_NOT_READY`；超限返回 HTTP 422/`UNSUPPORTED_SCOPE` 和可解释的缩减建议，未确认的缩减不能提交 run。
 
 ### R02｜建立访谈题目与答案 Schema
 
@@ -170,9 +170,9 @@ model_routes:
 ### R03｜增加基于缺失字段的动态问题生成
 
 - **Goal：** 使用 **DeepSeek V4.1 Flash（`user_interaction` 路由）** 根据已确认信息与缺失/冲突项一次生成最多 3 个具体的中文澄清问题，同时输出未收敛字段和影响业务决定的 `affects`。
-- **Context：** 依赖 R02、M21/M22 的 `deepseek-flash` 网关及生成前记账；需求文档第 5 节角色、字段、约束、权限、规模等缺口清单。
-- **Constraints：** 严禁改用 `qwen3.7-plus` 来生成用户问题；简单问题默认非思考、已识别冲突可选择经实测的 `low`；不重复提问，“不确定”不得当作已知；校验结构与次数/费用，不准模型自行宣称完整。
-- **WhenDone：** 真实 DeepSeek 调用对校园活动需求输出相关问题且最多 3 题，含 `question_id/affects`；无冲突已答字段不重复提问；测试断言请求路由只命中 `deepseek-flash`，并记录 usage。
+- **Context：** 依赖 R02、M21/M22 的 `deepseek-flash` 网关及生成前记账；当前 `clients.py` 只下发 `thinking.type`，`requirement_extraction.py` 固定 `thinking_mode="disabled"`，`ModelCall` 只有 `thinking_mode` 列，尚无 `reasoning_effort`；需求文档第 5 节给出缺口清单。
+- **Constraints：** 在本步为 `model_call` 增加可空 `reasoning_effort` 列并做向后兼容迁移，旧调用保持 NULL；客户端、网关预留/结算与账本/审计分别传递 `thinking_mode` 和 `reasoning_effort`，不把 `low/high` 塞进 `thinking_mode`。仅对实测支持的思考模式下发 `low/high`；普通缺失字段默认 `thinking.type=disabled` 且 `reasoning_effort=NULL`，由 Python 对已答信息的明确冲突作确定性检测后使用 `enabled + low`，不得由模型自行决定切换。适配层验证参数组合和供应商响应，未知/不支持时返回可解释错误或保持非思考路径，不能静默丢弃强度参数并标记思考已启用。严禁改用 Qwen 生成用户问题；不重复提问，“不确定”不得当作已知；校验结构、调用次数与费用；不保存 `reasoning_content`。
+- **WhenDone：** `disabled` 与冲突触发的 `enabled + low` 均有真实接口探针和请求载荷/usage 证据；支持与不支持强度参数的模拟响应均有断言；迁移前账本行仍可读取且 `reasoning_effort=NULL`，新行可区分模式与强度；校园活动需求最多返回 3 个相关问题并含 `question_id/affects`，无冲突已答字段不重复提问，路由只命中 `deepseek-flash`。
 
 ### R04｜接入 LangGraph 访谈中断/恢复
 
@@ -192,7 +192,7 @@ model_routes:
 
 - **Goal：** 使用 DeepSeek V4.1 Flash 整理面向用户的最终需求摘要（复杂汇总可用经验证的 `high`），经用户确认后由程序冻结功能、排除项、业务规则及**独立验收场景**，变更后创建新 spec 版本。
 - **Context：** 依赖 R01—R05 及 MVP M07；需求文档 FR03、第 8 节要求验收断言和规格一同冻结，编码 Agent 无权修改。
-- **Constraints：** `pending` 核心项未清零不得确认；DeepSeek 只是起草和解释，不能替用户同意；技术规划模型不得在冻结后重解释原对话或改业务规则；生成中的 spec 不允许原地编辑，冻结哈希进入 run。
+- **Constraints：** `pending` 核心项未清零不得确认；复杂汇总若选择 `enabled + high`，须复用 R03 已验证的参数/账本路径，不支持时不得声称已使用 high；DeepSeek 只是起草和解释，不能替用户同意；技术规划模型不得在冻结后重解释原对话或改业务规则；生成中的 spec 不允许原地编辑，冻结哈希进入 run。
 - **WhenDone：** 可查看规格版本差异；旧 run 指向旧 spec 的 hash；人为篡改冻结的验收断言会在检查中被拒绝。
 
 ---
@@ -204,9 +204,9 @@ model_routes:
 ### R06A｜扩展资产契约：增加可复用 Method Unit 类型
 
 - **Goal：** 以**兼容 MVP 已发布资产**的方式扩展 manifest/schema 与 Registry 读接口，新增 `Method Unit`（方法/类/片段）分类、稳定 ID、不可变版本和结构化调用契约。
-- **Context：** 依赖已完成 M08/M13/M14/M15 和 R06 冻结规格；现有 Template/Capability Pack 继续是更高优先级的完整资产；本步属于新增工程增强而非 MVP 补课，后续 R06B 构建方法存储和索引。
-- **Constraints：** 保留原 manifest 字段及旧资产读取/锁格式；新增 `symbol/signature/layer/imports/preconditions/postconditions/side_effects/security_constraints/acceptance_ids/source_provenance` 等方法元数据；只允许声明已存在于 Profile/契约的安全扩展点。源代码/manifest 的写入权限与运行期 Agent 隔离，禁止仅凭方法名相似就注册能力覆盖；许可证和来源不明的代码拒绝发布。
-- **WhenDone：** 原有 Task 的 Registry/Resolver/lock 和冷启动回归原样 PASS；最小 `Method Unit` 示例通过 schema/manifest 检查；缺签名、非法依赖、未知 Profile、危险 owned_paths、冲突或无合法来源的样例被拒绝；新旧 manifest 兼容测试通过。
+- **Context：** 依赖已完成 M08/M13/M14/M15 和 R06 冻结规格；现有 `AssetManifest`、`LockedAsset`、`AssetLock` 均设置 `extra="forbid"`，旧锁哈希由模型序列化字段计算。本步属于新增工程增强而非 MVP 补课，后续 R06B 构建方法存储和索引。
+- **Constraints：** 保留原 manifest 字段及旧资产读取/锁格式；为旧 Template/Capability Pack 的新增元数据提供安全默认值，或以 `kind/schema_version` 分支解析；Method Unit 的 `symbol/signature/layer/imports/preconditions/postconditions/side_effects/security_constraints/acceptance_ids/source_provenance` 按新类型严格验证，不得用默认值掩盖缺签名/来源。新增锁字段须可选并有旧版本解析策略；校验 `schema_version=0.1` 旧锁时使用原字段白名单构造哈希输入，显式排除新字段默认值，避免扩展后的 `model_dump()` 改变 canonical payload；不得用全局 `exclude_unset` 影响原字段，新锁按新版本字段集计算。只允许声明已存在于 Profile/契约的安全扩展点；源代码/manifest 的写入权限与运行期 Agent 隔离；许可证和来源不明的代码拒绝发布。
+- **WhenDone：** 原有 Task 的 Registry/Resolver/lock 和冷启动回归原样 PASS；用已发布旧 manifest 和 MVP 基线生成并保存的原版 `asset-lock.json` 作回归夹具，无需编辑即可解析、哈希校验、按固定 ID/version/checksum 重放；新锁可解析且篡改被拒；最小 Method Unit 示例通过检查，缺签名、非法依赖、未知 Profile、危险 owned_paths、冲突或无合法来源的样例被拒绝。
 
 ### R06B｜建立方法代码仓库与可重建 SQLite/FTS5 索引
 
@@ -226,36 +226,36 @@ model_routes:
 
 - **Goal：** 以扩展适配器接通 `Asset Finder → MVP Resolver → asset-lock → M15 装配器`，支持已验证方法的直接 COPY/参数化 RENDER/受约束 STRUCTURED_EDIT，并保留失败时的明确 Gap。
 - **Context：** 依赖 R06A—R06C 以及已实现 M14/M15/M17/M18/M24；R07—R13 的新增业务能力优先经此流程查找；已有 Task MVP 继续可只用模板/能力包、无需 Method Unit。
-- **Constraints：** 先由完整模板/能力包占有已有 `provides/owned_paths`，方法不得重复实现认证、权限或覆盖原能力；引用冻结 `asset_id/version/checksum` 与索引快照元数据，运行期间不动态换版本；只允许白名单扩展点的结构化植入，改动后运行原有固定检查；索引故障应进入可解释的阻塞/降级策略，不能使用未经审核的代码或静默越过必需检查；新增锁字段须兼容旧锁读取/重放。
+- **Constraints：** 先由完整模板/能力包占有已有 `provides/owned_paths`，方法不得重复实现认证、权限或覆盖原能力；引用冻结 `asset_id/version/checksum` 与索引快照元数据，运行期间不动态换版本；只允许白名单扩展点的结构化植入，改动后运行原有固定检查；索引故障应进入可解释的阻塞/降级策略，不能使用未经审核的代码或静默越过必需检查；复用 R06A 的版本化锁解析/哈希规则，旧锁不因新字段默认值而改变字节内容或哈希。
 - **WhenDone：** 固定 Task 无额外方法时仍按 MVP 原路径生成/验收；一个含预审核方法的测试规格可通过 Finder 锁定、装配并执行 Runner HTTP 回归；重复检索、重复装配结果可复现；未命中/冲突/无安全扩展点会产生结构化 Gap 或错误而非文件覆盖；旧 `asset-lock.json` 仍能重放并校验。
 
 ### R07｜补充 Vue 3 + JavaScript Profile 分支
 
 - **Goal：** 从已通过的 TS 基线派生 JS 模板，只替换真正不同的前端结构与构建配置。
 - **Context：** 依赖 MVP M08—M12；需求文档 FR04 要求 JS/TS 可选择，技术文档第 2 节通过不可变 Platform Profile 管理兼容性；新增方法级检索基线 R06D 已就绪，新 JS 资产发布时须刷新索引与兼容关系。
-- **Constraints：** 已发布 TS Profile 不原地覆盖；不得将 TS 类型文件无脑复制到 JS 模板；保持相同接口与业务验收。
-- **WhenDone：** JS 模板可完成 `npm ci`、`npm run build` 及同一 Task HTTP 验收；两个 profile 版本均有锁定记录。
+- **Constraints：** 将 `spec.py:is_supported_profile` 的单一 `demo-ts-mp@0.3` 常量判断改为读取已发布、已认证 Profile 的确定性规则，校验 `profile_id/profile_version/template_version` 一致性及资产兼容性；只有经 R07 构建认证的 JS 组合才加入允许集，未认证的其余组合继续拒绝。MVP 固定 Task 字段规则应按旧 spec/场景适用，不能绑定在全局 Profile 判断中。已发布 TS Profile/模板不原地覆盖；不得将 TS 类型文件无脑复制到 JS 模板；保持相同接口与业务验收。
+- **WhenDone：** JS 模板完成 `npm ci`、`npm run build` 及同一 Task HTTP 验收；已认证 TS/JS Profile 均能通过规格确认、Resolver 和锁定流程，未知版本/模板不匹配被拒；旧 TS Profile 与锁可重放。
 
 ### R08｜补充 Spring Boot + MyBatis 分支
 
 - **Goal：** 制作 MyBatis（非 Plus）的后端模板/映射能力包，复用同一实体及 REST 业务契约。
 - **Context：** 依赖 MVP M08—M11 和 R07 的版本思路；需求文档 FR04 要求两种 ORM 可选择。
-- **Constraints：** 不改写已认证的 MyBatis-Plus 资产；普通 CRUD 可以多一些显式 SQL，但权限/分页验收结果必须一致；保留适配层边界；遇到 MyBatis 和 Plus 实现差异，Finder 必须按 ORM/Profile 过滤 Method Unit，不得复用只针对 Plus 的方法实现。
-- **WhenDone：** MyBatis Task 工程可以构建启动并通过同一业务测试；不使用 Plus 专属 API；回归通过。
+- **Constraints：** 不改写已认证的 MyBatis-Plus 资产；MyBatis Profile 与模板/能力包用新 ID 或新版本发布，经构建认证后才加入 R07 建立的规则允许集。普通 CRUD 可以多一些显式 SQL，但权限/分页验收结果必须一致；保留适配层边界；Finder 必须按 ORM/Profile 过滤 Method Unit，不得复用只针对 Plus 的实现。
+- **WhenDone：** MyBatis Task 工程可以构建启动并通过同一业务测试；不使用 Plus 专属 API；新 Profile 经规格确认与 Resolver 锁定后可生成，旧 Plus 资产/锁回归通过。
 
 ### R09｜四组合 Profile 认证与高级技术选项
 
 - **Goal：** 完成 JS/TS × MyBatis/MyBatis-Plus 四种 Profile 的独立锁、兼容矩阵、构建及前端高级选择；**仅在需要 AI 进行面向用户的技术通俗解释时调用 DeepSeek `deepseek-flash`**。
 - **Context：** 依赖 R07/R08、M08、M13/M14；需求文档第 6、8 节要求四组合都通过基础模板构建，界面说明特点、局限与推荐理由。
-- **Constraints：** 选型与 Profile 兼容判断由确定性规则执行，DeepSeek 只解释经验证的功能差异，不凭空承诺性能或暗改配置；启用前四组合需经过基础构建和 Task 回归；用户不能指定任意依赖版本。
-- **WhenDone：** 四种组合均有可追溯 `profile_id/version`、构建报告及验收记录；选择无效组合被拒；默认继续推荐 TS + MyBatis-Plus；四组合各至少验证一次 Method Unit 候选的兼容/不兼容筛选，旧 Profile 锁重放不受索引刷新影响。
+- **Constraints：** 选型与 Profile 兼容判断由 R07 建立的确定性规则执行，支持四组合且仅启用经认证的精确版本/模板/资产矩阵；旧 `demo-ts-mp@0.3` 保持可读可用，不原地改已发布资产。DeepSeek 只解释经验证的差异；启用前四组合需经过基础构建和 Task 回归；用户不能指定任意依赖版本。
+- **WhenDone：** 四种组合均有可追溯 `profile_id/version`、构建报告及验收记录；四组合分别走通规格确认 → Resolver → 锁 → 构建/Task 回归，非法组合或未认证版本被拒；默认继续推荐 TS + MyBatis-Plus；四组合各至少验证一次 Method Unit 候选的兼容/不兼容筛选，旧 Profile 锁重放不受索引刷新影响。
 
 ### R10｜支持第 2—3 个业务实体与关系映射
 
 - **Goal：** 将装配器从单 Task 扩展为有明确一对多/多对一或关联实体关系的 2—3 业务实体装配；每一关系/辅助逻辑先查询已审核 Capability Pack/Method Unit，未覆盖的关系才按已有确定性路径实现。
-- **Context：** 依赖 M06/M11/M12/M15、R01/R06；技术文档第 6 节强调“数据库、DTO、REST 契约先冻结，再装配后端/前端”。
-- **Constraints：** 先仅处理确定性关系模式；外键、字段、路由命名冲突需在写文件前拒绝；不自动允许模型新增第 4 个实体。
-- **WhenDone：** 图书借阅或活动报名的一套 2—3 实体规格能生成外键正确的 migration、服务和页面；重复渲染无漂移；测试通过。
+- **Context：** 依赖 M06/M10—M12/M15、R01/R06；当前 `contract.py` 仍有 `MVP_ENTITY_LIMIT=1` 且只编译 `entities[0]`，MVP 能力包/装配器也是 Task 定制。技术文档第 6 节强调“数据库、DTO、REST 契约先冻结，再装配后端/前端”。
+- **Constraints：** 先扩展确定性契约编译，再扩展相应能力包、装配器和 Runner；对每个实体/关系生成独立表、DTO、REST、权限及外键，不得只放开 R01 校验却继续丢弃第二实体。先仅处理确定性关系模式；外键、字段、路由命名冲突需在写文件前拒绝；不自动允许模型新增第 4 个实体。R01 设置的多实体生成门禁仅在完整链路通过后解除。
+- **WhenDone：** 图书借阅或活动报名的一套 2—3 实体规格能生成含全部实体和正确外键的 migration、服务、页面及权限/HTTP 验收；缺一实体即失败；重复渲染无漂移；旧单 Task 生成和验收 PASS。
 
 ### R11｜唯一约束与状态守卫能力包
 
@@ -274,9 +274,9 @@ model_routes:
 ### R13｜接口契约先行的多任务 DAG 规划
 
 - **Goal：** 在需要 AI 规划时由 **Qwen3.7 Plus（`qwen3.7-plus`）** 基于**用户确认的冻结 spec** 提出接口/DTO/SQL/权限契约和 `TaskPlan`；Python 冻结、校验并决定最终任务 DAG；技术规划之前先执行 Asset Finder，向 Qwen 只提供已校验的候选/缺口摘要，尽量避免重复规划可直接装配的常规任务。
-- **Context：** 依赖 R10—R12、M07 的已确认 spec/hash 与 M14/M15；技术文档第 4 节定义 `task_id/execution_mode/asset_refs/depends_on/allowed_paths/inputs/acceptance_ids/token_limit`；由 R06 的 DeepSeek 用户摘要交接，但**不得读取未确认原始聊天**；新增依赖 R06D 的 `AssetSearchResult`，任务计划须引用既有 Resolver 选定的 asset_refs 与冻结索引快照。
-- **Constraints：** 静态任务继续使用确定性转换，只有确有规划复杂性才调用 `technical_planning`（Qwen3.7 Plus）；模型只能提议能力和任务，不得改 confirmed spec、权限、验收或依赖版本；Python 做 DAG 无环、冲突和覆盖校验，按依赖串行提交；Qwen 对“建议复用哪个方法”的输出只是建议，不得把未通过兼容筛选或没有验收覆盖证据的 Method Unit 强行设为可用。
-- **WhenDone：** 基于同一个冻结 spec/hash 的计划具备可追溯输出、输入摘要 hash 和通过的 schema 验证；无环、越界 allowed_paths、同路径冲突被拒；固定场景重复执行稳定，模型调用日志仅出现允许的 `technical_planning` 路由；TaskPlan 可明确标注 `COPY/RENDER/STRUCTURED_EDIT/AGENT_PATCH` 与检索拒绝原因，标准已覆盖任务的技术模型调用可按规则跳过。
+- **Context：** 依赖 R10—R12、M07 的已确认 spec/hash 与 M14/M15；技术文档第 4 节定义 `TaskPlan.task_id`，第 8 节要求每次内部请求继承 `run_id/task_id/call_id`。当前 `RunTask` 已有 `task_id`，`ModelCall` 只有 `run_id`；由 R06 的 DeepSeek 用户摘要交接，但**不得读取未确认原始聊天**；任务计划须引用 R06D 选定资产与冻结索引快照。
+- **Constraints：** 在本步为 `model_call` 增加可空 `task_id` 的向后兼容迁移，并从 DAG 任务上下文经网关预留/结算传到每次生成期模型请求；`task_id` 必须属于该 `run_id`，无任务上下文的 run 级调用保持空值，生成前 `project_id + draft_id` 调用的 `run_id/task_id` 均为空，旧行无需回填。静态任务继续使用确定性转换，只有确有规划复杂性才调用 `technical_planning`；模型只能提议能力和任务，不得改 confirmed spec、权限、验收或依赖版本；Python 做 DAG 无环、冲突和覆盖校验，按依赖串行提交；Qwen 的方法建议不得越过兼容筛选。
+- **WhenDone：** 同一冻结 spec/hash 的计划具备可追溯输出、输入摘要 hash 和 schema 验证；无环、越界 allowed_paths、同路径冲突被拒；用已登记的 `RunTask` 测试任务内网关调用，账本行同时含正确 `run_id/task_id/call_id`，错误 run/task 配对被拒，迁移前旧账本行及生成前账本仍可读取；DAG 建立前的规划调用保留空 `task_id`；模型日志仅出现允许的 `technical_planning` 路由，TaskPlan 标注执行模式与检索拒绝原因，已覆盖任务可跳过技术模型。
 
 ---
 
@@ -331,9 +331,9 @@ model_routes:
 ### R20｜完善 Provider 价格、usage 与多角色共享预算
 
 - **Goal：** 将 MVP 的 DeepSeek 单 Provider 账本完善为 **DeepSeek 用户交互 + Qwen 技术规划/编码/升级修复 + 各内部重试** 共享预算与预留。
-- **Context：** 依赖 M21 的生成前 project/draft 花费、R03/R06 用户交互、R13 Qwen 规划及 R16/R18 内层调用；技术文档第 8 节给出预留公式、缓存/输出分项与 `price_version`，10 元只是可修改内测参数。
-- **Constraints：** 各 Provider 保存实际 model ID、mode、币种、定价版本与 usage；未知价格/usage 暂停对账，不写零；原币单位记账，不同计费币种的共享预算必须按锁定汇率快照统一计算可用额度并记录汇率时间；不要混算或遗漏 run 前访谈成本；本地限额不替代 Provider 限额。
-- **WhenDone：** 覆盖 DeepSeek 问答 + Qwen 规划 + Qwen Agent 内层重试 + Max 升级的真实/模拟账本测试；预算不足零新请求；报表区分访谈期与 run 期金额、模型/usage/定价版本/未知状态；跨币种汇率可追溯；增加可核实的资源使用拆分：检索/装配不计模型 Token，复用前后模型调用与实际费用对比不得以估算冒充已发生费用。
+- **Context：** 依赖 M21 的生成前 project/draft 花费、R03/R06 用户交互、R13 增加的可空 `ModelCall.task_id` 及 R16/R18 内层调用；技术文档第 8 节给出预留公式、缓存/输出分项与 `price_version`，10 元只是可修改内测参数。
+- **Constraints：** 所有生成期任务内请求，包括 Agent 工具循环、重试和升级修复，逐次携带 `run_id/task_id/call_id` 并进入同一预留/幂等结算路径；按 `run_id + task_id` 汇总时保留 run 级空 task、旧行空 task 及生成前 project/draft 费用的独立类别，不把空 task 误归到任意任务。各 Provider 保存实际 model ID、mode/强度、币种、定价版本与 usage；未知价格/usage 暂停对账，不写零；跨币种共享预算按锁定汇率快照计算并记录时间；本地限额不替代 Provider 限额。
+- **WhenDone：** 覆盖 DeepSeek 问答 + Qwen 规划 + Qwen Agent 内层重试 + Max 升级的真实/模拟账本测试；同一 run 的两个 task 与 run 级调用分别汇总，旧行/生成前账本不丢，重复结算不重复收费，预算不足零新请求；报表区分访谈期、run 级与各 task 的金额、模型/实际模式与强度/usage/定价版本/未知状态；跨币种汇率可追溯；检索/装配不计模型 Token，复用前后实际调用与费用不得以估算冒充。
 
 ### R21｜模型调用次数、工具循环与运行时限统一拦截
 
