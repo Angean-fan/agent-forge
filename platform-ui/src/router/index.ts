@@ -26,6 +26,12 @@ const routes: RouteRecordRaw[] = [
     props: true,
   },
   {
+    path: '/projects/:id/interview',
+    name: 'project-interview',
+    component: () => import('@/views/InterviewView.vue'),
+    props: true,
+  },
+  {
     path: '/runs/:id',
     name: 'run-detail',
     component: () => import('@/views/RunDetailView.vue'),

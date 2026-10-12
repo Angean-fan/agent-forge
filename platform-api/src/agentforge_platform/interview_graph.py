@@ -161,7 +161,7 @@ def build_interview_graph(context: InterviewContext, saver: SqliteSaver):
             )
             draft.missing_fields_json = json.dumps(state["missing_fields"], ensure_ascii=False)
             draft.draft_revision += 1
-            questions = [question.model_dump() for question in result.questions]
+            questions = [question.model_dump(mode="json") for question in result.questions]
         return {"questions": questions, "questions_round": state["round"]}
 
     def await_answer(state: InterviewState) -> InterviewState:
@@ -246,12 +246,23 @@ def resume_interview(
         return app.invoke(Command(resume=answers), thread_config(project_id, draft_id))
 
 
+def read_interview(context: InterviewContext, *, project_id: int, draft_id: int) -> dict | None:
+    """读取持久化状态（不 invoke），用于“离开后回来接续”。无检查点时返回 None。"""
+    with _Checkpointer(context.database_url) as saver:
+        app = build_interview_graph(context, saver)
+        snapshot = app.get_state(thread_config(project_id, draft_id))
+        if not snapshot.values:
+            return None
+        return {**snapshot.values, "waiting": bool(snapshot.next)}
+
+
 __all__ = [
     "REQUIRED_DECISIONS",
     "InterviewContext",
     "InterviewError",
     "InterviewState",
     "build_interview_graph",
+    "read_interview",
     "resume_interview",
     "start_interview",
     "thread_config",

@@ -63,6 +63,7 @@ export interface SoftwareSpecification {
   actors: string[];
   entities: SpecEntity[];
   relations: Record<string, unknown>[];
+  pages: Record<string, unknown>[];
   permissions: SpecPermission[];
   business_rules: SpecBusinessRule[];
   acceptance_cases: SpecAcceptanceCase[];
@@ -96,6 +97,40 @@ export interface SpecConfirmView {
   draft_revision: number;
   hash: string;
   confirmed_at: string;
+}
+
+/** R02/R05：访谈问答（题型由后端给定，前端不猜测）。 */
+export type QuestionType = 'single_choice' | 'multi_choice' | 'text';
+
+export interface InterviewQuestion {
+  question_id: string;
+  version: number;
+  type: QuestionType;
+  prompt: string;
+  options: string[];
+  allow_custom: boolean;
+  required: boolean;
+  affects: string[];
+}
+
+export interface InterviewAnswer {
+  question_id: string;
+  question_version: number;
+  selected?: string[];
+  custom?: string | null;
+  unsure?: boolean;
+}
+
+export interface InterviewView {
+  project_id: number;
+  draft_id: number;
+  round: number;
+  status: string; // NEW / CLARIFYING / READY_TO_CONFIRM / NEEDS_INPUT
+  waiting: boolean;
+  questions: InterviewQuestion[];
+  pending: string[];
+  issues: string[];
+  error_code: string | null;
 }
 
 export interface RunView {

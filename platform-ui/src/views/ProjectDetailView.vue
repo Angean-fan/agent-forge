@@ -32,6 +32,7 @@ function blankSpec(): SoftwareSpecification {
     actors: [],
     entities: [],
     relations: [],
+    pages: [],
     permissions: [],
     business_rules: [],
     acceptance_cases: [],
@@ -333,9 +334,18 @@ watch(() => props.id, loadAll, { immediate: true });
             模型生成的内容一律标记为“待确认”，需你逐项确认或修改后才能确认冻结；固定技术方案暂不可切换。
           </p>
         </div>
-        <el-button type="primary" :loading="extracting" @click="onExtract">
-          {{ hasSpec ? '重新生成草稿' : '生成需求草稿' }}
-        </el-button>
+        <div class="draft-actions">
+          <el-button
+            v-if="hasSpec && !spec?.confirmed"
+            data-testid="open-interview"
+            @click="router.push({ name: 'project-interview', params: { id: String(projectId) } })"
+          >
+            需求访谈
+          </el-button>
+          <el-button type="primary" :loading="extracting" @click="onExtract">
+            {{ hasSpec ? '重新生成草稿' : '生成需求草稿' }}
+          </el-button>
+        </div>
       </div>
 
       <el-alert

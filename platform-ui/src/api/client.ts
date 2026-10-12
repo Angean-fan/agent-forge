@@ -1,5 +1,7 @@
 import type {
   AccountInfo,
+  InterviewAnswer,
+  InterviewView,
   ProjectDetail,
   ProjectSummary,
   RunDetail,
@@ -166,6 +168,16 @@ export const projectsApi = {
       method: 'POST',
       body: { version, draft_revision: draftRevision },
     });
+  },
+};
+
+export const interviewApi = {
+  get(projectId: number): Promise<InterviewView> {
+    return apiRequest(`/projects/${projectId}/interview`);
+  },
+  /** 无 answers 时开始访谈（已开始则原样返回）；带 answers 时续答。 */
+  submit(projectId: number, answers: InterviewAnswer[] = []): Promise<InterviewView> {
+    return apiRequest(`/projects/${projectId}/interview`, { method: 'POST', body: { answers } });
   },
 };
 

@@ -45,6 +45,7 @@ function spec(overrides: Partial<SoftwareSpecification> = {}): SoftwareSpecifica
       },
     ],
     relations: [],
+    pages: [],
     permissions: [{ role: 'ADMIN', actions: ['create', 'read'], source: 'pending' }],
     business_rules: [{ id: 'BR01', text: '同一成员不能重复报名', source: 'pending' }],
     acceptance_cases: [{ id: 'AC01', scenario: '重复报名', expected: '被拒绝', source: 'pending' }],

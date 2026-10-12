@@ -138,6 +138,7 @@ const minimalSpec = {
   actors: [],
   entities: [],
   relations: [],
+  pages: [],
   permissions: [],
   business_rules: [],
   acceptance_cases: [],
