@@ -60,6 +60,8 @@ class ErrorCode(StrEnum):
     LIVE_NOT_READY = "LIVE_NOT_READY"
     # E06：OpenAPI 规范/来源/允许域名/SDK/规模未通过校验 → 拒绝生成 Client。
     OPENAPI_REJECTED = "OPENAPI_REJECTED"
+    # E07：第三方文档不足以冻结 Integration Spec（存在未确认项）→ 暂停并返回问题清单。
+    INTEGRATION_PENDING = "INTEGRATION_PENDING"
 
 
 class AppException(Exception):
