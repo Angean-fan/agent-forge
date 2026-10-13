@@ -1,12 +1,15 @@
 """M23 LangGraph 固定生成图。
 
 `load_confirmed_spec → resolve_assets → plan_tasks → assemble → verify → repair → check_coverage →
-resolve_gaps → package_or_fail`，由 worker 驱动。
+resolve_gaps → review → package_or_fail`，由 worker 驱动。
 
 - 生成图**只接收已确认的** `spec_id/spec_hash`，不读取原始聊天、不重新解释需求；
 - R13 可选技术规划（`planning_client`）、R17 缺口局部 Patch（`gap_engine_factory`）、
-  R18 失败自动修复（`repair_engine_factory`）**默认关闭**：未注入时保持确定性转换与既有行为，不调用任何外部模型；
+  R18 失败自动修复（`repair_engine_factory`）、R19 可选语义审查（`review_client`）**默认关闭**：
+  未注入时保持确定性转换与既有行为，不调用任何外部模型；
 - R18 `repair` 只修可复现的代码/契约错误（基础设施/`NOT_RUN` 不盲改、不计业务次数），每任务 ≤2、全 run ≤6；
+- R19 `review` 经 `technical_planning`（Qwen3.7 Plus）做**最多一轮**语义审查，只产出问题并转为可验证修复任务
+  （登记 PENDING），**不覆盖**确定性结果；`report.json` 保留首次失败、最终复验与来源链；
 - R17 `resolve_gaps` 对真实缺口「装配优先、缺口局部 Patch」：无缺口时不启动 Agent、无副作用；
   有变更（复用装配或受限 Patch）后**必须重新验证并重算覆盖**，交付包只反映最后一次验证；
 - 数据库为权威状态，节点入口检查运行有效性，记录 task、事件与阶段结果；
@@ -55,6 +58,13 @@ from agentforge_platform.repair import (
     run_repair_loop,
 )
 from agentforge_platform.resolver import AssetLock
+from agentforge_platform.review import (
+    build_review_context,
+    findings_to_tasks,
+    missing_required_checks,
+    review_enabled,
+    run_semantic_review,
+)
 from agentforge_platform.runner_client import RunnerClient
 from agentforge_platform.runs import (
     RunStatus,
@@ -93,6 +103,9 @@ class GenerationState(TypedDict, total=False):
     search_result: AssetSearchResult
     task_plan: dict
     coverage: dict
+    first_failure: dict | None
+    repair: dict
+    review: dict
     error_code: str
     ok: bool
 
@@ -111,6 +124,8 @@ class GenerationContext:
     gap_engine_factory: Callable[[list[str], str], tuple[Any, FileBackend]] | None = None
     # R18：失败自动修复的受限引擎工厂（默认 None → 不修复）。签名：``(model_role, allowed_paths, task_id)``。
     repair_engine_factory: Callable[[str, list[str], str], tuple[Any, FileBackend]] | None = None
+    # R19：可选技术语义审查客户端（默认 None → 不审查；需 technical_planning 角色开启）。
+    review_client: ModelClient | None = None
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
@@ -250,15 +265,24 @@ def build_graph(context: GenerationContext):
             transition(db, run, RunStatus.VERIFYING)
         verification = context.runner.verify(state["artifact_dir"])
         acceptance = context.runner.accept(state["artifact_dir"])
+        passed = verification_passed(verification, acceptance)
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.VERIFYING)
             record_task(db, run, "verify", status="DONE")
             append_event(
                 db, run, "verification",
                 json.dumps({"verify": verification.get("overall"),
-                            "accept": acceptance.get("overall")}),
+                            "accept": acceptance.get("overall"),
+                            "missing_required": missing_required_checks(verification)}),
             )
-        return {"verification": verification, "acceptance": acceptance}
+        return {
+            "verification": verification,
+            "acceptance": acceptance,
+            # R19：保留**首次**失败快照（修复前后对照）；首次即通过则为 None。
+            "first_failure": None if passed else {
+                "verification": verification, "acceptance": acceptance,
+            },
+        }
 
     def repair_node(state: GenerationState) -> GenerationState:
         """R18：失败分类与有限自动修复；基础设施故障不计业务次数、不盲改。"""
@@ -306,7 +330,17 @@ def build_graph(context: GenerationContext):
             }))
         if outcome.attempts == 0:
             return {}
-        return {"verification": outcome.verification, "acceptance": outcome.acceptance}
+        return {
+            "verification": outcome.verification,
+            "acceptance": outcome.acceptance,
+            "repair": {
+                "classification": outcome.classification,
+                "attempts": outcome.attempts,
+                "roles": outcome.roles,
+                "replaced_refs": outcome.replaced_refs,
+                "passed": outcome.passed,
+            },
+        }
 
     def check_coverage_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
@@ -423,6 +457,43 @@ def build_graph(context: GenerationContext):
             },
         }
 
+    def review_node(state: GenerationState) -> GenerationState:
+        """R19：**最多一轮**技术语义审查（可选）。只产出问题并转成可验证修复任务，不覆盖确定性结果。"""
+        if context.review_client is None or not review_enabled():
+            return {}
+        run_id = state["run_id"]
+        run_dir = run_directory(context.work_root, run_id)
+        review_context = build_review_context(
+            state["spec"], state["contract"], state["verification"], state["acceptance"],
+            run_dir=run_dir,
+        )
+        with session_scope(context.session_factory) as db:
+            run = _require_active(db, run_id, RunStatus.VERIFYING)
+            result = run_semantic_review(
+                db, project_id=run.project_id, run_id=run_id,
+                client=context.review_client, context=review_context, max_rounds=1,
+            )
+        tasks = findings_to_tasks(result.findings, state["contract"]) if result.invoked else []
+        review_payload = {
+            "invoked": result.invoked,
+            "model_role": result.model_role,
+            "error": result.error,
+            "findings": [finding.model_dump(mode="json") for finding in result.findings],
+            "tasks": tasks,
+        }
+        (run_dir / "review.json").write_text(
+            json.dumps(review_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        with session_scope(context.session_factory) as db:
+            run = _require_active(db, run_id, RunStatus.VERIFYING)
+            for task in tasks:  # 仅登记为 PENDING 修复任务，不在本步执行、不改冻结规格/固定测试
+                record_task(db, run, task["task_id"], status="PENDING")
+            append_event(db, run, "review", json.dumps({
+                "invoked": result.invoked, "findings": len(result.findings),
+                "tasks": [task["task_id"] for task in tasks], "error": result.error,
+            }))
+        return {"review": review_payload}
+
     def package_or_fail(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
         verification = state["verification"]
@@ -446,6 +517,32 @@ def build_graph(context: GenerationContext):
             (run_dir / "coverage.json").write_text(
                 json.dumps(coverage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
+
+        # R19：报告保留首次失败与最终复验、以及索引版本/采用-拒绝方法/装配与 Agent 修改的来源链。
+        report = {
+            "verified": ok,
+            "missing_required_checks": missing_required_checks(verification),
+            "first_failure": state.get("first_failure"),
+            "final_verification": {"verification": verification, "acceptance": acceptance},
+            "provenance": {
+                "lock_hash": state.get("lock_hash"),
+                "manifest_hash": state.get("manifest_hash"),
+                "index_revision": (audit or {}).get("index_revision"),
+                "adopted_method_units": (audit or {}).get("reused_method_units", []),
+                "selected_refs": (audit or {}).get("selected_refs", []),
+                "rejected": (audit or {}).get("filter_reasons", {}),
+                "assembly": {"manifest_hash": state.get("manifest_hash"),
+                             "lock_hash": state.get("lock_hash")},
+                "agent_modifications": {
+                    "gap_resolutions": (coverage or {}).get("resolutions", []),
+                    "repair": state.get("repair"),
+                },
+            },
+            "semantic_review": state.get("review"),
+        }
+        (run_dir / "report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
 
         with session_scope(context.session_factory) as db:
             cost_report = build_cost_report(db, project_id=state["project_id"], run_id=run_id)
@@ -495,6 +592,7 @@ def build_graph(context: GenerationContext):
     graph.add_node("repair", repair_node)
     graph.add_node("check_coverage", check_coverage_node)
     graph.add_node("resolve_gaps", resolve_gaps_node)
+    graph.add_node("review", review_node)
     graph.add_node("package_or_fail", package_or_fail)
     graph.add_edge(START, "load_confirmed_spec")
     graph.add_edge("load_confirmed_spec", "resolve_assets")
@@ -504,7 +602,8 @@ def build_graph(context: GenerationContext):
     graph.add_edge("verify", "repair")
     graph.add_edge("repair", "check_coverage")
     graph.add_edge("check_coverage", "resolve_gaps")
-    graph.add_edge("resolve_gaps", "package_or_fail")
+    graph.add_edge("resolve_gaps", "review")
+    graph.add_edge("review", "package_or_fail")
     graph.add_edge("package_or_fail", END)
     return graph.compile()
 
