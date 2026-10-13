@@ -139,6 +139,7 @@ export interface RunView {
   spec_id: number;
   status: string;
   error_code: string | null;
+  cancel_requested: boolean;
   lease_owner: string | null;
   created_at: string;
   updated_at: string;
@@ -178,6 +179,11 @@ export interface VerificationReport {
   acceptance_cases?: VerificationCheck[];
 }
 
+export interface CancellationView {
+  requested: boolean;
+  notice: string | null;
+}
+
 export interface RunDetail {
   id: number;
   project_id: number;
@@ -191,6 +197,7 @@ export interface RunDetail {
   cost: CostSummary;
   artifacts: RunArtifact[];
   verification: VerificationReport | null;
+  cancellation: CancellationView | null;
 }
 
 export interface RunEvent {

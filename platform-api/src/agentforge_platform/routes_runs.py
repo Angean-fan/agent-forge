@@ -29,6 +29,7 @@ from agentforge_platform.runs import (
     is_worker_healthy,
     latest_sequence,
     list_artifacts,
+    request_cancel,
     require_run_owner,
     resolve_artifact_path,
     run_cost,
@@ -59,6 +60,7 @@ class RunView(BaseModel):
     spec_hash: str | None
     status: str
     error_code: str | None
+    cancel_requested: bool
     lease_owner: str | None
     created_at: datetime
     updated_at: datetime
@@ -91,6 +93,15 @@ class ArtifactView(BaseModel):
     created_at: datetime
 
 
+class CancellationView(BaseModel):
+    """R22：取消状态与费用说明（取消不撤回 Provider 已处理调用）。"""
+
+    model_config = _STRICT
+
+    requested: bool
+    notice: str | None = None
+
+
 class RunDetailView(BaseModel):
     """运行详情：阶段、任务计数、成本（已结算/预留分列）、产物、验证报告与失败摘要。"""
 
@@ -109,6 +120,7 @@ class RunDetailView(BaseModel):
     cost: CostSummary
     artifacts: list[ArtifactView]
     verification: dict | None = None
+    cancellation: CancellationView | None = None
 
 
 class RunEventView(BaseModel):
@@ -151,10 +163,19 @@ def _run_view(db: Session, run: Run) -> RunView:
         spec_hash=run_spec_hash(db, run),
         status=run.status,
         error_code=run.error_code,
+        cancel_requested=run.cancel_requested,
         lease_owner=run.lease_owner,
         created_at=run.created_at,
         updated_at=run.updated_at,
     )
+
+
+_CANCEL_NOTICE = "取消不会撤回模型 Provider 已处理的调用；已花费与在途预留将如实保留在成本中。"
+
+
+def _cancellation_view(run: Run) -> CancellationView:
+    show = run.cancel_requested or run.status == "CANCELLED"
+    return CancellationView(requested=run.cancel_requested, notice=_CANCEL_NOTICE if show else None)
 
 
 def _artifact_view(artifact: Artifact) -> ArtifactView:
@@ -189,6 +210,7 @@ def _detail_view(db: Session, run: Run) -> RunDetailView:
             if run.status in ("SUCCEEDED", "FAILED")
             else None
         ),
+        cancellation=_cancellation_view(run),
     )
 
 
@@ -260,6 +282,18 @@ def get_run(
     db: Session = Depends(get_db),
 ) -> ApiResponse[RunDetailView]:
     return ApiResponse(request_id=get_request_id(request), data=_detail_view(db, run))
+
+
+@router.post("/runs/{run_id}/cancel", response_model=ApiResponse[RunView])
+def cancel_run(
+    request: Request,
+    run: Run = Depends(require_run_owner),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> ApiResponse[RunView]:
+    """R22：幂等取消。QUEUED 直接取消；在途置标志由 worker 在节点边界落 CANCELLED，阻止新派发。"""
+    request_cancel(db, run)
+    return ApiResponse(request_id=get_request_id(request), data=_run_view(db, run))
 
 
 @router.get("/runs/{run_id}/events", response_model=ApiResponse[RunEventsData])

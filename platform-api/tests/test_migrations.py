@@ -56,7 +56,7 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
 
     # upgrade head：全部受管表与 0003 新增列存在
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0012"
+    assert _revision(sqlite_url) == "0013"
     assert MANAGED_TABLES <= _tables(sqlite_url)
     assert "requirement_text" in _columns(sqlite_url, "project")
     assert {"summary", "missing_fields_json", "questions_json", "draft_revision"} <= _columns(sqlite_url, "spec_version")
@@ -64,12 +64,18 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
     assert "task_id" in _columns(sqlite_url, "model_call")
     assert {"price_currency", "fx_rate_micro", "fx_captured_at"} <= _columns(sqlite_url, "model_call")
     assert "spec_hash" in _columns(sqlite_url, "run")
+    assert "cancel_requested" in _columns(sqlite_url, "run")
 
     # 写入数据，用于验证回退会删除对应版本新增的数据
     engine = make_engine(sqlite_url)
     with session_scope(make_session_factory(engine)) as session:
         session.add(Project(owner_id=1, name="demo", requirement_text="需求文本"))
     engine.dispose()
+
+    # downgrade 一步（0013 → 0012）：取消标志列被删除
+    command.downgrade(config, "0012")
+    assert _revision(sqlite_url) == "0012"
+    assert "cancel_requested" not in _columns(sqlite_url, "run")
 
     # downgrade 一步（0012 → 0011）：币种/汇率快照列被删除
     command.downgrade(config, "0011")
@@ -135,7 +141,7 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
 
     # 再次 upgrade head：表重建，但之前的行已随回退丢失
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0012"
+    assert _revision(sqlite_url) == "0013"
     assert MANAGED_TABLES <= _tables(sqlite_url)
     engine = make_engine(sqlite_url)
     with session_scope(make_session_factory(engine)) as session:

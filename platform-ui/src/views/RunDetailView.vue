@@ -14,7 +14,7 @@ const router = useRouter();
 const POLL_MS = 2000;
 const HIDDEN_POLL_MS = 10000;
 const MAX_BACKOFF_MS = 30000;
-const TERMINAL = new Set(['SUCCEEDED', 'FAILED']);
+const TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
 
 const STATUS_LABELS: Record<string, string> = {
   QUEUED: '排队中',
@@ -23,6 +23,7 @@ const STATUS_LABELS: Record<string, string> = {
   VERIFYING: '构建与验收',
   SUCCEEDED: '已完成',
   FAILED: '失败',
+  CANCELLED: '已取消',
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -48,6 +49,18 @@ const isTerminal = computed(() => run.value !== null && TERMINAL.has(run.value.s
 const statusLabel = computed(() =>
   run.value ? (STATUS_LABELS[run.value.status] ?? run.value.status) : '',
 );
+const statusTagType = computed(() => {
+  switch (run.value?.status) {
+    case 'SUCCEEDED':
+      return 'success';
+    case 'FAILED':
+      return 'danger';
+    case 'CANCELLED':
+      return 'info';
+    default:
+      return 'primary';
+  }
+});
 const phaseLabel = computed(() => {
   const phase = run.value?.phase;
   if (!phase) {
@@ -62,6 +75,27 @@ const failedChecks = computed(
 const notRunChecks = computed(
   () => run.value?.verification?.checks?.filter((check) => check.status === 'NOT_RUN') ?? [],
 );
+// R22：仅在非终态且尚未请求取消时可点；取消不撤回已处理调用，成本如实保留。
+const canCancel = computed(
+  () => run.value !== null && !isTerminal.value && !run.value.cancellation?.requested,
+);
+const cancelNotice = computed(() => run.value?.cancellation?.notice ?? null);
+const canceling = ref(false);
+
+async function cancelRun(): Promise<void> {
+  if (!run.value || canceling.value) {
+    return;
+  }
+  canceling.value = true;
+  try {
+    const updated = await runsApi.cancel(runId.value);
+    run.value = { ...run.value, status: updated.status };
+  } catch (error) {
+    errorMessage.value = describeError(error).message;
+  } finally {
+    canceling.value = false;
+  }
+}
 
 function stopPolling(): void {
   stopped = true;
@@ -174,7 +208,7 @@ watch(() => props.id, restart);
         <h1 class="page-title">运行 #{{ runId }}</h1>
         <p class="page-subtitle">
           <el-tag
-            :type="run && run.status === 'SUCCEEDED' ? 'success' : run && run.status === 'FAILED' ? 'danger' : 'primary'"
+            :type="statusTagType"
             size="small"
             disable-transitions
             data-testid="run-status"
@@ -185,12 +219,24 @@ watch(() => props.id, restart);
           <span v-if="run" class="updated">更新于 {{ formatDateTime(run.updated_at) }}</span>
         </p>
       </div>
-      <el-button
-        v-if="run"
-        @click="router.push({ name: 'project-detail', params: { id: String(run.project_id) } })"
-      >
-        返回项目
-      </el-button>
+      <div class="run-actions">
+        <el-button
+          v-if="canCancel"
+          type="danger"
+          plain
+          :loading="canceling"
+          data-testid="cancel-run"
+          @click="cancelRun"
+        >
+          取消运行
+        </el-button>
+        <el-button
+          v-if="run"
+          @click="router.push({ name: 'project-detail', params: { id: String(run.project_id) } })"
+        >
+          返回项目
+        </el-button>
+      </div>
     </div>
 
     <el-alert
@@ -203,6 +249,20 @@ watch(() => props.id, restart);
     />
 
     <template v-if="run">
+      <el-alert
+        v-if="run.status === 'CANCELLED' || run.cancellation?.requested"
+        type="info"
+        :closable="false"
+        show-icon
+        class="block-gap"
+        data-testid="cancel-notice"
+      >
+        <template #title>
+          {{ run.status === 'CANCELLED' ? '运行已取消' : '已请求取消（在途工作将尽快停止）' }}
+        </template>
+        <div v-if="cancelNotice">{{ cancelNotice }}</div>
+      </el-alert>
+
       <el-alert
         v-if="run.status === 'FAILED'"
         type="error"
@@ -309,6 +369,10 @@ watch(() => props.id, restart);
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+.run-actions {
+  display: flex;
+  gap: 8px;
 }
 .phase {
   margin-left: 12px;

@@ -217,6 +217,7 @@ describe('ProjectDetailView spec confirmation', () => {
       spec_id: 3,
       status: 'QUEUED',
       error_code: null,
+      cancel_requested: false,
       lease_owner: null,
       created_at: '2026-10-11T05:01:00',
       updated_at: '2026-10-11T05:01:00',

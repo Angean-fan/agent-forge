@@ -90,6 +90,8 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # R22：取消请求标志（幂等置位）；worker 在节点边界观察后把 run 落 CANCELLED。
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

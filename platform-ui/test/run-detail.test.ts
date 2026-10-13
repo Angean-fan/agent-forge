@@ -12,7 +12,13 @@ vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>();
   return {
     ...actual,
-    runsApi: { start: vi.fn(), get: vi.fn(), events: vi.fn(), artifactUrl: actual.runsApi.artifactUrl },
+    runsApi: {
+      start: vi.fn(),
+      get: vi.fn(),
+      events: vi.fn(),
+      cancel: vi.fn(),
+      artifactUrl: actual.runsApi.artifactUrl,
+    },
   };
 });
 
@@ -35,6 +41,7 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
     cost: { currency_unit: 'micro_yuan', settled_micro: 0, reserved_micro: 0, unknown_calls: 0 },
     artifacts: [],
     verification: null,
+    cancellation: null,
     ...overrides,
   };
 }
@@ -63,6 +70,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(runsApi.get).mockReset();
   vi.mocked(runsApi.events).mockReset();
+  vi.mocked(runsApi.cancel).mockReset();
 });
 
 afterEach(() => {
@@ -192,5 +200,45 @@ describe('RunDetailView', () => {
     expect(wrapper.find('[data-testid="download-link"]').exists()).toBe(true);
     expect(wrapper.text()).toContain('未验证');
     expect(wrapper.text()).toContain('该交付包未通过全部必需检查');
+  });
+
+  it('shows a cancel button for an in-flight run and calls the cancel API', async () => {
+    vi.mocked(runsApi.get).mockResolvedValue(detail({ status: 'GENERATING' }));
+    vi.mocked(runsApi.events).mockResolvedValue({ run_id: 5, items: [], latest_sequence: 0 });
+    vi.mocked(runsApi.cancel).mockResolvedValue({
+      id: 5,
+      project_id: 9,
+      spec_id: 3,
+      status: 'CANCELLED',
+      error_code: null,
+      cancel_requested: true,
+      lease_owner: null,
+      created_at: '2026-10-11T05:00:00',
+      updated_at: '2026-10-11T05:00:06',
+    });
+
+    const wrapper = await mountView();
+    const button = wrapper.get('[data-testid="cancel-run"]');
+    await button.trigger('click');
+    await settle();
+
+    expect(runsApi.cancel).toHaveBeenCalledWith(5);
+    expect(wrapper.text()).toContain('已取消');
+  });
+
+  it('shows the cancellation cost notice and hides the button once cancelled', async () => {
+    vi.mocked(runsApi.get).mockResolvedValue(
+      detail({
+        status: 'CANCELLED',
+        cancellation: { requested: true, notice: '取消不会撤回模型 Provider 已处理的调用' },
+      }),
+    );
+    vi.mocked(runsApi.events).mockResolvedValue({ run_id: 5, items: [], latest_sequence: 0 });
+
+    const wrapper = await mountView();
+
+    expect(wrapper.find('[data-testid="cancel-run"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="cancel-notice"]').text()).toContain('运行已取消');
+    expect(wrapper.text()).toContain('取消不会撤回模型 Provider 已处理的调用');
   });
 });

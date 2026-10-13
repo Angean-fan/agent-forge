@@ -216,6 +216,10 @@ export const runsApi = {
   get(runId: number): Promise<RunDetail> {
     return apiRequest(`/runs/${runId}`);
   },
+  /** R22：幂等取消运行；取消不撤回已处理调用，成本如实保留。 */
+  cancel(runId: number): Promise<RunView> {
+    return apiRequest(`/runs/${runId}/cancel`, { method: 'POST' });
+  },
   events(runId: number, afterSequence: number): Promise<RunEventsData> {
     const query = new URLSearchParams({ after_sequence: String(afterSequence) });
     return apiRequest(`/runs/${runId}/events?${query.toString()}`);

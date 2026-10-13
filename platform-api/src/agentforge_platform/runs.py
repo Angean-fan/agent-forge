@@ -43,15 +43,19 @@ class RunStatus(StrEnum):
     VERIFYING = "VERIFYING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"  # R22：取消（非失败；账本保留在途/已确认额度）
 
+
+TERMINAL_STATUSES = frozenset({RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED})
 
 ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
-    RunStatus.QUEUED: {RunStatus.PLANNING},
-    RunStatus.PLANNING: {RunStatus.GENERATING, RunStatus.FAILED},
-    RunStatus.GENERATING: {RunStatus.VERIFYING, RunStatus.FAILED},
-    RunStatus.VERIFYING: {RunStatus.SUCCEEDED, RunStatus.FAILED},
+    RunStatus.QUEUED: {RunStatus.PLANNING, RunStatus.CANCELLED},
+    RunStatus.PLANNING: {RunStatus.GENERATING, RunStatus.FAILED, RunStatus.CANCELLED},
+    RunStatus.GENERATING: {RunStatus.VERIFYING, RunStatus.FAILED, RunStatus.CANCELLED},
+    RunStatus.VERIFYING: {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED},
     RunStatus.SUCCEEDED: set(),
     RunStatus.FAILED: set(),
+    RunStatus.CANCELLED: set(),
 }
 
 
@@ -100,6 +104,7 @@ def claim_run(db: Session, worker_id: str, *, lease_seconds: int = 60) -> Run | 
         run_id = db.scalars(
             select(Run.id)
             .where(Run.status == RunStatus.QUEUED)
+            .where(Run.cancel_requested.is_(False))  # R22：已请求取消的 run 不再派发
             .where(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
             .order_by(Run.id)
             .limit(1)
@@ -110,6 +115,7 @@ def claim_run(db: Session, worker_id: str, *, lease_seconds: int = 60) -> Run | 
             update(Run)
             .where(Run.id == run_id)
             .where(Run.status == RunStatus.QUEUED)
+            .where(Run.cancel_requested.is_(False))
             .where(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
             .values(lease_owner=worker_id, lease_until=_now() + timedelta(seconds=lease_seconds))
         )
@@ -145,6 +151,21 @@ def is_worker_healthy(
     reference = now or _now()
     threshold = worker_heartbeat_timeout() if threshold_seconds is None else threshold_seconds
     return (reference - last_heartbeat) <= timedelta(seconds=threshold)
+
+
+def request_cancel(db: Session, run: Run) -> Run:
+    """R22：幂等请求取消。终态不再处理；QUEUED（未领取）直接取消；在途置标志由 worker 落终态。"""
+    if RunStatus(run.status) in TERMINAL_STATUSES:
+        return run  # 已终结（成功/失败/取消）：连点取消不重复执行
+    if run.cancel_requested:
+        return run  # 幂等：已请求，不重复写事件/状态
+    run.cancel_requested = True
+    run.updated_at = _now()
+    if RunStatus(run.status) is RunStatus.QUEUED:
+        transition(db, run, RunStatus.CANCELLED)  # 尚未派发 → 直接取消，避免被 worker 领取
+    append_event(db, run, "cancel_requested", json.dumps({"status": run.status}))
+    db.flush()
+    return run
 
 
 def transition(db: Session, run: Run, new_status: RunStatus, *, error_code: str | None = None) -> Run:

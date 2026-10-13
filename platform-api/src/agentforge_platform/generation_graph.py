@@ -69,6 +69,7 @@ from agentforge_platform.review import (
 )
 from agentforge_platform.runner_client import RunnerClient
 from agentforge_platform.runs import (
+    TERMINAL_STATUSES,
     RunStatus,
     append_event,
     record_artifact,
@@ -136,7 +137,7 @@ def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
     run = db.get(Run, run_id)
     if run is None:
         raise GenerationError("RUN_NOT_FOUND", f"run {run_id} 不存在")
-    if RunStatus(run.status) in (RunStatus.SUCCEEDED, RunStatus.FAILED):
+    if RunStatus(run.status) in TERMINAL_STATUSES:
         raise GenerationError("RUN_INVALID_TRANSITION", f"run 已终结：{run.status}")
     if RunStatus(run.status) is not expected:
         raise GenerationError("RUN_INVALID_TRANSITION", f"期望 {expected}，实为 {run.status}")
@@ -147,6 +148,14 @@ def _check_deadline(context: GenerationContext) -> None:
     """R21：运行总时限在**节点边界**检查；超时抛 RUN_TIMEOUT（避免无限占用 Runner）。"""
     if context.deadline_monotonic is not None and time.monotonic() > context.deadline_monotonic:
         raise GenerationError("RUN_TIMEOUT", "运行超过总时限")
+
+
+def _check_cancel(context: GenerationContext, run_id: int) -> None:
+    """R22：在**节点边界**观察取消请求；已请求即抛 RUN_CANCELLED，停止继续派发/发新模型请求。"""
+    with session_scope(context.session_factory) as db:
+        run = db.get(Run, run_id)
+        if run is not None and run.cancel_requested:
+            raise GenerationError("RUN_CANCELLED", "运行已被取消")
 
 
 def _verify_error_code(verification: dict, acceptance: dict) -> str:
@@ -597,7 +606,8 @@ def build_graph(context: GenerationContext):
 
     def guarded(node):
         def _wrapped(state: GenerationState) -> GenerationState:
-            _check_deadline(context)  # R21：每个节点入口检查运行总时限
+            _check_deadline(context)          # R21：每个节点入口检查运行总时限
+            _check_cancel(context, state["run_id"])  # R22：每个节点入口观察取消请求
             return node(state)
 
         return _wrapped
@@ -646,23 +656,28 @@ def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
         run = db.get(Run, run_id)
         if run is None:
             raise GenerationError("RUN_NOT_FOUND", f"run {run_id} 不存在")
+        if run.cancel_requested:  # R22：领取前已请求取消 → 不派发任何工作
+            if RunStatus(run.status) not in TERMINAL_STATUSES:
+                transition(db, run, RunStatus.CANCELLED)
+                append_event(db, run, "cancelled", json.dumps({"stage": "pre_claim"}))
+            return {"run_id": run_id, "ok": False, "error_code": "RUN_CANCELLED"}
         transition(db, run, RunStatus.PLANNING)
         append_event(db, run, "claimed", "{}")
 
     try:
         return build_graph(context).invoke({"run_id": run_id})
-    except Exception as exc:  # noqa: BLE001  # 兜底落 FAILED，避免未捕获异常造成假成功
+    except Exception as exc:  # noqa: BLE001  # 兜底落终态，避免未捕获异常造成假成功
         code = getattr(exc, "code", None) or type(exc).__name__
-        if code == "RUN_TIMEOUT":
-            _cleanup_runner(context, run_id)
+        if code in ("RUN_TIMEOUT", "RUN_CANCELLED"):
+            _cleanup_runner(context, run_id)  # 尽力停止在途、释放受控资源
+        final = RunStatus.CANCELLED if code == "RUN_CANCELLED" else RunStatus.FAILED
+        event_type = "cancelled" if code == "RUN_CANCELLED" else "failed"
         with session_scope(context.session_factory) as db:
             run = db.get(Run, run_id)
-            if run is not None and RunStatus(run.status) not in (
-                RunStatus.SUCCEEDED, RunStatus.FAILED
-            ):
-                transition(db, run, RunStatus.FAILED, error_code=str(code))
+            if run is not None and RunStatus(run.status) not in TERMINAL_STATUSES:
+                transition(db, run, final, error_code=str(code) if final is RunStatus.FAILED else None)
             if run is not None:
-                append_event(db, run, "failed", json.dumps({"code": str(code)}))
+                append_event(db, run, event_type, json.dumps({"code": str(code)}))
         return {"run_id": run_id, "ok": False, "error_code": str(code)}
 
 
