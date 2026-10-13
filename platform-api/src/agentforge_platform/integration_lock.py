@@ -21,6 +21,7 @@ from agentforge_platform.asset_registry import (
     integration_registry,
 )
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.integration_contract import integration_contract_issues
 from agentforge_platform.resolver import (
     AssetLock,
     LockedAsset,
@@ -160,6 +161,12 @@ def resolve_integration_lock(
         for path in manifest.effective_paths:  # 路径覆盖
             if any(_overlaps(path, taken) for taken in present_paths):
                 reasons.append(f"路径覆盖：{path}")
+        if manifest.contract_tests:  # E02：声明契约链路的清单在锁定时必须通过确定性契约校验
+            reasons.extend(
+                integration_contract_issues(
+                    manifest, pack_dir=paths_by_key[("integration-pack", manifest.id, manifest.version)]
+                )
+            )
         if reasons:
             raise AppException(
                 ErrorCode.ASSET_CONFLICT,

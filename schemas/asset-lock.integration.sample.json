@@ -28,18 +28,18 @@
       "path": "templates/demo-0.2"
     }
   ],
-  "lock_hash": "988e4e44a8a3e963a37879a6f58c0b8251d6e42eda5c2d21bdd7852a095544f6",
+  "lock_hash": "020ecf055d9a81345d011e2f7448db17f3beef1cabc4f5542a862346cd97ab95",
   "method_units": [],
   "index_schema_version": null,
   "index_revision": null,
-  "selection_reason": "integration_packs=weather-lookup@0.1.0",
+  "selection_reason": "integration_packs=weather-lookup@0.2.0",
   "integration_packs": [
     {
       "kind": "integration-pack",
       "id": "weather-lookup",
-      "version": "0.1.0",
-      "checksum": "33c3656a075aecd9b3aa5c170221325b886451f7882a1c1f45dac0da32ed4f20",
-      "path": "integration-packs/weather-lookup/0.1.0"
+      "version": "0.2.0",
+      "checksum": "2ba31ba15cf3b7c77e653e70ce6414477fa1332b860ec3e4896c8a0295160084",
+      "path": "integration-packs/weather-lookup/0.2.0"
     }
   ]
 }

@@ -48,9 +48,13 @@ _STRICT = ConfigDict(extra="forbid")
 # live/真实秘密留待 E04/E05；这里把"未审核/需真实密钥"的清单在 parse 阶段即拒。
 INTEGRATION_MOCK_ONLY = "mock-only"
 _ALLOWED_INTEGRATION_MODES = frozenset({INTEGRATION_MOCK_ONLY})
-_MOCK_ADAPTER_KINDS = frozenset({"mock"})
+# E02：Adapter 有两类——`mock`（确定性测试行为）与 `stub`（实现真实第三方协议的适配器，
+# 经注入传输层确定性地跑，不持有真实凭据）。live/SDK 类仍拒（E04/E05 再引入）。
+_MOCK_ADAPTER_KIND = "mock"
+_ALLOWED_ADAPTER_KINDS = frozenset({_MOCK_ADAPTER_KIND, "stub"})
 _SAFE_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
 _SAFE_ENV = re.compile(r"[A-Z][A-Z0-9_]*\Z")
+_SAFE_REL_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*\Z")
 
 
 def is_safe_owned_path(path: str) -> bool:
@@ -240,12 +244,16 @@ class IntegrationPort(BaseModel):
 
 
 class IntegrationAdapter(BaseModel):
-    """Port 的第三方实现；E01 **仅允许 mock**（live/http 在 E04/E05 引入）。"""
+    """Port 的实现；E02 允许 ``mock``（确定性）与 ``stub``（真实协议 + 注入传输，无凭据）。
+
+    ``implements`` 声明它实现哪个 Port（E02 契约链路用；E01 清单可留空）。
+    """
 
     model_config = _STRICT
 
     name: str
     kind: str
+    implements: str = ""
 
     @field_validator("name")
     @classmethod
@@ -254,11 +262,20 @@ class IntegrationAdapter(BaseModel):
             raise ValueError(f"不安全的 Adapter 名：{value!r}")
         return value
 
+    @field_validator("implements")
+    @classmethod
+    def _safe_implements(cls, value: str) -> str:
+        if value and _SAFE_SYMBOL.fullmatch(value) is None:
+            raise ValueError(f"不安全的 Port 绑定：{value!r}")
+        return value
+
     @field_validator("kind")
     @classmethod
-    def _mock_only(cls, value: str) -> str:
-        if value not in _MOCK_ADAPTER_KINDS:
-            raise ValueError(f"E01 仅允许 mock adapter，收到：{value!r}")
+    def _allowed_kind(cls, value: str) -> str:
+        if value not in _ALLOWED_ADAPTER_KINDS:
+            raise ValueError(
+                f"仅允许 mock/stub adapter（live/SDK 留待 E04/E05），收到：{value!r}"
+            )
         return value
 
 
@@ -290,11 +307,12 @@ class ExternalConfigItem(BaseModel):
 
 
 class IntegrationPackManifest(_AssetBase):
-    """E01：第三方适配只读清单——pack ID/版本/兼容 Profile/Port/Adapter/配置/Mock/checksum/许可证。
+    """E01/E02：第三方适配只读清单——pack ID/版本/兼容 Profile/Port/Adapter/配置/Mock/契约测试/checksum/许可证。
 
     复用 :class:`_AssetBase` 的寻址与校验字段；额外声明 ``provider/mode/ports/adapters/mock/
-    config/source_provenance/target_dir``。**Mock-only**：E01 拒绝 live 模式、非 mock adapter、
-    模拟不可确定、以及"必需的真实秘密"，从源头保证无真实凭据。
+    config/source_provenance/target_dir``，以及 E02 的契约链路声明 ``internal_types/contract_tests``。
+    **Mock-only**：拒绝 live 模式、非 mock/stub adapter、模拟不可确定、以及"必需的真实秘密"，
+    从源头保证无真实凭据；契约链路的完整校验见 :mod:`agentforge_platform.integration_contract`。
     """
 
     provider: str
@@ -305,12 +323,32 @@ class IntegrationPackManifest(_AssetBase):
     config: list[ExternalConfigItem] = []
     source_provenance: str
     target_dir: str = ""
+    # E02：Port 契约只允许引用**内部类型**（供应商 DTO 不得进入 Port）；契约测试为已发布资产的一部分。
+    internal_types: list[str] = []
+    contract_tests: list[str] = []
 
     @field_validator("provider")
     @classmethod
     def _safe_provider(cls, value: str) -> str:
         if _SAFE_PROVIDER.fullmatch(value) is None:
             raise ValueError(f"不安全的 provider 标识：{value!r}")
+        return value
+
+    @field_validator("internal_types")
+    @classmethod
+    def _safe_internal_types(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if _SAFE_SYMBOL.fullmatch(item) is None:
+                raise ValueError(f"不安全的内部类型名：{item!r}")
+        return list(dict.fromkeys(value))
+
+    @field_validator("contract_tests")
+    @classmethod
+    def _safe_contract_tests(cls, value: list[str]) -> list[str]:
+        for item in value:
+            stripped = item.rstrip("/")
+            if not stripped or not _SAFE_REL_PATH.fullmatch(item) or ".." in item.split("/"):
+                raise ValueError(f"不安全的契约测试路径：{item!r}")
         return value
 
     @field_validator("source_provenance")
