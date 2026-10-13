@@ -69,7 +69,12 @@ def _role_enabled(model_role: str) -> bool:
         return os.environ.get(
             "AGENTFORGE_TECHNICAL_PLANNING_ENABLED", ""
         ).strip().lower() in {"1", "true", "yes"}
-    return False  # coding / complex_repair 仍禁用（R16/R18）
+    if model_role == "coding":
+        # R16：DeepAgent 受限 patch engine 接入后，按环境变量显式开启。
+        return os.environ.get(
+            "AGENTFORGE_CODING_ENABLED", ""
+        ).strip().lower() in {"1", "true", "yes"}
+    return False  # complex_repair 仍禁用（R18）
 
 
 def resolve_route(model_role: str) -> Route:
