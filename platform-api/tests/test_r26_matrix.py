@@ -41,7 +41,7 @@ SPECS = {
     "lending": REPO / "schemas" / "book-lending.spec.json",
 }
 PROFILES = [
-    ("demo-ts-mp", "0.3", "demo-0.2"),
+    ("demo-ts-mp", "0.4", "demo-0.2"),
     ("demo-js-mp", "0.1", "demo-0.2-js"),
     ("demo-ts-mb", "0.1", "demo-0.2-mb"),
     ("demo-js-mb", "0.1", "demo-0.2-js-mb"),
@@ -106,7 +106,7 @@ def test_case_profile_delivery_manifest(tmp_path: Path, case: str, profile: tupl
 def test_three_cases_compile_and_resolve() -> None:
     assert platform_mainline(_spec(SPECS["campus"])) == "campus_activity"
     assert platform_mainline(_spec(SPECS["task"])) == "mvp_task"
-    assert platform_mainline(_spec(SPECS["lending"])) is None  # 未登记主线 → 诚实缺口（非伪装覆盖）
+    assert platform_mainline(_spec(SPECS["lending"])) == "book_lending"  # R27 新增固定业务验收
     for case, path in SPECS.items():
         spec = _spec(path)
         contract = compile_from_spec(spec)

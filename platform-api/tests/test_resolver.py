@@ -12,7 +12,7 @@ from agentforge_platform.errors import AppException
 from agentforge_platform.resolver import AssetLock, resolve_assets
 
 REPO = Path(__file__).resolve().parents[2]
-SAMPLE_LOCK = REPO / "schemas" / "asset-lock.sample.json"
+SAMPLE_LOCK = REPO / "schemas" / "asset-lock.r27.sample.json"
 
 
 def _write_manifest(directory: Path, **fields) -> None:

@@ -31,13 +31,14 @@ TASKS: dict[str, Task] = {
     "backend_test": Task(
         name="backend_test",
         workdir="/workspace/backend",
-        command=["mvn", "-B", "test"],
+        command=["mvn", "-B", "-o", "-Dmaven.repo.local=/opt/agentforge/maven-cache", "test"],
         description="后端单元/集成测试",
     ),
     "backend_build": Task(
         name="backend_build",
         workdir="/workspace/backend",
-        command=["mvn", "-B", "-DskipTests", "package"],
+        command=["mvn", "-B", "-o", "-Dmaven.repo.local=/opt/agentforge/maven-cache",
+                 "-DskipTests", "package"],
         description="后端打包",
     ),
     "frontend_build": Task(

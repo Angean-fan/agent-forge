@@ -105,7 +105,7 @@ def test_plus_and_mybatis_backends_are_not_mixed() -> None:
     plus = resolve_assets(default_registry(), "demo-ts-mp")
     plus_ids = {a.id for a in plus.assets}
     assert "task-crud-backend-mb" not in plus_ids
-    assert next(a for a in plus.assets if a.id == "task-crud-backend").version == "0.3.0"
+    assert next(a for a in plus.assets if a.id == "task-crud-backend").version == "0.4.0"
 
     mb_ids = {a.id for a in resolve_assets(default_registry(), "demo-ts-mb").assets}
     assert "task-crud-backend" not in mb_ids  # 不复用 Plus 后端
@@ -115,7 +115,7 @@ def test_plus_and_mybatis_backends_are_not_mixed() -> None:
 
 def test_legacy_plus_lock_replay_unchanged() -> None:
     committed = AssetLock.model_validate_json(TS_LOCK.read_text(encoding="utf-8"))
-    lock = resolve_assets(default_registry(), "demo-ts-mp")
+    lock = resolve_assets(default_registry(), "demo-ts-mp", pins={"task-crud-backend": "0.3.0"})
 
     assert lock.lock_hash == committed.lock_hash
     verify_lock_hash(lock)

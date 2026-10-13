@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 SPEC_SCHEMA_VERSION = "0.1"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({SPEC_SCHEMA_VERSION})
 MVP_PROFILE_ID = "demo-ts-mp"
-MVP_PROFILE_VERSION = "0.3"
+MVP_PROFILE_VERSION = "0.4"
 MVP_TEMPLATE_VERSION = "demo-0.2"
 # R01：Demo 通用业务范围上限（认证实体/页面单独计算，不占业务限额）。
 MAX_BUSINESS_ENTITIES = 3

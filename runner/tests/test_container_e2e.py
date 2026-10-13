@@ -23,7 +23,7 @@ def test_smoke_starts_and_cleans_up_container(tmp_path: Path) -> None:
     (work_root / "r1").mkdir(parents=True)
     config = RunnerConfig(
         work_root=work_root,
-        executor_image=os.environ.get("RUNNER_EXECUTOR_IMAGE", "agentforge/runner-executor:demo-0.1"),
+        executor_image=os.environ.get("RUNNER_EXECUTOR_IMAGE", "agentforge/runner-executor:demo-0.2"),
         token="t",
     )
     client = TestClient(create_app(config))

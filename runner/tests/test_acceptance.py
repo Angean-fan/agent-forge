@@ -8,8 +8,10 @@ from pathlib import Path
 from agentforge_runner.acceptance import (
     _contract_limited_role,
     _is_campus_project,
+    _is_lending_contract,
     _role_allowed,
     _run_campus_cases,
+    _run_lending_cases,
     compose_mysql_image,
     lock_mysql_image,
 )
@@ -121,6 +123,76 @@ def test_is_campus_project_detects_shape(monkeypatch) -> None:
     monkeypatch.setattr(acceptance, "_http", fake.http)
 
     assert _is_campus_project("http://x") is True
+
+
+def test_lending_contract_shape_is_explicit(tmp_path: Path) -> None:
+    (tmp_path / "contract.json").write_text(
+        json.dumps({"tables": [{"table": "book"}, {"table": "loan"}]}), encoding="utf-8"
+    )
+    assert _is_lending_contract(tmp_path) is True
+    (tmp_path / "contract.json").write_text(
+        json.dumps({"tables": [{"table": "task"}]}), encoding="utf-8"
+    )
+    assert _is_lending_contract(tmp_path) is False
+
+
+def test_lending_fixed_cases_reject_duplicate_and_check_return(monkeypatch) -> None:
+    from agentforge_runner import acceptance
+
+    books: dict[int, dict] = {}
+    loans: dict[int, dict] = {}
+
+    def login(base, username, password):
+        return {"admin": "admin-token", "member": "member-token"}.get(username)
+
+    def http(method, url, token=None, body=None):
+        path = url.split("/api", 1)[1]
+        admin = token == "admin-token"
+        if method == "POST" and path == "/books":
+            if not admin:
+                return 403, None
+            book = {"id": len(books) + 1, **body}
+            books[book["id"]] = book
+            return 200, book
+        if method == "GET" and path.startswith("/books/"):
+            return 200, books[int(path.rsplit("/", 1)[-1])]
+        if method == "GET" and path == "/books":
+            return 200, {"total": len(books)}
+        if method in {"PUT", "DELETE"} and path.startswith("/books/"):
+            return 409, None
+        if method == "POST" and path == "/loans":
+            book = books[body["book_id"]]
+            if book["status"] != "AVAILABLE":
+                return 409, None
+            book["status"] = "BORROWED"
+            loan = {"id": len(loans) + 1, "owner": token, **body}
+            loans[loan["id"]] = loan
+            return 200, loan
+        if method == "GET" and path.startswith("/loans/"):
+            loan = loans[int(path.rsplit("/", 1)[-1])]
+            return (200, loan) if loan["owner"] == token else (403, None)
+        if method == "GET" and path.startswith("/loans?"):
+            if "size=100000" in path:
+                return 400, None
+            return 200, {"total": sum(loan["owner"] == token for loan in loans.values())}
+        if method == "PUT" and path.startswith("/loans/"):
+            loan = loans[int(path.rsplit("/", 1)[-1])]
+            if loan["owner"] != token:
+                return 403, None
+            loan["status"] = "RETURNED"
+            books[loan["book_id"]]["status"] = "AVAILABLE"
+            return 200, loan
+        return 404, None
+
+    monkeypatch.setattr(acceptance, "_login", login)
+    monkeypatch.setattr(acceptance, "_http", http)
+    cases: list[tuple[str, bool]] = []
+    _run_lending_cases("http://x", lambda name, passed, detail=None: cases.append((name, passed)))
+
+    assert cases and not [name for name, passed in cases if not passed]
+    assert {"lending_borrow", "lending_duplicate_rejected", "lending_return_releases_book"} <= {
+        name for name, _ in cases
+    }
 
 
 def test_run_campus_cases_all_pass_against_fake_backend(monkeypatch) -> None:

@@ -19,7 +19,7 @@ def load_config() -> RunnerConfig:
     return RunnerConfig(
         work_root=Path(os.environ.get("RUNNER_WORK_ROOT", "./var/runs")),
         executor_image=os.environ.get(
-            "RUNNER_EXECUTOR_IMAGE", "agentforge/runner-executor:demo-0.1"
+            "RUNNER_EXECUTOR_IMAGE", "agentforge/runner-executor:demo-0.2"
         ),
         token=os.environ.get("RUNNER_TOKEN", ""),
         # 公开网络默认阻断；仅"受控依赖代理"场景才改为受控网络名。

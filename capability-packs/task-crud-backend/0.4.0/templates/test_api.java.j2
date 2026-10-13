@@ -1,0 +1,304 @@
+{% if lending_loan %}
+package {{ package }};
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import {{ package }}.entity.AppUser;
+import {{ package }}.mapper.AppUserMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+@Transactional
+class LoanApiTest {
+    @Autowired private MockMvc mvc;
+    @Autowired private ObjectMapper json;
+    @Autowired private AppUserMapper users;
+    @Autowired private PasswordEncoder encoder;
+    private String adminToken;
+    private String memberToken;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        adminToken = login("lending-admin", "admin123", "ADMIN");
+        memberToken = login("lending-member", "member123", "MEMBER");
+    }
+
+    private String login(String name, String password, String role) throws Exception {
+        AppUser user = new AppUser();
+        user.setUsername(name);
+        user.setPasswordHash(encoder.encode(password));
+        user.setRole(role);
+        user.setEnabled(true);
+        users.insert(user);
+        String body = mvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("username", name, "password", password))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return json.readTree(body).get("token").asText();
+    }
+
+    private long createBook() throws Exception {
+        String body = mvc.perform(post("/api/books")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "title", "book", "isbn", "R27-TEST", "status", "AVAILABLE"))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return json.readTree(body).get("id").asLong();
+    }
+
+    private String loanBody(long bookId) throws Exception {
+        return json.writeValueAsString(Map.of("book_id", bookId, "status", "ACTIVE", "borrower_id", 999));
+    }
+
+    private long borrow(long bookId) throws Exception {
+        String body = mvc.perform(post("/api/loans")
+                        .header("Authorization", "Bearer " + memberToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(loanBody(bookId)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return json.readTree(body).get("id").asLong();
+    }
+
+    @Test
+    void borrowingLocksBookAndRejectsSecondBorrow() throws Exception {
+        long bookId = createBook();
+        mvc.perform(get("/api/books/" + bookId).header("Authorization", "Bearer " + memberToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("AVAILABLE"));
+        long loanId = borrow(bookId);
+        mvc.perform(get("/api/books/" + bookId).header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("BORROWED"));
+        mvc.perform(post("/api/loans").header("Authorization", "Bearer " + memberToken)
+                        .contentType(MediaType.APPLICATION_JSON).content(loanBody(bookId)))
+                .andExpect(status().isConflict());
+        mvc.perform(put("/api/books/" + bookId).header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "title", "book", "isbn", "R27-TEST", "status", "AVAILABLE"))))
+                .andExpect(status().isConflict());
+        mvc.perform(delete("/api/books/" + bookId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isConflict());
+        mvc.perform(get("/api/loans/" + loanId).header("Authorization", "Bearer " + memberToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.borrower_id").value(
+                        users.selectOne(new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<AppUser>()
+                                .eq("username", "lending-member")).getId()));
+    }
+
+    @Test
+    void returnReleasesBookForAnotherBorrow() throws Exception {
+        long bookId = createBook();
+        long loanId = borrow(bookId);
+        mvc.perform(put("/api/loans/" + loanId).header("Authorization", "Bearer " + memberToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("status", "RETURNED"))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("RETURNED"));
+        mvc.perform(get("/api/books/" + bookId).header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("AVAILABLE"));
+        borrow(bookId);
+    }
+
+    @Test
+    void memberCannotCreateBookAndAdminCannotReadMemberLoan() throws Exception {
+        long bookId = createBook();
+        long loanId = borrow(bookId);
+        mvc.perform(post("/api/books").header("Authorization", "Bearer " + memberToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of(
+                                "title", "x", "isbn", "x", "status", "AVAILABLE"))))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/loans/" + loanId).header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void memberSeesOwnLoansAndPaginationBound() throws Exception {
+        borrow(createBook());
+        mvc.perform(get("/api/loans?keyword=ACTIVE").header("Authorization", "Bearer " + memberToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.total").value(1));
+        mvc.perform(get("/api/loans?page=1&size=100000")
+                        .header("Authorization", "Bearer " + memberToken))
+                .andExpect(status().isBadRequest());
+    }
+}
+{% else %}
+package {{ package }};
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import {{ package }}.entity.AppUser;
+import {{ package }}.mapper.AppUserMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+@Transactional
+class {{ entity_name }}ApiTest {
+
+    @Autowired private MockMvc mockMvc;
+    @Autowired private ObjectMapper objectMapper;
+    @Autowired private AppUserMapper userMapper;
+    @Autowired private PasswordEncoder passwordEncoder;
+
+    private String aliceToken;
+    private String bobToken;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        aliceToken = createUserAndLogin("alice", "alice123", "{{ creator_role }}");
+        bobToken = createUserAndLogin("bob", "bob123", "{% if readonly_role %}{{ readonly_role }}{% else %}{{ creator_role }}{% endif %}");
+    }
+
+    private String createUserAndLogin(String username, String password, String role) throws Exception {
+        AppUser user = new AppUser();
+        user.setUsername(username);
+        user.setPasswordHash(passwordEncoder.encode(password));
+        user.setRole(role);
+        user.setEnabled(true);
+        userMapper.insert(user);
+        String body = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"" + username + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).get("token").asText();
+    }
+
+    private String payload(String {{ search_java }}) throws Exception {
+        Map<String, Object> map = new LinkedHashMap<>();
+{% for f in writable_fields %}
+{% if f.java_name not in fk_java_names %}
+        map.put("{{ f.java_name }}", {% if f.java_name == search_field_name %}{{ search_java }}{% elif f.java_type == "String" %}"x"{% elif f.java_type == "Boolean" %}true{% elif f.java_type == "LocalDate" %}"2026-01-01"{% elif f.java_type == "LocalDateTime" %}"2026-01-01T00:00:00"{% else %}1{% endif %});
+{% endif %}
+{% endfor %}
+        return objectMapper.writeValueAsString(map);
+    }
+
+    private long createRecord(String token, String {{ search_java }}) throws Exception {
+        String body = mockMvc.perform(post("{{ route_path }}")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload({{ search_java }})))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).get("id").asLong();
+    }
+
+    @Test
+    void paginationReturnsCorrectTotal() throws Exception {
+        createRecord(aliceToken, "t1");
+        createRecord(aliceToken, "t2");
+        createRecord(aliceToken, "t3");
+
+        mockMvc.perform(get("{{ route_path }}?page=1&size=2")
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(3))
+                .andExpect(jsonPath("$.items.length()").value(2));
+    }
+
+    @Test
+    void paginationRejectsOutOfRange() throws Exception {
+        for (String query : new String[] {"page=0&size=10", "page=1&size=0", "page=1&size=1000000"}) {
+            mockMvc.perform(get("{{ route_path }}?" + query)
+                            .header("Authorization", "Bearer " + aliceToken))
+                    .andExpect(status().isBadRequest());
+        }
+    }
+
+    @Test
+    void searchFiltersByField() throws Exception {
+        createRecord(aliceToken, "alpha-task");
+        createRecord(aliceToken, "beta-task");
+
+        mockMvc.perform(get("{{ route_path }}?keyword=alpha")
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(1));
+    }
+
+    @Test
+    void memberCannotAccessOthersRecord() throws Exception {
+        long recordId = createRecord(aliceToken, "alice-only");
+
+        mockMvc.perform(get("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + bobToken))
+{% if lending_book %}
+                .andExpect(status().isOk());
+{% else %}
+                .andExpect(status().isForbidden());
+{% endif %}
+        mockMvc.perform(put("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + bobToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload("bob-edit")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isOk());
+    }
+{% if readonly_role %}
+
+    @Test
+    void readonlyRoleCanReadOwnScope() throws Exception {
+        mockMvc.perform(get("{{ route_path }}")
+                        .header("Authorization", "Bearer " + bobToken))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void readonlyRoleCannotCreate() throws Exception {
+        mockMvc.perform(post("{{ route_path }}")
+                        .header("Authorization", "Bearer " + bobToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload("bob-write")))
+                .andExpect(status().isForbidden());
+    }
+{% endif %}
+{% if op_roles['delete'] | length == 0 %}
+
+    @Test
+    void operationWithEmptyRolesIsDenied() throws Exception {
+        long recordId = createRecord(aliceToken, "to-remove");
+        mockMvc.perform(delete("{{ route_path }}/" + recordId)
+                        .header("Authorization", "Bearer " + aliceToken))
+                .andExpect(status().isForbidden());
+    }
+{% endif %}
+}
+{% endif %}

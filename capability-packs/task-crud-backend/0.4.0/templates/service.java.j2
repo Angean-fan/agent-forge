@@ -1,0 +1,292 @@
+{% if lending_loan %}
+package {{ package }}.service;
+
+import {{ package }}.dto.LoanCreateRequest;
+import {{ package }}.dto.LoanUpdateRequest;
+import {{ package }}.entity.Book;
+import {{ package }}.entity.Loan;
+import {{ package }}.exception.ApiException;
+import {{ package }}.exception.ErrorCode;
+import {{ package }}.mapper.BookMapper;
+import {{ package }}.mapper.LoanMapper;
+import {{ package }}.vo.LoanView;
+import {{ package }}.vo.PageResult;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+/** 固定借阅主线：行锁串行化同书借阅；借出/归还与 Loan 写入同事务。 */
+@Service
+public class LoanService {
+    private final LoanMapper mapper;
+    private final BookMapper bookMapper;
+
+    public LoanService(LoanMapper mapper, BookMapper bookMapper) {
+        this.mapper = mapper;
+        this.bookMapper = bookMapper;
+    }
+
+    public PageResult<LoanView> list(long page, long size, String keyword, Long ownerId) {
+        LambdaQueryWrapper<Loan> query = new LambdaQueryWrapper<>();
+        query.eq(Loan::getOwnerId, ownerId);
+        if (keyword != null && !keyword.isBlank()) {
+            query.like(Loan::getStatus, keyword);
+        }
+        query.orderByDesc(Loan::getId);
+        Page<Loan> result = mapper.selectPage(new Page<>(page, size), query);
+        return new PageResult<>(
+                result.getRecords().stream().map(this::toView).toList(),
+                result.getTotal(), result.getCurrent(), result.getSize());
+    }
+
+    @Transactional
+    public LoanView create(LoanCreateRequest request, Long ownerId) {
+        if (request.book_id() == null) {
+            throw new ApiException(ErrorCode.BAD_REQUEST, "必须指定图书", 400);
+        }
+        Book book = lockedBook(request.book_id());
+        if (mapper.selectCount(new LambdaQueryWrapper<Loan>()
+                .eq(Loan::getBookId, book.getId()).eq(Loan::getStatus, "ACTIVE")) > 0) {
+            throw new ApiException("CONFLICT", "图书已有有效借阅", 409);
+        }
+        if (!"AVAILABLE".equals(book.getStatus())) {
+            throw new ApiException("CONFLICT", "图书不可借", 409);
+        }
+        Loan loan = new Loan();
+        loan.setBookId(book.getId());
+        loan.setBorrowerId(ownerId); // 不信任请求中的 borrower_id
+        loan.setOwnerId(ownerId);
+        loan.setStatus("ACTIVE");
+        mapper.insert(loan);
+        book.setStatus("BORROWED");
+        bookMapper.updateById(book);
+        return toView(loan);
+    }
+
+    public LoanView get(Long id, Long ownerId) {
+        return toView(requireOwned(id, ownerId));
+    }
+
+    @Transactional
+    public LoanView update(Long id, LoanUpdateRequest request, Long ownerId) {
+        Loan loan = requireOwned(id, ownerId);
+        if (!"ACTIVE".equals(loan.getStatus()) || !"RETURNED".equals(request.status())) {
+            throw new ApiException("CONFLICT", "仅可归还进行中的借阅", 409);
+        }
+        Book book = lockedBook(loan.getBookId());
+        if (!"BORROWED".equals(book.getStatus())) {
+            throw new ApiException("CONFLICT", "图书状态与借阅不一致", 409);
+        }
+        loan.setStatus("RETURNED");
+        mapper.updateById(loan);
+        book.setStatus("AVAILABLE");
+        bookMapper.updateById(book);
+        return toView(loan);
+    }
+
+    public void delete(Long id, Long ownerId) {
+        throw new ApiException(ErrorCode.FORBIDDEN, "借阅记录不可删除", 403);
+    }
+
+    private Book lockedBook(Long id) {
+        Book book = bookMapper.selectOne(new QueryWrapper<Book>().eq("id", id).last("FOR UPDATE"));
+        if (book == null) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "图书不存在", 404);
+        }
+        return book;
+    }
+
+    private Loan requireOwned(Long id, Long ownerId) {
+        Loan loan = mapper.selectById(id);
+        if (loan == null) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "借阅记录不存在", 404);
+        }
+        if (loan.getOwnerId() == null || !loan.getOwnerId().equals(ownerId)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权访问该借阅", 403);
+        }
+        return loan;
+    }
+
+    private LoanView toView(Loan loan) {
+        return new LoanView(loan.getId(), loan.getBorrowerId(), loan.getOwnerId(),
+                loan.getStatus(), loan.getCreatedAt(), loan.getBookId());
+    }
+}
+{% else %}
+package {{ package }}.service;
+
+import {{ package }}.dto.{{ entity_name }}CreateRequest;
+import {{ package }}.dto.{{ entity_name }}UpdateRequest;
+import {{ package }}.entity.{{ entity_name }};
+import {{ package }}.exception.ApiException;
+import {{ package }}.exception.ErrorCode;
+import {{ package }}.mapper.{{ entity_name }}Mapper;
+{% if lending_book %}
+import {{ package }}.entity.Loan;
+import {{ package }}.mapper.LoanMapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import org.springframework.transaction.annotation.Transactional;
+{% endif %}
+import {{ package }}.vo.{{ entity_name }}View;
+import {{ package }}.vo.PageResult;
+{% for g in status_guards %}
+import {{ package }}.entity.{{ g.parent_entity }};
+import {{ package }}.mapper.{{ g.parent_mapper }};
+{% endfor %}
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.springframework.stereotype.Service;
+
+/** {{ entity_name }} CRUD / 分页 / 搜索 / 数据归属 / 状态守卫（由能力包提供，复用模板的异常体系）。 */
+@Service
+public class {{ entity_name }}Service {
+
+    private final {{ entity_name }}Mapper mapper;
+{% if lending_book %}
+    private final LoanMapper loanMapper;
+{% endif %}
+{% for g in status_guards %}
+    private final {{ g.parent_mapper }} {{ g.parent_field }};
+{% endfor %}
+
+    public {{ entity_name }}Service({{ entity_name }}Mapper mapper{% if lending_book %}, LoanMapper loanMapper{% endif %}{% for g in status_guards %}, {{ g.parent_mapper }} {{ g.parent_field }}{% endfor %}) {
+        this.mapper = mapper;
+{% if lending_book %}
+        this.loanMapper = loanMapper;
+{% endif %}
+{% for g in status_guards %}
+        this.{{ g.parent_field }} = {{ g.parent_field }};
+{% endfor %}
+    }
+
+    public PageResult<{{ entity_name }}View> list(long page, long size, String keyword, Long ownerId) {
+        LambdaQueryWrapper<{{ entity_name }}> query = new LambdaQueryWrapper<>();
+{% if not lending_book %}
+        query.eq({{ entity_name }}::get{{ owner_pascal }}, ownerId);
+{% endif %}
+{% if search_pascal %}
+        if (keyword != null && !keyword.isBlank()) {
+            query.like({{ entity_name }}::get{{ search_pascal }}, keyword);
+        }
+{% endif %}
+        query.orderByDesc({{ entity_name }}::get{{ id_pascal }});
+        Page<{{ entity_name }}> result = mapper.selectPage(new Page<>(page, size), query);
+        return new PageResult<>(
+                result.getRecords().stream().map(this::toView).toList(),
+                result.getTotal(), result.getCurrent(), result.getSize());
+    }
+
+    public {{ entity_name }}View create({{ entity_name }}CreateRequest request, Long ownerId) {
+        {{ entity_name }} entity = new {{ entity_name }}();
+{% for f in writable_fields %}
+        entity.set{{ f.pascal }}(request.{{ f.java_name }}());
+{% endfor %}
+        entity.set{{ owner_pascal }}(ownerId);
+        checkStatusGuards(entity);
+        mapper.insert(entity);
+        return toView(entity);
+    }
+
+    public {{ entity_name }}View get(Long id, Long ownerId) {
+{% if lending_book %}
+        {{ entity_name }} entity = mapper.selectById(id);
+        if (entity == null) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "记录不存在", 404);
+        }
+        return toView(entity);
+{% else %}
+        return toView(requireOwned(id, ownerId));
+{% endif %}
+    }
+
+{% if lending_book %}
+    @Transactional
+{% endif %}
+    public {{ entity_name }}View update(Long id, {{ entity_name }}UpdateRequest request, Long ownerId) {
+{% if lending_book %}
+        {{ entity_name }} entity = requireOwnedLocked(id, ownerId);
+        if (activeLoans(id) > 0 && !"BORROWED".equals(request.status())) {
+            throw new ApiException("CONFLICT", "借阅中的图书不能变更借阅状态", 409);
+        }
+{% else %}
+        {{ entity_name }} entity = requireOwned(id, ownerId);
+{% endif %}
+{% for f in writable_fields %}
+        entity.set{{ f.pascal }}(request.{{ f.java_name }}());
+{% endfor %}
+        mapper.updateById(entity);
+        return toView(entity);
+    }
+
+{% if lending_book %}
+    @Transactional
+{% endif %}
+    public void delete(Long id, Long ownerId) {
+{% if lending_book %}
+        requireOwnedLocked(id, ownerId);
+        if (activeLoans(id) > 0) {
+            throw new ApiException("CONFLICT", "借阅中的图书不能删除", 409);
+        }
+{% else %}
+        requireOwned(id, ownerId);
+{% endif %}
+        mapper.deleteById(id);
+    }
+
+{% if lending_book %}
+    private long activeLoans(Long bookId) {
+        return loanMapper.selectCount(new LambdaQueryWrapper<Loan>()
+                .eq(Loan::getBookId, bookId).eq(Loan::getStatus, "ACTIVE"));
+    }
+
+    private {{ entity_name }} requireOwnedLocked(Long id, Long ownerId) {
+        {{ entity_name }} entity = mapper.selectOne(new QueryWrapper<{{ entity_name }}>()
+                .eq("id", id).last("FOR UPDATE"));
+        if (entity == null) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "记录不存在", 404);
+        }
+        if (entity.get{{ owner_pascal }}() == null || !entity.get{{ owner_pascal }}().equals(ownerId)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权访问该记录", 403);
+        }
+        return entity;
+    }
+{% endif %}
+
+    /** 服务端状态守卫：经外键读取父实体状态，命中禁止集合则拒绝（不返回成功）。 */
+    private void checkStatusGuards({{ entity_name }} entity) {
+{% for g in status_guards %}
+        if (entity.get{{ g.fk_pascal }}() != null) {
+            {{ g.parent_entity }} parent = {{ g.parent_field }}.selectById(entity.get{{ g.fk_pascal }}());
+            if (parent == null) {
+                throw new ApiException(ErrorCode.NOT_FOUND, "关联的{{ g.parent_entity }}不存在", 404);
+            }
+            String parentStatus = parent.getStatus();
+            if (parentStatus != null && java.util.Set.of({{ g.blocked_literals }}).contains(parentStatus)) {
+                throw new ApiException("CONFLICT", "{{ g.parent_entity }}状态不允许创建", 409);
+            }
+        }
+{% endfor %}
+    }
+
+    private {{ entity_name }} requireOwned(Long id, Long ownerId) {
+        {{ entity_name }} entity = mapper.selectById(id);
+        if (entity == null) {
+            throw new ApiException(ErrorCode.NOT_FOUND, "记录不存在", 404);
+        }
+        if (entity.get{{ owner_pascal }}() == null || !entity.get{{ owner_pascal }}().equals(ownerId)) {
+            throw new ApiException(ErrorCode.FORBIDDEN, "无权访问该记录", 403);
+        }
+        return entity;
+    }
+
+    private {{ entity_name }}View toView({{ entity_name }} entity) {
+        return new {{ entity_name }}View(
+{% for a in view_getters %}
+{{ a }}
+{% endfor %}
+        );
+    }
+}
+{% endif %}

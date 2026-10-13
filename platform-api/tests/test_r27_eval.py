@@ -54,6 +54,13 @@ def test_failed_and_not_run_not_counted_as_success() -> None:
     summary = summarize(runs)
     assert summary["passed"] == 6 and summary["not_run"] == 1 and summary["goal_met"] is False
 
+    runs[0].required_pass = False  # 状态成功但证据缺失，也必须计作失败
+    summary = summarize(runs)
+    assert summary["passed"] == 5 and summary["failed"] == 3
+    assert summary["failure_distribution"] == {
+        "FAILED": 2, "NOT_RUN": 1, "REQUIRED_EVIDENCE_MISSING": 1,
+    }
+
 
 def test_costs_and_uncomputable() -> None:
     runs = _matrix({"campus": 2, "task": 0, "lending": 0})
@@ -83,6 +90,29 @@ def test_four_layer_asset_metrics() -> None:
     assert layers["acceptance_pass_runs"] == 3  # 仅验收通过算覆盖
 
 
+def test_method_and_pack_layers_require_locked_assets_for_accepted_reuse() -> None:
+    runs = _matrix({"campus": 1, "task": 0, "lending": 0})
+    runs[0].retrieval_candidates = 2
+    runs[0].compatible_selected = 1
+    runs[0].locked_method_units = ["method-a@1"]
+    runs[0].locked_capability_packs = ["pack-a@1"]
+    runs[0].pack_retrieval_candidates = 2
+    runs[0].pack_compatible_selected = 1
+    runs[1].retrieval_candidates = 1  # 候选命中但未锁定
+    runs[1].locked_capability_packs = ["pack-a@1"]  # 锁定但验收失败
+    runs[1].pack_retrieval_candidates = 1
+    runs[1].pack_compatible_selected = 1
+    summary = summarize(runs)
+    assert summary["method_unit_layers"] == {
+        "retrieval_hit_runs": 2, "compatible_runs": 1,
+        "reused_runs": 1, "acceptance_pass_runs": 1,
+    }
+    assert summary["capability_pack_layers"] == {
+        "retrieval_hit_runs": 2, "compatible_runs": 2,
+        "reused_runs": 2, "acceptance_pass_runs": 1,
+    }
+
+
 def test_routing_assertions() -> None:
     routes = {role: (r.provider, r.model) for role, r in model_gateway.ROUTES.items()}
     assertions = routing_assertions(routes)
@@ -92,14 +122,31 @@ def test_routing_assertions() -> None:
 
 
 def test_report_has_required_sections() -> None:
-    summary = summarize(_matrix({"campus": 3, "task": 3, "lending": 1}))
+    runs = _matrix({"campus": 3, "task": 3, "lending": 1})
+    runs[0].artifact_dir = "/shared/r27-a/campus-1/run-1"
+    runs[0].checks = [{"name": "backend_test", "status": "PASS"}]
+    runs[0].acceptance_cases = [{"name": "publish_activity", "status": "PASS"}]
+    runs[0].locked_method_units = ["method-a@1"]
+    runs[0].locked_capability_packs = ["activity-pack@2"]
+    runs[0].uncovered_acceptance_ids = ["AC99"]
+    runs[0].rejected_reasons = {"method-b@1": ["profile mismatch"]}
+    runs[0].model_calls = [{
+        "role": "technical_planning", "provider": "dashscope", "model": "qwen3.7-plus",
+        "thinking_mode": "enabled", "reasoning_effort": None, "input_tokens": 12,
+        "output_tokens": 5, "cost_micro": 2, "status": "SETTLED",
+    }]
+    summary = summarize(runs)
     routes = {role: (r.provider, r.model) for role, r in model_gateway.ROUTES.items()}
     report = render_report(summary, routing=routing_assertions(routes),
                            generated_at="2026-10-13T00:00:00Z", runner_note="真实 Runner")
     for section in ("发布判定", "逐次结果", "费用与延迟", "分角色模型用量",
-                    "资产覆盖四层指标", "模型路由断言", "可追溯证据"):
+                    "资产覆盖四层指标", "模型路由断言", "可追溯证据", "失败分布"):
         assert section in report
     assert "达到文档建议验收目标" in report
+    for evidence in ("/shared/r27-a/campus-1/run-1", "backend_test", "publish_activity",
+                     "method-a@1", "activity-pack@2", "method-b@1", "profile mismatch",
+                     "qwen3.7-plus", "enabled", "AC99", "| coding | 0 | 0 | 0 | 0 | 0 |"):
+        assert evidence in report
 
     not_run = summarize([RunEvaluation(case=c, index=i, run_id=None, status="NOT_RUN",
                                        required_pass=False, note="runner 不可达")
@@ -111,3 +158,8 @@ def test_report_has_required_sections() -> None:
 
 def test_threshold_constant_is_seven_of_nine() -> None:
     assert PASS_THRESHOLD == 7
+
+
+def test_incomplete_matrix_cannot_pass_release_gate() -> None:
+    runs = _matrix({"campus": 3, "task": 3, "lending": 1})[:-1]
+    assert summarize(runs)["goal_met"] is False

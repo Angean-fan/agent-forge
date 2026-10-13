@@ -87,17 +87,33 @@ python -m agentforge_platform.maintenance runs cleanup        # 清理过期终�
 Runner 需 Docker Engine 且与平台共享运行目录。**MVP 采用同机部署**：
 
 ```bash
-# 1) 构建执行镜像（含 JDK17+Maven+Node22）
-docker build -t agentforge/runner-executor:demo-0.1 runner/executor
+# 1) 从仓库根目录构建执行镜像；构建阶段需能访问 Maven Central 与 npm registry。
+#    镜像预热固定模板和能力包依赖，运行阶段不再访问依赖仓库。
+docker build -f runner/executor/Dockerfile -t agentforge/runner-executor:demo-0.2 .
 
 # 2) 启动 Runner（在受控主机；RUNNER_WORK_ROOT 必须与平台 worker 指向同一目录）
 cd runner && uv sync --dev
 export RUNNER_TOKEN=<与平台 .env 中一致的令牌>
 export RUNNER_WORK_ROOT=/绝对路径/到/platform-api/var/runs
-export RUNNER_EXECUTOR_IMAGE=agentforge/runner-executor:demo-0.1
-export RUNNER_CONTAINER_NETWORK=bridge   # 允许容器构建拉取 Maven/npm 依赖；默认 none
+export RUNNER_EXECUTOR_IMAGE=agentforge/runner-executor:demo-0.2
+export RUNNER_CONTAINER_NETWORK=none
 uv run uvicorn agentforge_runner.main:app --host 0.0.0.0 --port 9000
 ```
+
+R27 本机九次评估使用同一个绝对共享目录与 Runner 令牌，在另一终端执行：
+
+```bash
+cd platform-api
+export RUNNER_BASE_URL=http://127.0.0.1:9000
+export RUNNER_WORK_ROOT=/绝对路径/到/platform-api/var/runs
+export RUNNER_TOKEN=<与 Runner 相同的令牌>
+uv run --locked python ../scripts/demo_p0_eval.py
+```
+
+默认评估采用确定性装配，DeepSeek 和 DashScope 均不产生实际请求，因此不需要 API Key。
+若另外启用模型角色，需分别配置 `DEEPSEEK_API_KEY`、`DASHSCOPE_API_KEY`；
+模型调用量和费用会按实际账本进入报告。镜像构建阶段需要能访问 Maven Central、npm registry，
+Runner 执行阶段保持 `RUNNER_CONTAINER_NETWORK=none`。
 
 **连通性检查**（在平台主机执行）：
 

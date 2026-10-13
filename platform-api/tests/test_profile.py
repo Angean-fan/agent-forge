@@ -12,7 +12,7 @@ from agentforge_platform import spec
 from agentforge_platform.profile import PlatformProfile, load_profile
 
 PROFILE_PATH = (
-    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.3.json"
+    Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.4.json"
 )
 SUPERSEDED_PROFILE_PATHS = [
     Path(__file__).resolve().parents[2] / "profiles" / "demo-ts-mp-0.1.json",
@@ -31,7 +31,7 @@ def test_profile_file_is_valid_and_locked() -> None:
     profile = load_profile(PROFILE_PATH)
 
     assert profile.profile_id == "demo-ts-mp"
-    assert profile.profile_version == "0.3"
+    assert profile.profile_version == "0.4"
     assert profile.template_version == "demo-0.2"
     assert profile.status == "locked"
     assert profile.frontend.syntax == "typescript"

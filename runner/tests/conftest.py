@@ -17,7 +17,7 @@ def runner(tmp_path: Path):
     work_root.mkdir()
     config = RunnerConfig(
         work_root=work_root,
-        executor_image="agentforge/runner-executor:demo-0.1",
+        executor_image="agentforge/runner-executor:demo-0.2",
         token=TOKEN,
     )
     return TestClient(create_app(config)), work_root

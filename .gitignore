@@ -38,6 +38,8 @@ logs/
 *.db-shm
 *.sqlite
 *.sqlite3
+# R06/R27 方法索引是可重建的本地派生视图。
+methods/.index/
 *.zip
 
 # ---- OS / editor ----

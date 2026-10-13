@@ -21,9 +21,9 @@
       "source": "user_confirmed",
       "fields": [
         {"name": "id", "type": "long", "required": true},
-        {"name": "borrower_id", "type": "long", "required": true},
+        {"name": "borrower_id", "type": "long", "required": false},
         {"name": "owner_id", "type": "long", "required": true},
-        {"name": "status", "type": "string", "required": true},
+        {"name": "status", "type": "string", "required": false},
         {"name": "created_at", "type": "datetime", "required": true}
       ]
     }
@@ -36,9 +36,15 @@
     {"role": "ADMIN", "actions": ["create", "read", "update", "delete"], "source": "user_confirmed"},
     {"role": "MEMBER", "actions": ["create", "read"], "source": "user_confirmed"}
   ],
+  "entity_permissions": [
+    {"entity": "Book", "role": "ADMIN", "actions": ["create", "read", "update", "delete"]},
+    {"entity": "Book", "role": "MEMBER", "actions": ["read"]},
+    {"entity": "Loan", "role": "MEMBER", "actions": ["create", "read", "update"]}
+  ],
   "business_rules": [
     {"id": "BR01", "text": "读者只能查看自己的借阅记录", "source": "user_confirmed"},
-    {"id": "BR02", "text": "同一本书不可被重复借出", "source": "user_confirmed"}
+    {"id": "BR02", "text": "同一本书不可被重复借出", "source": "user_confirmed"},
+    {"id": "BR03", "text": "借阅人由登录身份确定；归还后图书恢复可借状态", "source": "user_confirmed"}
   ],
   "acceptance_cases": [
     {
@@ -51,6 +57,12 @@
       "id": "AC02",
       "scenario": "读者尝试借阅已被借出的图书",
       "expected": "请求被拒绝，提示图书不可借",
+      "source": "user_confirmed"
+    },
+    {
+      "id": "AC03",
+      "scenario": "读者归还图书后再次借出",
+      "expected": "归还后图书恢复可借，允许再次借出",
       "source": "user_confirmed"
     }
   ],

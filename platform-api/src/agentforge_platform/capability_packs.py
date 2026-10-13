@@ -378,6 +378,8 @@ def build_params(
         "package": PACKAGE,
         "package_dir": PACKAGE_DIR,
         "entity_name": entity_name,
+        "lending_book": entity_name == "Book" and set(entities) == {"Book", "Loan"},
+        "lending_loan": entity_name == "Loan" and set(entities) == {"Book", "Loan"},
         "entity_camel": entity_name[:1].lower() + entity_name[1:],
         "table_name": table.table,
         "plural": plural,

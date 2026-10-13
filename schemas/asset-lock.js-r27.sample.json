@@ -1,0 +1,36 @@
+{
+  "schema_version": "0.1",
+  "profile": "demo-js-mp",
+  "mysql_image": {
+    "reference": "mysql:8.0.43",
+    "digest": "sha256:3e646bcda0d9448ffa3d2024eef04e1bca95528ec19b9e8b76749da9d97d4a10"
+  },
+  "assets": [
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-backend",
+      "version": "0.4.0",
+      "checksum": "818d3b1c0d9c65243f0c710ddd122a6616da095010c7be009c63e6cac5591e41",
+      "path": "capability-packs/task-crud-backend/0.4.0"
+    },
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-frontend-js",
+      "version": "0.2.0",
+      "checksum": "b707fb63faa0a1d654136c6486dba79e741927eb655f55fa1e9801ce85947fe4",
+      "path": "capability-packs/task-crud-frontend-js/0.2.0"
+    },
+    {
+      "kind": "template",
+      "id": "base-template",
+      "version": "demo-0.2-js",
+      "checksum": "5e15afb9e843d76c4db41959fddedccdec2d565b16925d542cd2f537e42f27d0",
+      "path": "templates/demo-0.2-js"
+    }
+  ],
+  "lock_hash": "0bf0759285f855167a270ffeef8e945d782c9029bcd6074ba935dc06ea698fbb",
+  "method_units": [],
+  "index_schema_version": null,
+  "index_revision": null,
+  "selection_reason": null
+}

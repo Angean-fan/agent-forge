@@ -261,7 +261,9 @@ def run_acceptance(artifact_dir: Path, config: RunnerConfig) -> AcceptanceResult
         _sh(["docker", "exec", mysql_name, "mysql", f"-u{_DB_USER}", f"-p{_DB_PASSWORD}", _DB_NAME, "-e", seed])
 
         # R12：按生成项目形态分流——含校园活动实体（/api/activities）跑校园主线固定场景，否则跑原 Task 场景。
-        if _is_campus_project(base["url"]):
+        if _is_lending_contract(artifact_dir):
+            _run_lending_cases(base["url"], case)
+        elif _is_campus_project(base["url"]):
             _run_campus_cases(base["url"], case)
         else:
             _run_http_cases(base["url"], artifact_dir, case)
@@ -330,6 +332,83 @@ def _is_campus_project(base: str) -> bool:
     """形态检测：管理员可读 ``GET /api/activities`` → 校园活动主线；否则为原 Task 项目。"""
     token = _login(base, *_ADMIN)
     return bool(token) and _http("GET", f"{base}/api/activities", token)[0] == 200
+
+
+def _is_lending_contract(artifact_dir: Path) -> bool:
+    contract = _read_contract(artifact_dir)
+    return bool(contract) and {table.get("table") for table in contract.get("tables", [])} == {
+        "book", "loan"
+    }
+
+
+def _run_lending_cases(base: str, case) -> None:
+    """R27 固定借阅断言：权限、借出状态、重复借阅、归还释放及归属。"""
+    admin_token = _login(base, *_ADMIN)
+    case("login_admin", admin_token is not None)
+    member_token = _login(base, *_MEMBER)
+    case("login_member", member_token is not None)
+    if not admin_token or not member_token:
+        return
+
+    book_body = {"title": "r27-book", "isbn": "R27-001", "status": "AVAILABLE"}
+    status, book = _http("POST", f"{base}/api/books", admin_token, book_body)
+    book_id = book.get("id") if isinstance(book, dict) else None
+    case("lending_admin_creates_book", status == 200 and book_id is not None)
+    case("lending_member_cannot_create_book", _http(
+        "POST", f"{base}/api/books", member_token, book_body,
+    )[0] == 403)
+    if book_id is None:
+        return
+    visible_status, visible_book = _http("GET", f"{base}/api/books/{book_id}", member_token)
+    case("lending_member_sees_book", visible_status == 200 and isinstance(visible_book, dict)
+         and visible_book.get("status") == "AVAILABLE")
+    list_status, visible_books = _http("GET", f"{base}/api/books", member_token)
+    case("lending_member_lists_books", list_status == 200 and isinstance(visible_books, dict)
+         and visible_books.get("total") == 1)
+
+    loan_body = {"book_id": book_id, "status": "ACTIVE"}
+    status, loan = _http("POST", f"{base}/api/loans", member_token, loan_body)
+    loan_id = loan.get("id") if isinstance(loan, dict) else None
+    case("lending_borrow", status == 200 and loan_id is not None)
+    _, borrowed_book = _http("GET", f"{base}/api/books/{book_id}", admin_token)
+    case("lending_book_marked_borrowed", isinstance(borrowed_book, dict)
+         and borrowed_book.get("status") == "BORROWED")
+    case("lending_duplicate_rejected", _http(
+        "POST", f"{base}/api/loans", member_token, loan_body,
+    )[0] == 409)
+    case("lending_admin_cannot_reset_borrowed_book", _http(
+        "PUT", f"{base}/api/books/{book_id}", admin_token,
+        {"title": "r27-book", "isbn": "R27-001", "status": "AVAILABLE"},
+    )[0] == 409)
+    case("lending_admin_cannot_delete_borrowed_book", _http(
+        "DELETE", f"{base}/api/books/{book_id}", admin_token,
+    )[0] == 409)
+    if loan_id is None:
+        return
+
+    case("lending_member_reads_own", _http(
+        "GET", f"{base}/api/loans/{loan_id}", member_token,
+    )[0] == 200)
+    case("lending_cross_user_denied", _http(
+        "GET", f"{base}/api/loans/{loan_id}", admin_token,
+    )[0] == 403)
+    status, listed = _http("GET", f"{base}/api/loans?page=1&size=10", member_token)
+    case("lending_list_total", status == 200 and isinstance(listed, dict)
+         and listed.get("total") == 1)
+    case("lending_pagination_limit", _http(
+        "GET", f"{base}/api/loans?page=1&size=100000", member_token,
+    )[0] == 400)
+    returned, _ = _http(
+        "PUT", f"{base}/api/loans/{loan_id}", member_token,
+        {"book_id": book_id, "status": "RETURNED"},
+    )
+    case("lending_return", returned == 200)
+    _, released = _http("GET", f"{base}/api/books/{book_id}", admin_token)
+    case("lending_return_releases_book", isinstance(released, dict)
+         and released.get("status") == "AVAILABLE")
+    case("lending_borrow_after_return", _http(
+        "POST", f"{base}/api/loans", member_token, loan_body,
+    )[0] == 200)
 
 
 def _run_campus_cases(base: str, case) -> None:

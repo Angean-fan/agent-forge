@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 PASS_THRESHOLD = 7
@@ -36,8 +37,11 @@ class RunEvaluation:
     index_revision: str | None = None
     locked_method_units: list[str] = field(default_factory=list)
     rejected_reasons: dict[str, list[str]] = field(default_factory=dict)
+    uncovered_acceptance_ids: list[str] = field(default_factory=list)
     retrieval_candidates: int = 0
     compatible_selected: int = 0
+    pack_retrieval_candidates: int = 0
+    pack_compatible_selected: int = 0
     cost_micro: int = 0
     unknown_calls: int = 0
     usage_by_role: dict[str, dict] = field(default_factory=dict)
@@ -45,6 +49,11 @@ class RunEvaluation:
     verification_overall: str | None = None
     acceptance_overall: str | None = None
     note: str | None = None  # NOT_RUN 等的原因（如实记录）
+    artifact_dir: str | None = None  # 相对共享根的唯一目录，或测试中的绝对目录
+    acceptance_cases: list[dict] = field(default_factory=list)
+    locked_capability_packs: list[str] = field(default_factory=list)
+    model_calls: list[dict] = field(default_factory=list)
+    first_failure: dict | None = None
 
 
 def _is_pass(run: RunEvaluation) -> bool:
@@ -54,8 +63,18 @@ def _is_pass(run: RunEvaluation) -> bool:
 def summarize(runs: list[RunEvaluation]) -> dict:
     """汇总指标 + 发布判定；全程只读、确定性。"""
     passed = [r for r in runs if _is_pass(r)]
-    failed = [r for r in runs if r.status == "FAILED"]
+    failed = [r for r in runs if r.status == "FAILED" or (r.status == "SUCCEEDED" and not r.required_pass)]
     not_run = [r for r in runs if r.status in ("NOT_RUN", "PAUSED_BUDGET", "CANCELLED")]
+    first_try = sum(_is_pass(r) and r.repairs == 0 for r in runs)
+    repaired = sum(_is_pass(r) and r.repairs > 0 for r in runs)
+    failure_distribution: dict[str, int] = {}
+    for run in runs:
+        if _is_pass(run):
+            continue
+        code = run.error_code or (
+            "REQUIRED_EVIDENCE_MISSING" if run.status == "SUCCEEDED" else run.status
+        )
+        failure_distribution[code] = failure_distribution.get(code, 0) + 1
     campus_runs = [r for r in runs if r.case == CAMPUS]
     campus_ok = any(_is_pass(r) for r in campus_runs)
 
@@ -75,10 +94,26 @@ def summarize(runs: list[RunEvaluation]) -> dict:
 
     # 四层资产指标：检索命中 → 兼容通过 → 实际复用 → 验收通过（关键词命中不计）
     layers = {
-        "retrieval_hit_runs": sum(1 for r in runs if r.retrieval_candidates > 0),
-        "compatible_runs": sum(1 for r in runs if r.compatible_selected > 0),
-        "reused_runs": sum(1 for r in runs if r.reuse_path),
+        "retrieval_hit_runs": sum(r.retrieval_candidates > 0 or r.pack_retrieval_candidates > 0
+                                  for r in runs),
+        "compatible_runs": sum(r.compatible_selected > 0 or r.pack_compatible_selected > 0
+                               for r in runs),
+        "reused_runs": sum(r.reuse_path or bool(r.locked_capability_packs) for r in runs),
         "acceptance_pass_runs": len(passed),
+    }
+    method_layers = {
+        "retrieval_hit_runs": sum(r.retrieval_candidates > 0 for r in runs),
+        "compatible_runs": sum(r.compatible_selected > 0 for r in runs),
+        "reused_runs": sum(bool(r.locked_method_units) for r in runs),
+        "acceptance_pass_runs": sum(_is_pass(r) and bool(r.locked_method_units) for r in runs),
+    }
+    # Capability Pack 的候选/兼容/复用证据来自确定性 Resolver 的资产锁。
+    # 锁中没有的包不能按关键词命中计数。
+    pack_layers = {
+        "retrieval_hit_runs": sum(r.pack_retrieval_candidates > 0 for r in runs),
+        "compatible_runs": sum(r.pack_compatible_selected > 0 for r in runs),
+        "reused_runs": sum(bool(r.locked_capability_packs) for r in runs),
+        "acceptance_pass_runs": sum(_is_pass(r) and bool(r.locked_capability_packs) for r in runs),
     }
 
     usage_by_role: dict[str, dict] = {}
@@ -92,21 +127,33 @@ def summarize(runs: list[RunEvaluation]) -> dict:
             bucket["cost_micro"] += usage.get("cost_micro", 0)
             bucket["unknown_calls"] += usage.get("unknown_calls", 0)
 
-    goal_met = len(passed) >= PASS_THRESHOLD and campus_ok
+    complete_matrix = (
+        len(runs) == TOTAL_RUNS
+        and all(sum(1 for r in runs if r.case == case) == RUNS_PER_CASE for case in CASES)
+        and all({r.index for r in runs if r.case == case} == set(range(1, RUNS_PER_CASE + 1))
+                for case in CASES)
+    )
+    goal_met = complete_matrix and len(passed) >= PASS_THRESHOLD and campus_ok
     return {
         "total": len(runs),
         "passed": len(passed),
         "failed": len(failed),
         "not_run": len(not_run),
+        "first_try_passed": first_try,
+        "repaired_passed": repaired,
+        "failure_distribution": dict(sorted(failure_distribution.items())),
         "pass_threshold": PASS_THRESHOLD,
         "campus_passed": campus_ok,
         "goal_met": goal_met,
+        "complete_matrix": complete_matrix,
         "by_case": by_case,
         "avg_success_cost_micro": avg_success_cost,
         "total_cost_micro": total_cost,
         "cost_per_success_micro": cost_per_success,
         "avg_duration_seconds": round(sum(durations) / len(durations), 1) if durations else None,
         "asset_layers": layers,
+        "method_unit_layers": method_layers,
+        "capability_pack_layers": pack_layers,
         "usage_by_role": usage_by_role,
         "runs": runs,
     }
@@ -132,7 +179,7 @@ def _fmt_micro(value: int | None) -> str:
 
 
 def _run_row(run: RunEvaluation) -> str:
-    verdict = "PASS" if _is_pass(run) else ("FAIL" if run.status == "FAILED" else run.status)
+    verdict = "PASS" if _is_pass(run) else ("FAIL" if run.status in ("FAILED", "SUCCEEDED") else run.status)
     loc = f"run #{run.run_id}" if run.run_id is not None else "—"
     dur = f"{run.duration_seconds:.1f}s" if run.duration_seconds is not None else "—"
     return (f"| {run.case} | {run.index} | {loc} | {verdict} | {dur} | "
@@ -153,6 +200,15 @@ def render_report(summary: dict, *, routing: list[dict], generated_at: str,
         f"- 通过（全部必需检查 PASS）次数：**{summary['passed']} / {summary['total']}**（门槛 ≥ {summary['pass_threshold']}）",
         f"- 校园活动成功：**{'是' if summary['campus_passed'] else '否'}**",
         f"- 结论：**{'达到文档建议验收目标' if summary['goal_met'] else '未达到文档建议验收目标（如实标注）'}**",
+        (f"- 首次通过：{summary['first_try_passed']}；修复后通过：{summary['repaired_passed']}；"
+         f"未通过：{summary['failed']}；NOT_RUN/暂停/取消：{summary['not_run']}"),
+        "",
+        "## 失败分布",
+        "",
+        "| 失败码或状态 | 次数 |",
+        "|---|---:|",
+        *([f"| {code} | {count} |" for code, count in summary["failure_distribution"].items()]
+          or ["| 无 | 0 |"]),
         "",
         "## 逐次结果",
         "",
@@ -174,9 +230,12 @@ def render_report(summary: dict, *, routing: list[dict], generated_at: str,
         "| 角色 | 调用 | 输入 tokens | 输出 tokens | 成本 | 未知 |",
         "|---|---|---|---|---|---|",
     ]
-    for role, usage in summary["usage_by_role"].items():
-        lines.append(f"| {role} | {usage['calls']} | {usage['input_tokens']} | {usage['output_tokens']} "
-                     f"| {usage['cost_micro']} | {usage['unknown_calls']} |")
+    for route in routing:
+        role = route["role"]
+        usage = summary["usage_by_role"].get(role, {})
+        lines.append(f"| {role} | {usage.get('calls', 0)} | {usage.get('input_tokens', 0)} | "
+                     f"{usage.get('output_tokens', 0)} | {usage.get('cost_micro', 0)} | "
+                     f"{usage.get('unknown_calls', 0)} |")
     lines += [
         "",
         "## 资产覆盖四层指标（关键词命中不算可复用覆盖）",
@@ -185,6 +244,15 @@ def render_report(summary: dict, *, routing: list[dict], generated_at: str,
         f"- 兼容通过 run 数：{layers['compatible_runs']}",
         f"- 实际复用 run 数：{layers['reused_runs']}",
         f"- 验收通过 run 数：{layers['acceptance_pass_runs']}",
+        "",
+        "| 资产类型 | 检索命中 run | 兼容通过 run | 实际复用 run | 验收通过 run |",
+        "|---|---:|---:|---:|---:|",
+        ("| Method Unit | " + " | ".join(str(summary["method_unit_layers"][key]) for key in
+         ("retrieval_hit_runs", "compatible_runs", "reused_runs", "acceptance_pass_runs")) + " |"),
+        ("| Capability Pack | " + " | ".join(str(summary["capability_pack_layers"][key]) for key in
+         ("retrieval_hit_runs", "compatible_runs", "reused_runs", "acceptance_pass_runs")) + " |"),
+        "",
+        "> 检索与兼容层取自 asset-search 候选审计；实际复用取自资产锁；验收通过需同时满足复用和全部必需检查。",
         "",
         "## 各用例汇总",
         "",
@@ -207,13 +275,65 @@ def render_report(summary: dict, *, routing: list[dict], generated_at: str,
         "",
         "## 可追溯证据（每次 run）",
         "",
-        "| 用例 | run | 索引快照 | 已锁方法 | 拒绝原因数 | 复用:Patch |",
-        "|---|---|---|---|---|---|",
+        "| 用例 | 第几次 | 运行目录 | 索引快照 | 已锁方法 | 被拒资产数 | 复用:Patch |",
+        "|---|---|---|---|---|---|---|",
     ]
     for run in summary["runs"]:
         path = ("复用" if run.reuse_path else "") + ("+Patch" if run.patch_path else "") or "确定性装配"
-        lines.append(f"| {run.case} | {run.run_id} | {run.index_revision or '—'} | "
+        lines.append(f"| {run.case} | {run.index} | `{run.artifact_dir or '—'}` | "
+                     f"{run.index_revision or '—'} | "
                      f"{len(run.locked_method_units)} | {len(run.rejected_reasons)} | {path} |")
+    lines += ["", "## 每次 run 的逐项证据", ""]
+    for run in summary["runs"]:
+        lines += [
+            f"### {run.case} 第 {run.index} 次",
+            "",
+            f"- 运行目录：`{run.artifact_dir or '—'}`；run ID：{run.run_id if run.run_id is not None else '—'}",
+            (f"- 状态：{run.status}；全部必需项通过：{'是' if _is_pass(run) else '否'}；"
+            f"首次通过：{'未知' if run.passed_first_try is None else ('是' if run.passed_first_try else '否')}；"
+            f"修复次数：{run.repairs}；Agent 调用：{run.agent_calls}"),
+            (f"- 构建：{run.verification_overall or 'NOT_RUN'}；HTTP 验收：{run.acceptance_overall or 'NOT_RUN'}；"
+            f"耗时：{run.duration_seconds if run.duration_seconds is not None else '—'}s；"
+            f"已结算成本：{_fmt_micro(run.cost_micro)}；未知调用：{run.unknown_calls}"),
+            (f"- 索引快照：`{run.index_revision or '—'}`；"
+            f"已锁 Method Unit：{', '.join(run.locked_method_units) or '无'}；"
+            f"已锁 Capability Pack：{', '.join(run.locked_capability_packs) or '无'}"),
+            f"- 检索候选未声明覆盖的验收 ID：{', '.join(run.uncovered_acceptance_ids) or '无'}",
+            (f"- 候选 Method Unit：{run.retrieval_candidates}；兼容通过：{run.compatible_selected}；"
+             f"候选 Capability Pack：{run.pack_retrieval_candidates}；兼容通过：{run.pack_compatible_selected}；"
+             f"Method Unit 复用路径：{'是' if run.reuse_path else '否'}；"
+             f"Patch：{'是' if run.patch_path else '否'}"),
+            f"- 首次失败快照：`{json.dumps(run.first_failure, ensure_ascii=False) if run.first_failure else '无'}`",
+            f"- 说明：{run.note or '—'}",
+            "",
+            "| 必需构建检查 | 结果 | 失败码 |",
+            "|---|---|---|",
+        ]
+        lines += [f"| {item.get('name', '—')} | {item.get('status', 'NOT_RUN')} | "
+                  f"{item.get('error_code') or '—'} |" for item in run.checks]
+        if not run.checks:
+            lines.append("| — | NOT_RUN | — |")
+        lines += ["", "| 固定业务验收 | 结果 | 失败码 |", "|---|---|---|"]
+        lines += [f"| {item.get('name', '—')} | {item.get('status', 'NOT_RUN')} | "
+                  f"{item.get('error_code') or '—'} |" for item in run.acceptance_cases]
+        if not run.acceptance_cases:
+            lines.append("| — | NOT_RUN | — |")
+        lines += ["", "| 模型角色 | Provider / 模型 | 思考模式 / 强度 | 输入 / 输出 tokens | 成本（微元） | 状态 |",
+                  "|---|---|---|---|---|---|"]
+        lines += [
+            f"| {call.get('role', '—')} | {call.get('provider', '—')} / {call.get('model', '—')} | "
+            f"{call.get('thinking_mode') or '—'} / {call.get('reasoning_effort') or '—'} | "
+            f"{call.get('input_tokens') or 0} / {call.get('output_tokens') or 0} | "
+            f"{call.get('cost_micro') if call.get('cost_micro') is not None else 'UNKNOWN'} | "
+            f"{call.get('status', '—')} |" for call in run.model_calls
+        ]
+        if not run.model_calls:
+            lines.append("| — | — | — | 0 / 0 | 0 | 无调用 |")
+        lines += ["", "| 被拒资产 | 原因 |", "|---|---|"]
+        lines += [f"| {ref} | {', '.join(reasons)} |" for ref, reasons in run.rejected_reasons.items()]
+        if not run.rejected_reasons:
+            lines.append("| — | 无 |")
+        lines.append("")
     lines += [
         "",
         "> 说明：本报告只反映**真实运行**结果；缺失或超时的必需测试计为失败；未达标如实标注，不伪造 PASS。",

@@ -2,7 +2,7 @@
 
 - 覆盖判断由 **Resolver/固定验收 ID** 决定：Qwen 规划提议**不能**直接算“已覆盖”；
 - 覆盖来源有两类证据：(1) 已锁定的**方法单元显式声明的 `acceptance_ids`**（且已通过兼容筛选/入库）；
-  (2) **平台固定验收**覆盖的已知主线（Task 单实体 / 校园活动 Activity+Enrollment）——**且该 run 的固定验收已 PASS**
+  (2) **平台固定验收**覆盖的已知主线（Task / 校园活动 / 图书借阅）——**且该 run 的固定验收已 PASS**
   （“已装配资产未通过验收不算覆盖”）。
 - 其余进入缺口：区分「检索到但**不适配**」（含拒绝原因）与「**真正没有方法**」；缺口标注**授权代码位置**与预期验收，
   仅在确有缺口时创建 `AGENT_PATCH` 任务（本步不调用 coding）。
@@ -24,6 +24,7 @@ from agentforge_platform.spec import SoftwareSpecification
 KNOWN_MAINLINES: dict[frozenset[str], str] = {
     frozenset({"Task"}): "mvp_task",
     frozenset({"Activity", "Enrollment"}): "campus_activity",
+    frozenset({"Book", "Loan"}): "book_lending",
 }
 _GAP_PATCH_MODE = "agent_patch"
 

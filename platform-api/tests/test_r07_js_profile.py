@@ -24,7 +24,7 @@ from agentforge_platform.spec import (
 REPO = Path(__file__).resolve().parents[2]
 SAMPLE = REPO / "schemas" / "task-management.spec.json"
 TS_LOCK = REPO / "schemas" / "asset-lock.sample.json"
-JS_LOCK = REPO / "schemas" / "asset-lock.js.sample.json"
+JS_LOCK = REPO / "schemas" / "asset-lock.js-r27.sample.json"
 JS_PACK = REPO / "capability-packs" / "task-crud-frontend-js" / "0.1.0"
 
 
@@ -131,7 +131,7 @@ def test_js_frontend_pack_renders_plain_javascript() -> None:
 
 def test_legacy_ts_profile_and_lock_replay() -> None:
     committed = AssetLock.model_validate_json(TS_LOCK.read_text(encoding="utf-8"))
-    lock = resolve_assets(default_registry(), "demo-ts-mp")
+    lock = resolve_assets(default_registry(), "demo-ts-mp", pins={"task-crud-backend": "0.3.0"})
 
     assert lock.lock_hash == committed.lock_hash
     # 新增 JS 资产不改变 TS 组合（后端 0.1.3 仅兼容 demo-js-mp）

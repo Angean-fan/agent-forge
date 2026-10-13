@@ -23,6 +23,12 @@
       "profile_version": "0.1",
       "template_version": "demo-0.2-js-mb",
       "certified_at": "2026-10-12"
+    },
+    {
+      "profile_id": "demo-ts-mp",
+      "profile_version": "0.4",
+      "template_version": "demo-0.2",
+      "certified_at": "2026-10-13"
     }
   ]
 }

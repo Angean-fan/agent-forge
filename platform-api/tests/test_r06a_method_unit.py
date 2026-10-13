@@ -33,7 +33,7 @@ from agentforge_platform.resolver import (
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "asset-lock-0.1-baseline.json"
-SAMPLE_LOCK = REPO / "schemas" / "asset-lock.sample.json"
+SAMPLE_LOCK = REPO / "schemas" / "asset-lock.r27.sample.json"
 
 
 def _method_unit(**overrides) -> dict:

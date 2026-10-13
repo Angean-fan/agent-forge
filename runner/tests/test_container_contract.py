@@ -54,4 +54,6 @@ def test_command_is_fixed_argv_not_shell() -> None:
     assert "bash" not in argv
     assert "-c" not in argv
     image_index = argv.index(IMAGE)
-    assert argv[image_index + 1:] == ["mvn", "-B", "test"]
+    assert argv[image_index + 1:] == [
+        "mvn", "-B", "-o", "-Dmaven.repo.local=/opt/agentforge/maven-cache", "test"
+    ]

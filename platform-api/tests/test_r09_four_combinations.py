@@ -24,8 +24,8 @@ from agentforge_platform.spec import TechnicalProfile, is_supported_profile
 
 REPO = Path(__file__).resolve().parents[2]
 SAMPLES = {
-    "demo-ts-mp": REPO / "schemas" / "asset-lock.sample.json",
-    "demo-js-mp": REPO / "schemas" / "asset-lock.js.sample.json",
+    "demo-ts-mp": REPO / "schemas" / "asset-lock.r27.sample.json",
+    "demo-js-mp": REPO / "schemas" / "asset-lock.js-r27.sample.json",
     "demo-ts-mb": REPO / "schemas" / "asset-lock.mb.sample.json",
     "demo-js-mb": REPO / "schemas" / "asset-lock.js-mb.sample.json",
 }
@@ -68,6 +68,7 @@ def test_matrix_options_are_deterministic() -> None:
     assert len(options) == 4
     recommended = [o for o in options if o["recommended"]]
     assert len(recommended) == 1 and recommended[0]["profile_id"] == "demo-ts-mp"
+    assert recommended[0]["profile_version"] == "0.4"
     js_mb = next(o for o in options if o["profile_id"] == "demo-js-mb")
     assert js_mb["frontend_language"] == "javascript" and js_mb["orm"] == "mybatis"
     assert all(o["notes"] for o in options)
