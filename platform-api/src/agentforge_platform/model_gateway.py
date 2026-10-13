@@ -61,6 +61,7 @@ class Price:
     version: str
     input_micro_per_million: int
     output_micro_per_million: int
+    currency: str = "CNY"
 
 
 def _role_enabled(model_role: str) -> bool:
@@ -166,11 +167,13 @@ def price_table() -> dict[str, Price]:
         return {}
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     version = str(data.get("version", UNKNOWN))
+    default_currency = str(data.get("currency", "CNY")).upper()
     return {
         model: Price(
             version,
             int(entry["input_micro_per_million"]),
             int(entry["output_micro_per_million"]),
+            str(entry.get("currency", default_currency)).upper(),
         )
         for model, entry in data.get("models", {}).items()
     }
@@ -180,17 +183,78 @@ def lookup_price(model: str) -> Price | None:
     return price_table().get(model)
 
 
+# --------------------------------------------------------------------------- #
+# R20：跨币种共享预算——按**锁定汇率快照**折算为人民币微单位
+# --------------------------------------------------------------------------- #
+CNY = "CNY"
+_IDENTITY_RATE_MICRO = MICRO_PER_YUAN  # 1 CNY = 1_000_000 微
+
+
+@dataclass(frozen=True)
+class FxSnapshot:
+    version: str
+    rates_micro: dict[str, int]
+    captured_at: str | None = None
+
+
+def fx_snapshot() -> FxSnapshot | None:
+    """锁定汇率快照：``{"version","captured_at","rates":{"USD": 7200000}}``（1 USD = 7.2 CNY）。"""
+    path = os.environ.get("AGENTFORGE_FX_FILE")
+    if not path or not Path(path).is_file():
+        return None
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return FxSnapshot(
+        version=str(data.get("version", UNKNOWN)),
+        rates_micro={str(k).upper(): int(v) for k, v in data.get("rates", {}).items()},
+        captured_at=data.get("captured_at"),
+    )
+
+
+def fx_rate_micro(currency: str) -> tuple[int, str | None] | None:
+    """返回 ``(人民币微/1 单位外币, 快照时间)``；人民币恒为 1:1；未知币种/缺失快照返回 ``None``（不写零）。"""
+    currency = (currency or CNY).upper()
+    if currency == CNY:
+        return _IDENTITY_RATE_MICRO, None
+    snapshot = fx_snapshot()
+    if snapshot is None or currency not in snapshot.rates_micro:
+        return None
+    return snapshot.rates_micro[currency], snapshot.captured_at
+
+
 def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator)
 
 
+def _foreign_micro(price: Price, input_tokens: int, output_tokens: int) -> int:
+    """按定价币种计算的**外币**微单位金额。"""
+    return _ceil_div(input_tokens * price.input_micro_per_million, MICRO_PER_YUAN) + _ceil_div(
+        output_tokens * price.output_micro_per_million, MICRO_PER_YUAN
+    )
+
+
 def _reserve_micro(price: Price | None, max_input_tokens: int, max_output_tokens: int) -> int:
+    """预留统一折为**人民币微单位**：外币按锁定汇率快照折算；无价/无汇率 → 保守默认预留（不写零）。"""
     if price is None:
         return default_reserve_micro()
-    micro = _ceil_div(max_input_tokens * price.input_micro_per_million, 1_000_000) + _ceil_div(
-        max_output_tokens * price.output_micro_per_million, 1_000_000
-    )
-    return micro
+    foreign = _foreign_micro(price, max_input_tokens, max_output_tokens)
+    if price.currency == CNY:
+        return foreign
+    fx = fx_rate_micro(price.currency)
+    if fx is None:
+        return default_reserve_micro()
+    return _ceil_div(foreign * fx[0], MICRO_PER_YUAN)
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)  # 3.11+ 原生支持末尾 Z
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
 
 
 def _totals(db: Session, project_id: int) -> tuple[int, int]:
@@ -314,6 +378,7 @@ def reserve(
         thinking_mode=thinking_mode,
         reasoning_effort=reasoning_effort,
         price_version=price.version if price else UNKNOWN,
+        price_currency=price.currency if price else None,
         input_micro_per_million=price.input_micro_per_million if price else None,
         output_micro_per_million=price.output_micro_per_million if price else None,
         reserved_micro=reserve_micro,
@@ -351,10 +416,21 @@ def settle(
     if row.input_micro_per_million is None or row.output_micro_per_million is None:
         row.status = "UNKNOWN"
         row.cost_micro = None
+        row.updated_at = _now()
+        db.flush()
+        return row
+    foreign = _ceil_div(
+        usage.input_tokens * row.input_micro_per_million, MICRO_PER_YUAN
+    ) + _ceil_div(usage.output_tokens * row.output_micro_per_million, MICRO_PER_YUAN)
+    fx = fx_rate_micro(row.price_currency or CNY)
+    if fx is None:  # 未知汇率：暂停对账，保留 UNKNOWN，不写零
+        row.status = "UNKNOWN"
+        row.cost_micro = None
     else:
-        row.cost_micro = _ceil_div(
-            usage.input_tokens * row.input_micro_per_million, 1_000_000
-        ) + _ceil_div(usage.output_tokens * row.output_micro_per_million, 1_000_000)
+        rate_micro, captured_at = fx
+        row.cost_micro = _ceil_div(foreign * rate_micro, MICRO_PER_YUAN)
+        row.fx_rate_micro = rate_micro
+        row.fx_captured_at = _parse_dt(captured_at)
         row.status = "SETTLED"
     row.updated_at = _now()
     db.flush()

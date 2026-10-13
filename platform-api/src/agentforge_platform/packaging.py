@@ -15,7 +15,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agentforge_platform.contract import BusinessContract
@@ -150,39 +150,66 @@ def build_verification(
 
 
 def build_cost_report(db: Session, *, project_id: int, run_id: int) -> dict:
-    """如实列出生成前草稿（run_id 为空）与生成期（run_id）用量；缺失价格为 UNKNOWN。"""
+    """R20：分层如实报表——访谈期（生成前草稿）/ run 级（空 task）/ 各 task，并按模型/模式/强度/币种/定价版本/未知状态分列。"""
 
-    def bucket(*, by_run: int | None) -> dict:
-        scope = ModelCall.run_id == by_run if by_run is not None else ModelCall.run_id.is_(None)
-        calls, input_tokens, output_tokens = db.execute(
-            select(
-                func.count(ModelCall.call_id),
-                func.coalesce(func.sum(ModelCall.input_tokens), 0),
-                func.coalesce(func.sum(ModelCall.output_tokens), 0),
-            ).where(ModelCall.project_id == project_id, scope)
-        ).one()
-        settled = db.scalar(
-            select(func.coalesce(func.sum(ModelCall.cost_micro), 0)).where(
-                ModelCall.project_id == project_id, ModelCall.status == "SETTLED", scope
-            )
-        )
-        unknown = db.scalar(
-            select(func.count(ModelCall.call_id)).where(
-                ModelCall.project_id == project_id, ModelCall.status != "SETTLED", scope
-            )
-        )
+    def bucket(*, by_run: int | None, task_null: bool = False, task_id: str | None = None) -> dict:
+        conditions = [ModelCall.project_id == project_id]
+        conditions.append(ModelCall.run_id == by_run if by_run is not None else ModelCall.run_id.is_(None))
+        if task_null:
+            conditions.append(ModelCall.task_id.is_(None))
+        elif task_id is not None:
+            conditions.append(ModelCall.task_id == task_id)
+        rows = db.scalars(select(ModelCall).where(*conditions)).all()
+
+        by_model: dict[str, dict] = {}
+        input_tokens = output_tokens = settled = unknown = 0
+        for row in rows:
+            input_tokens += int(row.input_tokens or 0)
+            output_tokens += int(row.output_tokens or 0)
+            if row.status == "SETTLED":
+                settled += int(row.cost_micro or 0)
+            else:
+                unknown += 1
+            entry = by_model.setdefault(row.model, {
+                "provider": row.provider, "model_role": row.model_role,
+                "calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_micro": 0,
+                "unknown_calls": 0, "price_version": row.price_version,
+                "price_currency": row.price_currency, "modes": set(), "strengths": set(),
+            })
+            entry["calls"] += 1
+            entry["input_tokens"] += int(row.input_tokens or 0)
+            entry["output_tokens"] += int(row.output_tokens or 0)
+            if row.status == "SETTLED":
+                entry["cost_micro"] += int(row.cost_micro or 0)
+            else:
+                entry["unknown_calls"] += 1
+            entry["modes"].add(row.thinking_mode)
+            entry["strengths"].add(row.reasoning_effort)
+        for entry in by_model.values():
+            entry["modes"] = sorted(m for m in entry["modes"] if m)
+            entry["strengths"] = sorted(s for s in entry["strengths"] if s)
         return {
-            "calls": int(calls or 0),
-            "input_tokens": int(input_tokens or 0),
-            "output_tokens": int(output_tokens or 0),
-            "cost_micro": int(settled or 0),
-            "unknown_calls": int(unknown or 0),
+            "calls": len(rows),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_micro": settled,
+            "unknown_calls": unknown,
+            "by_model": by_model,
         }
 
+    run_rows = db.scalars(
+        select(ModelCall.task_id).where(ModelCall.project_id == project_id, ModelCall.run_id == run_id,
+                                        ModelCall.task_id.is_not(None))
+    ).all()
+    by_task = {task_id: bucket(by_run=run_id, task_id=task_id) for task_id in sorted(set(run_rows))}
+    draft = bucket(by_run=None)
     return {
         "currency_unit": "micro_yuan (1 元 = 1_000_000 微)",
-        "price_note": "缺核定价格时成本为 UNKNOWN 并保留预留，待 R20 跨币种/分层价目对账。",
-        "draft_phase": bucket(by_run=None),
+        "price_note": "非人民币定价按锁定汇率快照折算并记录时间；缺核定价格/汇率时成本为 UNKNOWN 并保留预留，不以估算冒充。",
+        "interview_phase": draft,   # 访谈/生成前草稿（run_id 为空）
+        "draft_phase": draft,       # 兼容旧键
+        "run_level": bucket(by_run=run_id, task_null=True),  # run 级（空 task，含规划/复核等）
+        "by_task": by_task,
         "generation_phase": bucket(by_run=run_id),
     }
 

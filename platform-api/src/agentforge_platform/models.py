@@ -191,6 +191,10 @@ class ModelCall(Base):
     reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     price_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # R20：定价币种 + 锁定汇率快照（折算为人民币微单位时记录；未知则不写零、保持 UNKNOWN）。
+    price_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    fx_rate_micro: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    fx_captured_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     input_micro_per_million: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     output_micro_per_million: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reserved_micro: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
