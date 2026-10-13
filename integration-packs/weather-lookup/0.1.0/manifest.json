@@ -1,0 +1,60 @@
+{
+  "id": "weather-lookup",
+  "version": "0.1.0",
+  "kind": "integration-pack",
+  "provider": "weather-service-demo",
+  "mode": "mock-only",
+  "compatible_profiles": [
+    "demo-ts-mp"
+  ],
+  "requires": [
+    "template:api-client"
+  ],
+  "provides": [
+    "weather_lookup"
+  ],
+  "conflicts": [],
+  "parameter_schema": {
+    "city": "string"
+  },
+  "extension_points": [],
+  "owned_paths": [
+    "src/main/java/com/agentforge/integration/weather/"
+  ],
+  "target_dir": "backend",
+  "ports": [
+    {
+      "name": "WeatherPort",
+      "methods": [
+        "WeatherForecast getForecast(String city)"
+      ]
+    }
+  ],
+  "adapters": [
+    {
+      "name": "MockWeatherAdapter",
+      "kind": "mock"
+    }
+  ],
+  "mock": {
+    "deterministic": true,
+    "scenarios": [
+      "success",
+      "unknown_city"
+    ]
+  },
+  "config": [
+    {
+      "env_name": "WEATHER_API_BASE_URL",
+      "required": false,
+      "secret": false,
+      "description": "Live 模式的第三方基站地址；mock-only 下无需配置，留待 E03/E05。"
+    }
+  ],
+  "checks": [
+    "mvn test"
+  ],
+  "checksum": "33c3656a075aecd9b3aa5c170221325b886451f7882a1c1f45dac0da32ed4f20",
+  "license": "internal",
+  "source_provenance": "internal:agentforge/integration-pack/weather-lookup@0.1.0"
+}

@@ -21,6 +21,7 @@ AI 软件项目生成平台（Demo / MVP 阶段）。目标：把中文自然语
 | `templates/` | 生成项目基础模板（版本化 `demo-0.1/`、`demo-0.2/`） | M09/M13/M15A ✅ |
 | `capability-packs/` | 可参数化业务能力包（版本化 `<id>/<version>/`） | M11–M15A ✅ |
 | `methods/` | 可复用方法单元仓库（`<id>/<semver>/`，含 manifest/src/tests）；FTS5 索引为派生视图（`.index/`，gitignore） | R06A/R06B ✅ |
+| `integration-packs/` | 第三方适配只读清单（`<id>/<version>/`，Mock-only：Port/Adapter/Mock/配置）；不进入生成默认注册表 | E01 ✅ |
 | `schemas/` | 规格/契约协议与样例（`*.spec.json`、`*.contract.json`、`asset-lock.sample.json`） | M06/M10/M14 ✅ |
 | `scripts/` | 平台基础回归门禁（`ci_gate.sh`）+ 备份/恢复（`backup.py`/`restore.py`） | M08A/M28 ✅ |
 | `deploy/` | 平台部署编排（compose + Dockerfile + nginx） | M28 ✅ |

@@ -25,11 +25,19 @@ from agentforge_platform.asset_registry import (
 from agentforge_platform.errors import AppException, ErrorCode
 
 LOCK_SCHEMA_VERSION = "0.1"
-# R06A：按 schema_version 指定**参与哈希**的字段白名单。旧 0.1 锁只哈希原字段集，
-# 显式排除 R06A 新增字段（method_units/index_*/selection_reason）的默认值，保证旧锁字节与哈希不变。
-# 未列入白名单的新版本（如 0.2）按“全部字段（除 lock_hash）”计算。
+# 按 schema_version 指定**参与哈希**的字段白名单。旧版本锁只哈希其发布时的字段集，
+# 显式排除后续新增字段（method_units/index_*/selection_reason/integration_packs）的默认值，
+# 保证旧锁字节与哈希不变；新版本锁（0.3）按自己的字段集计算。
 LOCK_HASH_FIELDS: dict[str, tuple[str, ...]] = {
     "0.1": ("schema_version", "profile", "mysql_image", "assets"),
+    "0.2": (
+        "schema_version", "profile", "mysql_image", "assets", "method_units",
+        "index_schema_version", "index_revision", "selection_reason",
+    ),
+    "0.3": (
+        "schema_version", "profile", "mysql_image", "assets", "integration_packs",
+        "selection_reason",
+    ),
 }
 _STRICT = ConfigDict(extra="forbid")
 
@@ -64,6 +72,8 @@ class AssetLock(BaseModel):
     index_schema_version: str | None = None
     index_revision: str | None = None
     selection_reason: str | None = None
+    # E01 新增（可选）：Integration Pack 锁；0.1/0.2 锁哈希白名单不含该字段（旧锁字节不变）。
+    integration_packs: list[LockedAsset] = []
 
 
 def _canonical(payload: object) -> str:

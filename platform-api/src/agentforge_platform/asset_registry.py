@@ -19,12 +19,15 @@ import re
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from agentforge_platform.errors import AppException, ErrorCode
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROOTS = (REPO_ROOT / "templates", REPO_ROOT / "capability-packs")
+# E01：Integration Pack（第三方适配清单）独立只读根；**不进入** ``DEFAULT_ROOTS``，
+# 以免改变生成链路的资产选择与既有 0.1 锁（显式请求时才由 Resolver 锁定）。
+DEFAULT_INTEGRATION_ROOT = REPO_ROOT / "integration-packs"
 _EXCLUDED_DIRS = {"node_modules", "target", "dist", "build", "__pycache__", ".git"}
 _MANIFEST_NAME = "manifest.json"
 _EXCLUDED_FILES = {_MANIFEST_NAME, ".DS_Store", "Thumbs.db"}
@@ -40,6 +43,14 @@ _SAFE_IMPORT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\Z")
 _SAFE_TECH_TOKEN = re.compile(r"[a-z0-9][a-z0-9+.\-]*\Z")
 
 _STRICT = ConfigDict(extra="forbid")
+
+# E01：Integration Pack 的发布约束。E01 只发布**无真实凭据的模拟服务**（Mock-only），
+# live/真实秘密留待 E04/E05；这里把"未审核/需真实密钥"的清单在 parse 阶段即拒。
+INTEGRATION_MOCK_ONLY = "mock-only"
+_ALLOWED_INTEGRATION_MODES = frozenset({INTEGRATION_MOCK_ONLY})
+_MOCK_ADAPTER_KINDS = frozenset({"mock"})
+_SAFE_PROVIDER = re.compile(r"[a-z0-9][a-z0-9._-]*\Z")
+_SAFE_ENV = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 
 def is_safe_owned_path(path: str) -> bool:
@@ -202,8 +213,154 @@ class MethodUnitManifest(_AssetBase):
         return value
 
 
+class IntegrationPort(BaseModel):
+    """业务侧只依赖的**内部 Port**（E02 将由此生成 Service 的依赖点）。"""
+
+    model_config = _STRICT
+
+    name: str
+    methods: list[str]
+
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str) -> str:
+        if _SAFE_SYMBOL.fullmatch(value) is None:
+            raise ValueError(f"不安全的 Port 名：{value!r}")
+        return value
+
+    @field_validator("methods")
+    @classmethod
+    def _declared_methods(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("Port 至少声明一个方法")
+        for method in value:
+            if not method.strip() or len(method) > 200 or "\n" in method:
+                raise ValueError(f"非法 Port 方法签名：{method!r}")
+        return value
+
+
+class IntegrationAdapter(BaseModel):
+    """Port 的第三方实现；E01 **仅允许 mock**（live/http 在 E04/E05 引入）。"""
+
+    model_config = _STRICT
+
+    name: str
+    kind: str
+
+    @field_validator("name")
+    @classmethod
+    def _safe_name(cls, value: str) -> str:
+        if _SAFE_SYMBOL.fullmatch(value) is None:
+            raise ValueError(f"不安全的 Adapter 名：{value!r}")
+        return value
+
+    @field_validator("kind")
+    @classmethod
+    def _mock_only(cls, value: str) -> str:
+        if value not in _MOCK_ADAPTER_KINDS:
+            raise ValueError(f"E01 仅允许 mock adapter，收到：{value!r}")
+        return value
+
+
+class MockBehavior(BaseModel):
+    """Mock 行为契约：E01 要求**确定性**，坏路径场景由 E02 的契约测试消费。"""
+
+    model_config = _STRICT
+
+    deterministic: bool
+    scenarios: list[str] = []
+
+
+class ExternalConfigItem(BaseModel):
+    """外部配置项（E01 仅声明；申请/校验细节归 E03）。``secret`` 与 ``required`` 独立。"""
+
+    model_config = _STRICT
+
+    env_name: str
+    required: bool = False
+    secret: bool = False
+    description: str = ""
+
+    @field_validator("env_name")
+    @classmethod
+    def _safe_env(cls, value: str) -> str:
+        if _SAFE_ENV.fullmatch(value) is None:
+            raise ValueError(f"不安全的配置变量名：{value!r}")
+        return value
+
+
+class IntegrationPackManifest(_AssetBase):
+    """E01：第三方适配只读清单——pack ID/版本/兼容 Profile/Port/Adapter/配置/Mock/checksum/许可证。
+
+    复用 :class:`_AssetBase` 的寻址与校验字段；额外声明 ``provider/mode/ports/adapters/mock/
+    config/source_provenance/target_dir``。**Mock-only**：E01 拒绝 live 模式、非 mock adapter、
+    模拟不可确定、以及"必需的真实秘密"，从源头保证无真实凭据。
+    """
+
+    provider: str
+    mode: str
+    ports: list[IntegrationPort]
+    adapters: list[IntegrationAdapter]
+    mock: MockBehavior
+    config: list[ExternalConfigItem] = []
+    source_provenance: str
+    target_dir: str = ""
+
+    @field_validator("provider")
+    @classmethod
+    def _safe_provider(cls, value: str) -> str:
+        if _SAFE_PROVIDER.fullmatch(value) is None:
+            raise ValueError(f"不安全的 provider 标识：{value!r}")
+        return value
+
+    @field_validator("source_provenance")
+    @classmethod
+    def _non_empty_provenance(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source_provenance（来源证明）不能为空")
+        return value
+
+    @field_validator("license")
+    @classmethod
+    def _clear_license(cls, value: str) -> str:
+        if value.strip().lower() in _FORBIDDEN_LICENSES:
+            raise ValueError(f"许可证/来源不明，拒绝发布：license={value!r}")
+        return value
+
+    @property
+    def effective_paths(self) -> list[str]:
+        """``target_dir/owned_path``：清单在工程内的实际落点（供路径冲突检测）。"""
+        return [
+            f"{self.target_dir}/{path}".strip("/") if self.target_dir else path
+            for path in self.owned_paths
+        ]
+
+    @model_validator(mode="after")
+    def _mock_only_constraints(self) -> IntegrationPackManifest:
+        if self.mode not in _ALLOWED_INTEGRATION_MODES:
+            raise ValueError(
+                f"E01 仅允许 mode='{INTEGRATION_MOCK_ONLY}'，收到：{self.mode!r}"
+            )
+        if not self.ports:
+            raise ValueError("Integration Pack 至少声明一个 Port")
+        if not self.adapters:
+            raise ValueError("Integration Pack 至少声明一个 Adapter")
+        if not self.mock.deterministic:
+            raise ValueError("Mock-only 清单必须声明确定性的 mock（deterministic=true）")
+        for item in self.config:
+            if item.secret and item.required:
+                raise ValueError(
+                    f"Mock-only 清单不得要求真实秘密：{item.env_name}"
+                )
+        return self
+
+
 # 注册表读接口可返回的 manifest 类型（按 kind 分支解析）。
-Manifest = AssetManifest | MethodUnitManifest
+Manifest = AssetManifest | MethodUnitManifest | IntegrationPackManifest
+_MODEL_BY_KIND: dict[str, type[Manifest]] = {
+    "method-unit": MethodUnitManifest,
+    "integration-pack": IntegrationPackManifest,
+}
 
 
 class AssetRegistry:
@@ -227,9 +384,7 @@ class AssetRegistry:
                 continue
             directory = Path(dirpath)
             payload = json.loads((directory / _MANIFEST_NAME).read_text(encoding="utf-8"))
-            model: type[Manifest] = (
-                MethodUnitManifest if payload.get("kind") == "method-unit" else AssetManifest
-            )
+            model: type[Manifest] = _MODEL_BY_KIND.get(payload.get("kind"), AssetManifest)
             manifest = model.model_validate(payload)
             self._assets[(manifest.kind, manifest.id, manifest.version)] = (manifest, directory)
 
@@ -356,8 +511,17 @@ def default_registry() -> AssetRegistry:
     return AssetRegistry(list(DEFAULT_ROOTS))
 
 
+# E01：覆盖模板/能力包/**集成包** 的注册表（生成默认注册表不含集成包，见 ``DEFAULT_INTEGRATION_ROOT``）。
+ALL_ROOTS = (*DEFAULT_ROOTS, DEFAULT_INTEGRATION_ROOT)
+
+
+def integration_registry() -> AssetRegistry:
+    """含 Integration Pack 只读根的注册表：复用同一寻址/校验机制，不另起检索系统。"""
+    return AssetRegistry(list(ALL_ROOTS))
+
+
 def _write_checksums() -> None:
-    registry = AssetRegistry(list(DEFAULT_ROOTS))
+    registry = AssetRegistry(list(ALL_ROOTS))
     for manifest, directory in registry.all_with_paths():
         manifest_path = directory / _MANIFEST_NAME
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -372,7 +536,7 @@ def main(argv: list[str]) -> int:
     if "--update" in argv:
         _write_checksums()
         return 0
-    registry = default_registry()
+    registry = integration_registry()
     for manifest in registry.all():
         print(f"{manifest.kind:16} {manifest.id}@{manifest.version} checksum={manifest.checksum[:12]}")
     return 0

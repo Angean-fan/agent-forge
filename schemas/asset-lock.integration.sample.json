@@ -1,0 +1,45 @@
+{
+  "schema_version": "0.3",
+  "profile": "demo-ts-mp",
+  "mysql_image": {
+    "reference": "mysql:8.0.43",
+    "digest": "sha256:3e646bcda0d9448ffa3d2024eef04e1bca95528ec19b9e8b76749da9d97d4a10"
+  },
+  "assets": [
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-backend",
+      "version": "0.4.0",
+      "checksum": "818d3b1c0d9c65243f0c710ddd122a6616da095010c7be009c63e6cac5591e41",
+      "path": "capability-packs/task-crud-backend/0.4.0"
+    },
+    {
+      "kind": "capability-pack",
+      "id": "task-crud-frontend",
+      "version": "0.2.0",
+      "checksum": "bb6e0267fa8f8f04a01262ca65d42b0aaec1dbea10aa34a321873dc5410673f9",
+      "path": "capability-packs/task-crud-frontend/0.2.0"
+    },
+    {
+      "kind": "template",
+      "id": "base-template",
+      "version": "demo-0.2",
+      "checksum": "5d3f60af606b202ee463de8c1d6877acdef984a3d4fa84b6cabf0178634ff2e9",
+      "path": "templates/demo-0.2"
+    }
+  ],
+  "lock_hash": "988e4e44a8a3e963a37879a6f58c0b8251d6e42eda5c2d21bdd7852a095544f6",
+  "method_units": [],
+  "index_schema_version": null,
+  "index_revision": null,
+  "selection_reason": "integration_packs=weather-lookup@0.1.0",
+  "integration_packs": [
+    {
+      "kind": "integration-pack",
+      "id": "weather-lookup",
+      "version": "0.1.0",
+      "checksum": "33c3656a075aecd9b3aa5c170221325b886451f7882a1c1f45dac0da32ed4f20",
+      "path": "integration-packs/weather-lookup/0.1.0"
+    }
+  ]
+}
