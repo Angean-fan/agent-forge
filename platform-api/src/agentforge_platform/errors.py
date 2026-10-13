@@ -58,6 +58,8 @@ class ErrorCode(StrEnum):
     RUN_TIMEOUT = "RUN_TIMEOUT"
     # E05：Live 验证前置未满足（缺配置/未声明允许域名端口/副作用未批准）→ 阻止启动。
     LIVE_NOT_READY = "LIVE_NOT_READY"
+    # E06：OpenAPI 规范/来源/允许域名/SDK/规模未通过校验 → 拒绝生成 Client。
+    OPENAPI_REJECTED = "OPENAPI_REJECTED"
 
 
 class AppException(Exception):
