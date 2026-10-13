@@ -64,6 +64,8 @@ class ErrorCode(StrEnum):
     INTEGRATION_PENDING = "INTEGRATION_PENDING"
     # E08：产物未通过全部代码必需验收（或运行中），不允许开启在线预览。
     PREVIEW_INELIGIBLE = "PREVIEW_INELIGIBLE"
+    # E09：源产物不是 AgentForge 自有产物（缺 spec.json / asset-lock.json），不支持迭代。
+    ITERATION_INELIGIBLE = "ITERATION_INELIGIBLE"
 
 
 class AppException(Exception):

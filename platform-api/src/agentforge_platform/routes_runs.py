@@ -17,6 +17,7 @@ from agentforge_platform.auth import get_current_account, require_csrf, require_
 from agentforge_platform.budget import effective_budget_micro, record_adjustment
 from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.iteration import artifact_eligibility, load_artifact, plan_iteration
 from agentforge_platform.live_validation import parse_live_services
 from agentforge_platform.middleware import get_request_id
 from agentforge_platform.models import Artifact, Project, Run, RunEvent, SpecVersion, Worker
@@ -67,8 +68,14 @@ from agentforge_platform.runs import (
     verification_report,
     work_root,
 )
-from agentforge_platform.spec import scope_issues
-from agentforge_platform.spec_service import load_spec, require_frozen_spec
+from agentforge_platform.spec import SoftwareSpecification, scope_issues
+from agentforge_platform.spec_service import (
+    confirm_draft,
+    latest_spec,
+    load_spec,
+    put_draft,
+    require_frozen_spec,
+)
 
 router = APIRouter(prefix="/api", tags=["runs"])
 _STRICT = ConfigDict(extra="forbid")
@@ -257,6 +264,30 @@ class PreviewView(BaseModel):
     created_at: str
     expires_at: str
     notice: str | None = None
+
+
+class IterationRequest(BaseModel):
+    """E09：既有项目的规格增量迭代——提交**已确认**的变更后规格与幂等键。"""
+
+    model_config = _STRICT
+
+    spec: dict
+    idempotency_key: str | None = None
+
+
+class IterationView(BaseModel):
+    """E09：迭代结果——新版本 spec/run 与最小变更计划（旧 run 不变）。"""
+
+    model_config = _STRICT
+
+    old_run_id: int
+    new_run_id: int
+    spec_id: int
+    spec_version: int
+    contract_changed: bool
+    relock_required: bool
+    reused_method_units: list[str]
+    notes: list[str]
 
 
 # R25：失败原因用**确定性模板**（不调用模型；需要用户解释时才另走 DeepSeek user_interaction 并计账）。
@@ -725,3 +756,59 @@ def open_preview(token: str) -> dict:
             return {"run_id": session.run_id, "status": session.status,
                     "runtime_attached": False, "notice": _PREVIEW_NOTICE}
     raise AppException(ErrorCode.NOT_FOUND, "预览地址无效或已过期。", status_code=404)
+
+
+@router.post("/runs/{run_id}/iterate", response_model=ApiResponse[IterationView], status_code=202)
+def iterate_run(
+    request: Request,
+    payload: IterationRequest,
+    run: Run = Depends(require_run_owner),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> ApiResponse[IterationView]:
+    """E09：为**已完成**的 AgentForge 产物做规格增量迭代——冻结新规格版本 + 新建 run。
+
+    旧 run / ZIP / 锁**不予原地修改**；契约改变 → ``relock_required``（显式重新检索/冻结新锁）。
+    """
+    if run.status != "SUCCEEDED":
+        raise AppException(ErrorCode.RUN_INVALID_TRANSITION, "仅已完成的运行可迭代。", status_code=409)
+    run_dir = work_root().resolve() / f"run-{run.id}"
+    issues = artifact_eligibility(run_dir)
+    if issues:
+        raise AppException(
+            ErrorCode.ITERATION_INELIGIBLE,
+            "不支持迭代：" + "；".join(issues) + "（起步仅支持 AgentForge 自有产物）",
+            status_code=422,
+        )
+
+    old_row = db.get(SpecVersion, run.spec_id)
+    old_spec = require_frozen_spec(old_row) if old_row is not None else None
+    if old_spec is None:
+        raise AppException(ErrorCode.SPEC_NOT_FOUND, "缺少源运行的冻结规格。", status_code=409)
+    _, old_lock = load_artifact(run_dir)
+
+    new_spec = SoftwareSpecification.model_validate(payload.spec)
+    scope = scope_issues(new_spec)
+    if scope:
+        raise AppException(ErrorCode.UNSUPPORTED_SCOPE, "超出 Demo 范围：" + "；".join(scope) + "。", status_code=422)
+
+    plan = plan_iteration(old_spec, old_lock, new_spec)
+
+    project = db.get(Project, run.project_id)
+    latest = latest_spec(db, project.id)
+    row = put_draft(db, project, expected_version=latest.version if latest else 0, spec=new_spec)
+    row = confirm_draft(db, project, expected_version=row.version)  # 冻结新规格版本
+    new_run = create_run(
+        db, project, row.id,
+        idempotency_key=payload.idempotency_key or f"iterate-{run.id}-v{row.version}",
+        spec_hash=row.hash,
+    )
+    append_event(db, new_run, "queued", "{}")
+    return ApiResponse(
+        request_id=get_request_id(request),
+        data=IterationView(
+            old_run_id=run.id, new_run_id=new_run.id, spec_id=row.id, spec_version=row.version,
+            contract_changed=plan.impact.contract_changed, relock_required=plan.relock_required,
+            reused_method_units=list(plan.reused_method_units), notes=list(plan.notes),
+        ),
+    )
