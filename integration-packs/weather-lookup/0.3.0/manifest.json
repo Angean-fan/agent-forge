@@ -1,0 +1,130 @@
+{
+  "id": "weather-lookup",
+  "version": "0.3.0",
+  "kind": "integration-pack",
+  "provider": "weather-service-demo",
+  "mode": "mock-only",
+  "compatible_profiles": [
+    "demo-ts-mp"
+  ],
+  "requires": [
+    "template:api-client"
+  ],
+  "provides": [
+    "weather_lookup"
+  ],
+  "conflicts": [],
+  "parameter_schema": {
+    "city": "string"
+  },
+  "extension_points": [],
+  "owned_paths": [
+    "src/main/java/com/agentforge/integration/",
+    "src/test/java/com/agentforge/integration/"
+  ],
+  "target_dir": "backend",
+  "ports": [
+    {
+      "name": "WeatherPort",
+      "methods": [
+        "WeatherForecast getForecast(String city)"
+      ]
+    }
+  ],
+  "adapters": [
+    {
+      "name": "MockWeatherAdapter",
+      "kind": "mock",
+      "implements": "WeatherPort"
+    },
+    {
+      "name": "HttpWeatherAdapter",
+      "kind": "stub",
+      "implements": "WeatherPort"
+    }
+  ],
+  "mock": {
+    "deterministic": true,
+    "scenarios": [
+      "success",
+      "failure",
+      "timeout"
+    ]
+  },
+  "config": [
+    {
+      "requirement_id": "app-id",
+      "name": "天气服务 AppID",
+      "kind": "app_id",
+      "secret": false,
+      "required": true,
+      "required_in_modes": [
+        "live"
+      ],
+      "env_name": "WEATHER_APP_ID",
+      "config_path": "weather.app-id",
+      "target_file": ".env.example",
+      "description": "第三方天气服务的应用标识；非秘密，可随代码提交。",
+      "acquisition_url": "https://console.example.invalid/weather/apps",
+      "acquisition_steps": [
+        "注册开发者账号",
+        "创建应用并复制 AppID"
+      ],
+      "validation_rule": "非空字符串；与第三方控制台一致",
+      "docs_verified_at": "2026-10-13"
+    },
+    {
+      "requirement_id": "base-url",
+      "name": "天气服务基站地址",
+      "kind": "base_url",
+      "secret": false,
+      "required": true,
+      "required_in_modes": [
+        "live"
+      ],
+      "env_name": "WEATHER_API_BASE_URL",
+      "config_path": "weather.base-url",
+      "target_file": ".env.example",
+      "description": "Live 模式下第三方天气服务基站地址；mock-only 下无需配置。",
+      "acquisition_url": "https://docs.example.invalid/weather/quickstart",
+      "acquisition_steps": [
+        "查阅服务文档获取基站域名"
+      ],
+      "validation_rule": "以 https:// 开头且指向允许域名",
+      "docs_verified_at": "2026-10-13"
+    },
+    {
+      "requirement_id": "api-key",
+      "name": "天气服务 API Key",
+      "kind": "secret_key",
+      "secret": true,
+      "required": true,
+      "required_in_modes": [
+        "live"
+      ],
+      "env_name": "WEATHER_API_KEY",
+      "config_path": "weather.api-key",
+      "target_file": ".env.example",
+      "description": "Live 模式访问第三方天气服务的密钥；mock-only 下无需，绝不入库。",
+      "acquisition_url": "https://console.example.invalid/weather/keys",
+      "acquisition_steps": [
+        "在控制台创建 API Key",
+        "复制并保存（仅显示一次）"
+      ],
+      "validation_rule": "非空字符串；不得出现在源码/日志/ZIP",
+      "docs_verified_at": "2026-10-13"
+    }
+  ],
+  "internal_types": [
+    "WeatherForecast"
+  ],
+  "contract_tests": [
+    "tests/java/com/agentforge/integration/weather/WeatherPortContractTest.java"
+  ],
+  "checks": [
+    "mvn test"
+  ],
+  "checksum": "5376dcbe98ec8253f1fa61b3788a480d14fa1efc06f7b34f1977c6926715d2bf",
+  "license": "internal",
+  "source_provenance": "internal:agentforge/integration-pack/weather-lookup@0.3.0"
+}

@@ -18,6 +18,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -48,6 +49,8 @@ _STRICT = ConfigDict(extra="forbid")
 # live/真实秘密留待 E04/E05；这里把"未审核/需真实密钥"的清单在 parse 阶段即拒。
 INTEGRATION_MOCK_ONLY = "mock-only"
 _ALLOWED_INTEGRATION_MODES = frozenset({INTEGRATION_MOCK_ONLY})
+# E03：外部待办的运行模式（Mock 不需要真实凭据；Live 需用户配置）。
+_INTEGRATION_MODES = frozenset({"mock", "live"})
 # E02：Adapter 有两类——`mock`（确定性测试行为）与 `stub`（实现真实第三方协议的适配器，
 # 经注入传输层确定性地跑，不持有真实凭据）。live/SDK 类仍拒（E04/E05 再引入）。
 _MOCK_ADAPTER_KIND = "mock"
@@ -289,7 +292,12 @@ class MockBehavior(BaseModel):
 
 
 class ExternalConfigItem(BaseModel):
-    """外部配置项（E01 仅声明；申请/校验细节归 E03）。``secret`` 与 ``required`` 独立。"""
+    """外部待办（E01 声明；E03 结构化）——用户需**申请/填写**的账号、标识、密钥、回调、白名单等。
+
+    ``secret`` 与 ``required`` **独立**；AppID/公钥不默认当秘密。``required_in_modes`` 指明在哪些
+    运行模式下必需（默认 mock+live）；``env_name`` 与 ``config_path`` 绑定代码配置（1:1）。
+    E01/E02 的极简写法（仅 ``env_name/required/secret/description``）仍可解析。
+    """
 
     model_config = _STRICT
 
@@ -297,12 +305,76 @@ class ExternalConfigItem(BaseModel):
     required: bool = False
     secret: bool = False
     description: str = ""
+    # E03 结构化字段（均可选；缺失即不生成对应指南段落）。
+    requirement_id: str = ""
+    name: str = ""
+    kind: str = "config"
+    required_in_modes: list[str] = ["mock", "live"]
+    config_path: str = ""
+    target_file: str = ".env.example"
+    acquisition_url: str = ""
+    acquisition_steps: list[str] = []
+    validation_rule: str = ""
+    docs_verified_at: str = ""
 
     @field_validator("env_name")
     @classmethod
     def _safe_env(cls, value: str) -> str:
         if _SAFE_ENV.fullmatch(value) is None:
             raise ValueError(f"不安全的配置变量名：{value!r}")
+        return value
+
+    @field_validator("requirement_id")
+    @classmethod
+    def _safe_requirement_id(cls, value: str) -> str:
+        if value and re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value) is None:
+            raise ValueError(f"不安全的 requirement_id：{value!r}")
+        return value
+
+    @field_validator("kind")
+    @classmethod
+    def _safe_kind(cls, value: str) -> str:
+        if re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", value) is None:
+            raise ValueError(f"不安全的 kind：{value!r}")
+        return value
+
+    @field_validator("required_in_modes")
+    @classmethod
+    def _known_modes(cls, value: list[str]) -> list[str]:
+        unknown = [mode for mode in value if mode not in _INTEGRATION_MODES]
+        if unknown:
+            raise ValueError(f"未知运行模式：{unknown}")
+        return list(dict.fromkeys(value))
+
+    @field_validator("config_path")
+    @classmethod
+    def _safe_config_path(cls, value: str) -> str:
+        if value and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*(\.[A-Za-z_][A-Za-z0-9_-]*)*", value) is None:
+            raise ValueError(f"不安全的 config_path：{value!r}")
+        return value
+
+    @field_validator("target_file")
+    @classmethod
+    def _safe_target_file(cls, value: str) -> str:
+        # 允许 dotfile（如 `.env.example`）；仍禁止绝对路径与目录穿越。
+        if (
+            not value
+            or value.startswith(("/", "~"))
+            or "\\" in value
+            or ".." in value.split("/")
+            or re.fullmatch(r"[A-Za-z0-9._][A-Za-z0-9._/-]*", value) is None
+        ):
+            raise ValueError(f"不安全的 target_file：{value!r}")
+        return value
+
+    @field_validator("acquisition_url")
+    @classmethod
+    def _safe_acquisition_url(cls, value: str) -> str:
+        if not value:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc or "@" in parsed.netloc:
+            raise ValueError(f"不安全的 acquisition_url（须为 http(s) 且不得内嵌凭据）：{value!r}")
         return value
 
 
@@ -386,9 +458,10 @@ class IntegrationPackManifest(_AssetBase):
         if not self.mock.deterministic:
             raise ValueError("Mock-only 清单必须声明确定性的 mock（deterministic=true）")
         for item in self.config:
-            if item.secret and item.required:
+            # E03：秘密/必需独立；只在"秘密且在 mock 模式下必需"时拒绝（live-only 秘密允许声明）。
+            if item.secret and item.required and "mock" in item.required_in_modes:
                 raise ValueError(
-                    f"Mock-only 清单不得要求真实秘密：{item.env_name}"
+                    f"Mock-only 清单不得在 mock 模式下要求真实秘密：{item.env_name}"
                 )
         return self
 

@@ -125,9 +125,12 @@ def test_port_contract_cases_cover_success_failure_timeout() -> None:
 
 def test_resolver_locks_contract_pack_and_reports_old_version_still_replays() -> None:
     registry = integration_registry()
+    published = [manifest.version for manifest in registry.all() if manifest.id == "weather-lookup"]
+    newest = max(published, key=lambda version: tuple(int(p) for p in version.split(".")))
+
     latest = resolve_integration_lock(registry, "demo-ts-mp", ["weather-lookup"])
     verify_lock_hash(latest)
-    assert [unit.version for unit in latest.integration_packs] == ["0.2.0"]
+    assert [unit.version for unit in latest.integration_packs] == [newest]
 
     old = resolve_integration_lock(registry, "demo-ts-mp", ["weather-lookup@0.1.0"])
     verify_lock_hash(old)
