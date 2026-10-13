@@ -302,6 +302,22 @@ def list_artifacts(db: Session, run_id: int) -> list[Artifact]:
     )
 
 
+def list_project_runs(db: Session, project_id: int, *, limit: int = 100) -> list[Run]:
+    """R25：项目运行历史（仅本 run 所属项目；归属由 require_project_owner 保证）。"""
+    return list(
+        db.scalars(
+            select(Run).where(Run.project_id == project_id).order_by(Run.id.desc()).limit(limit)
+        ).all()
+    )
+
+
+def find_artifact_by_id(db: Session, run_id: int, artifact_id: int) -> Artifact | None:
+    """R25：按 run_id + artifact_id 精确定位产物（双重校验，拒绝跨 run 访问他人产物）。"""
+    return db.scalars(
+        select(Artifact).where(Artifact.id == artifact_id, Artifact.run_id == run_id)
+    ).first()
+
+
 def task_counts(db: Session, run_id: int) -> tuple[int, int]:
     """返回 (任务总数, 已完成数)。"""
     total = db.scalar(

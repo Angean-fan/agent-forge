@@ -18,6 +18,7 @@ from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.middleware import get_request_id
 from agentforge_platform.models import Artifact, Project, Run, RunEvent, SpecVersion, Worker
+from agentforge_platform.packaging import build_cost_report
 from agentforge_platform.responses import ApiResponse
 from agentforge_platform.retention import ensure_run_storage_available
 from agentforge_platform.runs import (
@@ -27,10 +28,12 @@ from agentforge_platform.runs import (
     current_phase,
     events_after,
     find_artifact,
+    find_artifact_by_id,
     find_run_by_idempotency,
     is_worker_healthy,
     latest_sequence,
     list_artifacts,
+    list_project_runs,
     request_cancel,
     require_run_owner,
     resolve_artifact_path,
@@ -70,9 +73,11 @@ class RunView(BaseModel):
     id: int
     project_id: int
     spec_id: int
+    spec_version: int | None
     spec_hash: str | None
     status: str
     error_code: str | None
+    failure: str | None
     cancel_requested: bool
     lease_owner: str | None
     created_at: datetime
@@ -115,6 +120,18 @@ class CancellationView(BaseModel):
     notice: str | None = None
 
 
+class PackageView(BaseModel):
+    """R25：交付包状态（成功/失败包一致标注；失败包显著标“未验证”）。"""
+
+    model_config = _STRICT
+
+    available: bool
+    artifact_id: int | None
+    verified: bool
+    label: str
+    notice: str | None = None
+
+
 class RunDetailView(BaseModel):
     """运行详情：阶段、任务计数、成本（已结算/预留分列）、产物、验证报告与失败摘要。"""
 
@@ -123,10 +140,12 @@ class RunDetailView(BaseModel):
     id: int
     project_id: int
     spec_id: int
+    spec_version: int | None
     spec_hash: str | None
     status: str
     phase: str | None
     error_code: str | None
+    failure: str | None
     created_at: datetime
     updated_at: datetime
     tasks: TaskSummary
@@ -134,6 +153,7 @@ class RunDetailView(BaseModel):
     artifacts: list[ArtifactView]
     verification: dict | None = None
     cancellation: CancellationView | None = None
+    package: PackageView | None = None
 
 
 class RunEventView(BaseModel):
@@ -153,6 +173,13 @@ class RunEventsData(BaseModel):
     latest_sequence: int
 
 
+class RunHistoryData(BaseModel):
+    model_config = _STRICT
+
+    project_id: int
+    items: list[RunView]
+
+
 class WorkerView(BaseModel):
     model_config = _STRICT
 
@@ -168,14 +195,38 @@ class WorkerListData(BaseModel):
     items: list[WorkerView]
 
 
+# R25：失败原因用**确定性模板**（不调用模型；需要用户解释时才另走 DeepSeek user_interaction 并计账）。
+_FAILURE_MESSAGES = {
+    "VERIFICATION_FAILED": "构建或验收未通过，请查看验证报告中的未通过项。",
+    "INFRASTRUCTURE": "受控执行环境故障（基础设施），非代码问题。",
+    "RUN_TIMEOUT": "运行超过总时限被终止。",
+    "NEEDS_RECONCILIATION": "存在状态不明的模型调用，需先完成账单对账再重跑。",
+    "SPEC_TAMPERED": "冻结规格疑似被篡改，已拒绝继续。",
+    "SPEC_NOT_FOUND": "缺少已确认的冻结规格。",
+}
+
+
+def _failure_message(error_code: str | None) -> str | None:
+    if not error_code:
+        return None
+    return _FAILURE_MESSAGES.get(error_code, f"运行失败（{error_code}）。")
+
+
+def _spec_version(db: Session, run: Run) -> int | None:
+    row = db.get(SpecVersion, run.spec_id)
+    return row.version if row is not None else None
+
+
 def _run_view(db: Session, run: Run) -> RunView:
     return RunView(
         id=run.id,
         project_id=run.project_id,
         spec_id=run.spec_id,
+        spec_version=_spec_version(db, run),
         spec_hash=run_spec_hash(db, run),
         status=run.status,
         error_code=run.error_code,
+        failure=_failure_message(run.error_code),
         cancel_requested=run.cancel_requested,
         lease_owner=run.lease_owner,
         created_at=run.created_at,
@@ -202,6 +253,19 @@ def _artifact_view(artifact: Artifact) -> ArtifactView:
     )
 
 
+def _package_view(db: Session, run: Run) -> PackageView:
+    artifact = find_artifact(db, run.id, "zip")
+    if artifact is None:
+        return PackageView(available=False, artifact_id=None, verified=False, label="无产物")
+    report = verification_report(run.id) or {}
+    verified = bool(report.get("verified", artifact.verified))
+    return PackageView(
+        available=True, artifact_id=artifact.id, verified=verified,
+        label="已验证" if verified else "未验证",
+        notice=None if verified else "该交付包未通过全部必需检查，仅供排查，请以验证报告为准。",
+    )
+
+
 def _detail_view(db: Session, run: Run) -> RunDetailView:
     total, done = task_counts(db, run.id)
     cost = run_cost(db, run.id)
@@ -209,10 +273,12 @@ def _detail_view(db: Session, run: Run) -> RunDetailView:
         id=run.id,
         project_id=run.project_id,
         spec_id=run.spec_id,
+        spec_version=_spec_version(db, run),
         spec_hash=run_spec_hash(db, run),
         status=run.status,
         phase=current_phase(db, run.id),
         error_code=run.error_code,
+        failure=_failure_message(run.error_code),
         created_at=run.created_at,
         updated_at=run.updated_at,
         tasks=TaskSummary(total=total, done=done),
@@ -224,6 +290,7 @@ def _detail_view(db: Session, run: Run) -> RunDetailView:
             else None
         ),
         cancellation=_cancellation_view(run),
+        package=_package_view(db, run),
     )
 
 
@@ -286,6 +353,54 @@ def start_run(
     )
     append_event(db, run, "queued", "{}")
     return ApiResponse(request_id=get_request_id(request), data=_run_view(db, run))
+
+
+@router.get("/projects/{project_id}/runs", response_model=ApiResponse[RunHistoryData])
+def list_runs(
+    request: Request,
+    project: Project = Depends(require_project_owner),
+    db: Session = Depends(get_db),
+) -> ApiResponse[RunHistoryData]:
+    """R25：项目运行历史（仅归属者可见；含状态/失败原因/规格版本）。"""
+    return ApiResponse(
+        request_id=get_request_id(request),
+        data=RunHistoryData(
+            project_id=project.id, items=[_run_view(db, run) for run in list_project_runs(db, project.id)]
+        ),
+    )
+
+
+@router.get("/runs/{run_id}/cost", response_model=ApiResponse[dict])
+def get_run_cost(
+    request: Request,
+    run: Run = Depends(require_run_owner),
+    db: Session = Depends(get_db),
+) -> ApiResponse[dict]:
+    """R25：分层阶段成本（访谈期 / run 级 / 各 task / 按模型）；只读、归属校验。"""
+    return ApiResponse(
+        request_id=get_request_id(request),
+        data=build_cost_report(db, project_id=run.project_id, run_id=run.id),
+    )
+
+
+@router.get("/runs/{run_id}/artifacts/{artifact_id}")
+def download_artifact_by_id(
+    artifact_id: int,
+    run: Run = Depends(require_run_owner),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """R25：按 artifact_id 下载——严格校验归属（run 归属）与 artifact 属于该 run。"""
+    artifact = find_artifact_by_id(db, run.id, artifact_id)
+    if artifact is None:
+        raise AppException(ErrorCode.ARTIFACT_NOT_FOUND, "产物不存在或不属于该运行。", status_code=404)
+    path = resolve_artifact_path(work_root(), run.id, artifact)
+    if not path.is_file():
+        raise AppException(ErrorCode.ARTIFACT_NOT_FOUND, "产物文件不存在。", status_code=404)
+    headers = {"X-Artifact-Verified": "true" if artifact.verified else "false"}
+    if artifact.path.endswith(".zip"):
+        return FileResponse(path, media_type="application/zip",
+                            filename=f"agentforge-run-{run.id}.zip", headers=headers)
+    return FileResponse(path, filename=artifact.path, headers=headers)
 
 
 @router.get("/runs/{run_id}", response_model=ApiResponse[RunDetailView])
