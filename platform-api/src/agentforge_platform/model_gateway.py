@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from agentforge_platform.clients import Completion, ModelClient, ProviderPreflightError, Usage
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.limits import runtime_limits
 from agentforge_platform.models import ModelCall, Project, RunTask
 
 MICRO_PER_YUAN = 1_000_000
@@ -322,6 +323,28 @@ def _enforce_draft_limits(db: Session, project_id: int) -> None:
             )
 
 
+def _enforce_run_limits(db: Session, run_id: int, max_output_tokens: int) -> None:
+    """R21：生成期统一护栏——单次输出上限 + 全 run 模型调用次数（所有角色共用）。"""
+    limits = runtime_limits()
+    if max_output_tokens > limits.max_output_tokens_per_call:
+        raise AppException(
+            ErrorCode.OUTPUT_LIMIT_EXCEEDED,
+            f"单次输出超上限：{max_output_tokens} > {limits.max_output_tokens_per_call}",
+            status_code=422,
+        )
+    used = db.scalar(
+        select(func.count())
+        .select_from(ModelCall)
+        .where(ModelCall.run_id == run_id, ModelCall.status != "NOT_SENT")
+    )
+    if int(used or 0) >= limits.max_model_calls_per_run:
+        raise AppException(
+            ErrorCode.CALL_LIMIT_EXCEEDED,
+            f"全 run 模型调用超上限：{limits.max_model_calls_per_run}",
+            status_code=429,
+        )
+
+
 def _require_task_context(db: Session, run_id: int, task_id: str) -> None:
     """R13：任务内生成期调用必须携带属于该 run 的 ``task_id``（DAG 上下文），否则拒绝。"""
     exists = db.scalar(
@@ -359,6 +382,8 @@ def reserve(
         _require_task_context(db, run_id, task_id)
     if run_id is None:
         _enforce_draft_limits(db, project_id)
+    else:
+        _enforce_run_limits(db, run_id, max_output_tokens)
 
     price = lookup_price(route.model)
     reserve_micro = _reserve_micro(price, max_input_tokens, max_output_tokens)

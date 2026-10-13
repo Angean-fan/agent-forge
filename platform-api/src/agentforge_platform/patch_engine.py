@@ -49,6 +49,7 @@ from deepagents.backends.utils import (
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from langgraph.errors import GraphRecursionError
 from pydantic import ConfigDict, PrivateAttr
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -57,6 +58,7 @@ from agentforge_platform.agent_files import STAGING_DIRNAME, FileBackend
 from agentforge_platform.clients import ProviderPreflightError, Usage
 from agentforge_platform.db import session_scope
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.limits import runtime_limits
 
 DEFAULT_CODING_MODEL = "qwen3-coder-flash"
 DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -413,11 +415,20 @@ class PatchEngine:
     agent: Any
     tool_names: frozenset[str]
 
-    def run(self, task_prompt: str, *, recursion_limit: int = 40) -> dict[str, Any]:
-        result = self.agent.invoke(
-            {"messages": [{"role": "user", "content": task_prompt}]},
-            config={"recursion_limit": recursion_limit},
-        )
+    def run(self, task_prompt: str, *, recursion_limit: int | None = None) -> dict[str, Any]:
+        """一次受限 invoke。工具循环超过 R21 上限（每工具操作≈2 步）即中止并抛 ``TOOL_LIMIT_EXCEEDED``。"""
+        limit = recursion_limit if recursion_limit is not None else runtime_limits().agent_recursion_limit
+        try:
+            result = self.agent.invoke(
+                {"messages": [{"role": "user", "content": task_prompt}]},
+                config={"recursion_limit": limit},
+            )
+        except GraphRecursionError as exc:
+            raise AppException(
+                ErrorCode.TOOL_LIMIT_EXCEEDED,
+                f"Agent 工具循环超过上限（recursion_limit={limit}）",
+                status_code=429,
+            ) from exc
         return {
             "messages": result.get("messages", []),
             "change_set": self.backend._fb.build_change_set().to_dict(),

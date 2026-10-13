@@ -12,6 +12,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
+from agentforge_platform.limits import model_timeout_seconds
+
 
 @dataclass(frozen=True)
 class Usage:
@@ -54,6 +56,11 @@ class DeepSeekClient:
         self._api_key_env = api_key_env
         self._base_url = base_url.rstrip("/")
 
+    @property
+    def timeout_seconds(self) -> int:
+        """R21：模型等待时限（默认 120s，可经 AGENTFORGE_MODEL_TIMEOUT_SECONDS 调整）。"""
+        return model_timeout_seconds()
+
     def complete(
         self,
         *,
@@ -93,7 +100,7 @@ class DeepSeekClient:
         request.add_header("Content-Type", "application/json")
         request.add_header("Authorization", f"Bearer {api_key}")
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
                 request_id = response.headers.get("x-request-id") or body.get("id")
         except urllib.error.HTTPError as error:

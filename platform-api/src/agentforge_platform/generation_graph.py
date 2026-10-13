@@ -19,8 +19,9 @@ resolve_gaps → review → package_or_fail`，由 worker 驱动。
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -41,6 +42,7 @@ from agentforge_platform.coverage import CoverageGap, analyze_coverage
 from agentforge_platform.db import session_scope
 from agentforge_platform.errors import AppException
 from agentforge_platform.gap_patch import resolve_gaps
+from agentforge_platform.limits import runtime_limits
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.method_lock import resolve_lock
 from agentforge_platform.models import Project, Run, RunTask, SpecVersion
@@ -126,6 +128,8 @@ class GenerationContext:
     repair_engine_factory: Callable[[str, list[str], str], tuple[Any, FileBackend]] | None = None
     # R19：可选技术语义审查客户端（默认 None → 不审查；需 technical_planning 角色开启）。
     review_client: ModelClient | None = None
+    # R21：运行总时限（单调时钟截止点）；由 run_generation 设置，节点边界检查超时。
+    deadline_monotonic: float | None = None
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
@@ -137,6 +141,12 @@ def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
     if RunStatus(run.status) is not expected:
         raise GenerationError("RUN_INVALID_TRANSITION", f"期望 {expected}，实为 {run.status}")
     return run
+
+
+def _check_deadline(context: GenerationContext) -> None:
+    """R21：运行总时限在**节点边界**检查；超时抛 RUN_TIMEOUT（避免无限占用 Runner）。"""
+    if context.deadline_monotonic is not None and time.monotonic() > context.deadline_monotonic:
+        raise GenerationError("RUN_TIMEOUT", "运行超过总时限")
 
 
 def _verify_error_code(verification: dict, acceptance: dict) -> str:
@@ -584,16 +594,24 @@ def build_graph(context: GenerationContext):
             return {"ok": False, "error_code": code}
 
     graph = StateGraph(GenerationState)
-    graph.add_node("load_confirmed_spec", load_confirmed_spec)
-    graph.add_node("resolve_assets", resolve_assets_node)
-    graph.add_node("plan_tasks", plan_tasks_node)
-    graph.add_node("assemble", assemble_node)
-    graph.add_node("verify", verify_node)
-    graph.add_node("repair", repair_node)
-    graph.add_node("check_coverage", check_coverage_node)
-    graph.add_node("resolve_gaps", resolve_gaps_node)
-    graph.add_node("review", review_node)
-    graph.add_node("package_or_fail", package_or_fail)
+
+    def guarded(node):
+        def _wrapped(state: GenerationState) -> GenerationState:
+            _check_deadline(context)  # R21：每个节点入口检查运行总时限
+            return node(state)
+
+        return _wrapped
+
+    graph.add_node("load_confirmed_spec", guarded(load_confirmed_spec))
+    graph.add_node("resolve_assets", guarded(resolve_assets_node))
+    graph.add_node("plan_tasks", guarded(plan_tasks_node))
+    graph.add_node("assemble", guarded(assemble_node))
+    graph.add_node("verify", guarded(verify_node))
+    graph.add_node("repair", guarded(repair_node))
+    graph.add_node("check_coverage", guarded(check_coverage_node))
+    graph.add_node("resolve_gaps", guarded(resolve_gaps_node))
+    graph.add_node("review", guarded(review_node))
+    graph.add_node("package_or_fail", guarded(package_or_fail))
     graph.add_edge(START, "load_confirmed_spec")
     graph.add_edge("load_confirmed_spec", "resolve_assets")
     graph.add_edge("resolve_assets", "plan_tasks")
@@ -608,8 +626,22 @@ def build_graph(context: GenerationContext):
     return graph.compile()
 
 
+def _cleanup_runner(context: GenerationContext, run_id: int) -> None:
+    """R21：运行超时后**尽力**触发 Runner 清理（客户端可选实现 ``cleanup``）。"""
+    cleanup = getattr(context.runner, "cleanup", None)
+    if cleanup is None:
+        return
+    try:
+        cleanup(run_directory(context.work_root, run_id).name)
+    except Exception:  # noqa: BLE001  # 清理失败不影响失败落库与账本
+        return
+
+
 def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
     """worker 处理入口：QUEUED→PLANNING 后驱动生成图；异常落 FAILED 并留事件。"""
+    context = replace(
+        context, deadline_monotonic=time.monotonic() + runtime_limits().run_timeout_seconds
+    )
     with session_scope(context.session_factory) as db:
         run = db.get(Run, run_id)
         if run is None:
@@ -621,6 +653,8 @@ def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
         return build_graph(context).invoke({"run_id": run_id})
     except Exception as exc:  # noqa: BLE001  # 兜底落 FAILED，避免未捕获异常造成假成功
         code = getattr(exc, "code", None) or type(exc).__name__
+        if code == "RUN_TIMEOUT":
+            _cleanup_runner(context, run_id)
         with session_scope(context.session_factory) as db:
             run = db.get(Run, run_id)
             if run is not None and RunStatus(run.status) not in (
