@@ -29,7 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentforge_platform.agent_files import FileBackend
-from agentforge_platform.assembler import assemble
+from agentforge_platform.assembler import assemble, manifest_hash_of
 from agentforge_platform.asset_finder import (
     AssetSearchResult,
     derive_capability_query,
@@ -69,13 +69,15 @@ from agentforge_platform.review import (
 )
 from agentforge_platform.runner_client import RunnerClient
 from agentforge_platform.runs import (
+    RECOVERABLE_STATUSES,
     TERMINAL_STATUSES,
     RunStatus,
     append_event,
     record_artifact,
-    record_task,
+    record_task_once,
     run_directory,
     transition,
+    unsettled_call_count,
 )
 from agentforge_platform.spec import SoftwareSpecification
 from agentforge_platform.spec_service import require_frozen_spec
@@ -131,6 +133,8 @@ class GenerationContext:
     review_client: ModelClient | None = None
     # R21：运行总时限（单调时钟截止点）；由 run_generation 设置，节点边界检查超时。
     deadline_monotonic: float | None = None
+    # R23：LangGraph checkpointer（默认 None → 无检查点持久化）。检查点存于状态，**不含密钥**。
+    checkpointer: Any | None = None
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
@@ -184,7 +188,7 @@ def build_graph(context: GenerationContext):
                     "SPEC_TAMPERED", "冻结规格 hash 与运行时记录不一致（疑似被篡改）"
                 )
             contract = compile_from_spec(spec)
-            record_task(db, run, "load_confirmed_spec", status="DONE")
+            record_task_once(db, run, "load_confirmed_spec", status="DONE")
             append_event(
                 db, run, "stage",
                 json.dumps({"stage": "load_confirmed_spec", "spec_hash": spec_row.hash}),
@@ -200,11 +204,16 @@ def build_graph(context: GenerationContext):
 
     def resolve_assets_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
-        # R06D：先在 MVP 路径锁定模板/能力包；规格显式请求的预审核方法经 Finder 筛选后并入（锁升 0.2）。
-        lock = resolve_lock(
-            context.registry, state["profile"], state["spec"], state["contract"],
-            methods_root_path=context.methods_root,
-        )
+        # R23：恢复时**复用已持久化的 asset-lock**，不因 FTS5 索引变化而重新选取方法单元。
+        persisted_lock = run_directory(context.work_root, run_id) / "asset-lock.json"
+        if persisted_lock.is_file():
+            lock = AssetLock.model_validate_json(persisted_lock.read_text(encoding="utf-8"))
+        else:
+            # R06D：先在 MVP 路径锁定模板/能力包；规格显式请求的预审核方法经 Finder 筛选后并入（锁升 0.2）。
+            lock = resolve_lock(
+                context.registry, state["profile"], state["spec"], state["contract"],
+                methods_root_path=context.methods_root,
+            )
         # R12：记录 Finder 审计（候选方法 / 复用方法 ID+版本 / 未覆盖规则），随 run 报告留痕。
         search = find_assets(
             derive_capability_query(state["spec"], state["contract"]),
@@ -222,7 +231,7 @@ def build_graph(context: GenerationContext):
         }
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.PLANNING)
-            record_task(db, run, "resolve_assets", status="DONE")
+            record_task_once(db, run, "resolve_assets", status="DONE")
             append_event(
                 db, run, "stage",
                 json.dumps({"stage": "resolve_assets", "lock_hash": lock.lock_hash}),
@@ -239,6 +248,10 @@ def build_graph(context: GenerationContext):
 
     def plan_tasks_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
+        plan_file = run_directory(context.work_root, run_id) / "task-plan.json"
+        if plan_file.is_file():
+            # R23：恢复时复用已持久化的计划，**不重复调用技术规划模型**。
+            return {"task_plan": json.loads(plan_file.read_text(encoding="utf-8"))}
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.PLANNING)
             project = db.get(Project, run.project_id)
@@ -248,14 +261,16 @@ def build_graph(context: GenerationContext):
                 state["search_result"], state["lock"],
                 run_id=run_id, client=context.planning_client,
             )
-            record_task(db, run, "plan_tasks", status="DONE")
+            record_task_once(db, run, "plan_tasks", status="DONE")
             append_event(db, run, "task_plan", json.dumps({
                 "execution_mode": plan.execution_mode,
                 "task_ids": [task.task_id for task in plan.tasks],
                 "uncovered_acceptance_ids": plan.uncovered_acceptance_ids,
                 "fallback_reasons": fallback_reasons,
             }))
-        return {"task_plan": plan.model_dump(mode="json")}
+        payload = plan.model_dump(mode="json")
+        plan_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return {"task_plan": payload}
 
     def assemble_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
@@ -263,19 +278,33 @@ def build_graph(context: GenerationContext):
             run = _require_active(db, run_id, RunStatus.PLANNING)
             transition(db, run, RunStatus.GENERATING)
         target = run_directory(context.work_root, run_id)
-        result = assemble(
-            state["contract"], state["lock"], context.registry, target,
-            spec=state["spec"], methods_root=context.methods_root,
+        staging_left = target.with_name(f"{target.name}.staging")
+        # R23：已完成装配（有 asset-lock.json/spec.json 且无半成品暂存）→ 跳过，**不覆盖既有产物**。
+        already = (
+            (target / "asset-lock.json").is_file()
+            and (target / "spec.json").is_file()
+            and not staging_left.exists()
         )
+        if already:
+            manifest_hash = manifest_hash_of(target)
+        else:
+            result = assemble(
+                state["contract"], state["lock"], context.registry, target,
+                spec=state["spec"], methods_root=context.methods_root,
+            )
+            manifest_hash = result.manifest_hash
+            with session_scope(context.session_factory) as db:
+                run = _require_active(db, run_id, RunStatus.GENERATING)
+                record_artifact(db, run, ".", manifest_hash, "source_tree")
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.GENERATING)
-            record_task(db, run, "assemble", status="DONE")
-            record_artifact(db, run, ".", result.manifest_hash, "source_tree")
+            record_task_once(db, run, "assemble", status="DONE")
             append_event(
                 db, run, "stage",
-                json.dumps({"stage": "assemble", "manifest_hash": result.manifest_hash}),
+                json.dumps({"stage": "assemble", "manifest_hash": manifest_hash,
+                            "reused": already}),
             )
-        return {"artifact_dir": target.name, "manifest_hash": result.manifest_hash}
+        return {"artifact_dir": target.name, "manifest_hash": manifest_hash}
 
     def verify_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
@@ -287,7 +316,7 @@ def build_graph(context: GenerationContext):
         passed = verification_passed(verification, acceptance)
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.VERIFYING)
-            record_task(db, run, "verify", status="DONE")
+            record_task_once(db, run, "verify", status="DONE")
             append_event(
                 db, run, "verification",
                 json.dumps({"verify": verification.get("overall"),
@@ -339,7 +368,7 @@ def build_graph(context: GenerationContext):
                 .one_or_none()
             )
             if row is None:
-                row = record_task(db, run, "repair:verify", status="PENDING")
+                row = record_task_once(db, run, "repair:verify", status="PENDING")
             row.attempt = run_used + outcome.attempts
             row.status = "DONE" if outcome.passed else "FAILED"
             append_event(db, run, "repair", json.dumps({
@@ -370,9 +399,9 @@ def build_graph(context: GenerationContext):
         )
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.VERIFYING)
-            record_task(db, run, "check_coverage", status="DONE")
+            record_task_once(db, run, "check_coverage", status="DONE")
             for gap in report.gaps:  # 仅对真实缺口登记 AGENT_PATCH 任务（本步不执行）
-                record_task(db, run, gap.task_id, status="PENDING")
+                record_task_once(db, run, gap.task_id, status="PENDING")
             append_event(db, run, "coverage", json.dumps({
                 "mainline": report.mainline,
                 "acceptance_passed": report.acceptance_passed,
@@ -506,7 +535,7 @@ def build_graph(context: GenerationContext):
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.VERIFYING)
             for task in tasks:  # 仅登记为 PENDING 修复任务，不在本步执行、不改冻结规格/固定测试
-                record_task(db, run, task["task_id"], status="PENDING")
+                record_task_once(db, run, task["task_id"], status="PENDING")
             append_event(db, run, "review", json.dumps({
                 "invoked": result.invoked, "findings": len(result.findings),
                 "tasks": [task["task_id"] for task in tasks], "error": result.error,
@@ -519,6 +548,17 @@ def build_graph(context: GenerationContext):
         acceptance = state["acceptance"]
         ok = verification_passed(verification, acceptance)
         run_dir = run_directory(context.work_root, run_id)
+        if (run_dir / "source.zip").is_file():
+            # R23：已打包（崩溃恢复续跑）→ 不重复打包/不覆盖既有产物；仅按当前复验结果落终态。
+            with session_scope(context.session_factory) as db:
+                run = _require_active(db, run_id, RunStatus.VERIFYING)
+                if ok:
+                    transition(db, run, RunStatus.SUCCEEDED)
+                else:
+                    transition(db, run, RunStatus.FAILED,
+                               error_code=_verify_error_code(verification, acceptance))
+                append_event(db, run, "recovered", json.dumps({"skip": "package"}))
+            return {"ok": ok, "error_code": "" if ok else _verify_error_code(verification, acceptance)}
 
         # R12：Finder 审计随交付包留痕（候选方法 / 复用方法 ID+版本 / 未覆盖规则）。
         audit = state.get("asset_search")
@@ -633,6 +673,8 @@ def build_graph(context: GenerationContext):
     graph.add_edge("resolve_gaps", "review")
     graph.add_edge("review", "package_or_fail")
     graph.add_edge("package_or_fail", END)
+    if context.checkpointer is not None:
+        return graph.compile(checkpointer=context.checkpointer)  # R23：检查点持久化（不含密钥）
     return graph.compile()
 
 
@@ -661,11 +703,27 @@ def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
                 transition(db, run, RunStatus.CANCELLED)
                 append_event(db, run, "cancelled", json.dumps({"stage": "pre_claim"}))
             return {"run_id": run_id, "ok": False, "error_code": "RUN_CANCELLED"}
-        transition(db, run, RunStatus.PLANNING)
-        append_event(db, run, "claimed", "{}")
+        recovering = RunStatus(run.status) in RECOVERABLE_STATUSES
+        if recovering:
+            # R23：崩溃恢复——状态不明（RESERVED/UNKNOWN）的模型调用须人工/账单对账，**不盲目重发**。
+            if unsettled_call_count(db, run_id) > 0:
+                transition(db, run, RunStatus.FAILED, error_code="NEEDS_RECONCILIATION")
+                append_event(db, run, "failed", json.dumps({
+                    "code": "NEEDS_RECONCILIATION", "stage": "recover",
+                }))
+                return {"run_id": run_id, "ok": False, "error_code": "NEEDS_RECONCILIATION"}
+            # 回退到 PLANNING 以**节点幂等**重放：已提交任务（锁/装配/计划）复用、不重做、不覆盖。
+            previous = str(run.status)
+            run.status = RunStatus.PLANNING
+            db.flush()
+            append_event(db, run, "recovered", json.dumps({"from": previous}))
+        else:
+            transition(db, run, RunStatus.PLANNING)
+            append_event(db, run, "claimed", "{}")
 
+    config = {"configurable": {"thread_id": f"generation:{run_id}"}} if context.checkpointer else None
     try:
-        return build_graph(context).invoke({"run_id": run_id})
+        return build_graph(context).invoke({"run_id": run_id}, config=config)
     except Exception as exc:  # noqa: BLE001  # 兜底落终态，避免未捕获异常造成假成功
         code = getattr(exc, "code", None) or type(exc).__name__
         if code in ("RUN_TIMEOUT", "RUN_CANCELLED"):

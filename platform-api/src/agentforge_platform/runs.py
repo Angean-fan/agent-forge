@@ -47,6 +47,8 @@ class RunStatus(StrEnum):
 
 
 TERMINAL_STATUSES = frozenset({RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED})
+# R23：崩溃后可由新 worker 接管的在途状态（租约过期时）。
+RECOVERABLE_STATUSES = frozenset({RunStatus.PLANNING, RunStatus.GENERATING, RunStatus.VERIFYING})
 
 ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     RunStatus.QUEUED: {RunStatus.PLANNING, RunStatus.CANCELLED},
@@ -98,25 +100,51 @@ def run_spec_hash(db: Session, run: Run) -> str | None:
     return row.hash if row is not None else None
 
 
-def claim_run(db: Session, worker_id: str, *, lease_seconds: int = 60) -> Run | None:
-    """事务领取一个 QUEUED 且租约空闲/过期的 run；原子更新防双领。租约比较以数据库时间为准。"""
+def _claimable(db: Session, *, include_recovery: bool) -> int | None:
+    """返回一个可领取的 run id：优先 QUEUED（未请求取消），其次在途但租约已过期的 run（R23 接管）。"""
+    queued = db.scalars(
+        select(Run.id)
+        .where(Run.status == RunStatus.QUEUED)
+        .where(Run.cancel_requested.is_(False))
+        .where(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
+        .order_by(Run.id)
+        .limit(1)
+    ).first()
+    if queued is not None or not include_recovery:
+        return queued
+    return db.scalars(
+        select(Run.id)
+        .where(Run.status.in_([status.value for status in RECOVERABLE_STATUSES]))
+        .where(Run.cancel_requested.is_(False))
+        .where(Run.lease_until.is_not(None))
+        .where(Run.lease_until <= func.now())  # 崩溃 worker 的租约已过期
+        .order_by(Run.id)
+        .limit(1)
+    ).first()
+
+
+def claim_run(
+    db: Session, worker_id: str, *, lease_seconds: int = 60, include_recovery: bool = True
+) -> Run | None:
+    """事务领取一个 run；原子更新防双领。租约比较以数据库时间为准。
+
+    R23：除 QUEUED 外，还接管**在途但租约已过期**的 run（崩溃恢复），交由处理器按当前阶段续跑。
+    """
     for _ in range(_CLAIM_ATTEMPTS):
-        run_id = db.scalars(
-            select(Run.id)
-            .where(Run.status == RunStatus.QUEUED)
-            .where(Run.cancel_requested.is_(False))  # R22：已请求取消的 run 不再派发
-            .where(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
-            .order_by(Run.id)
-            .limit(1)
-        ).first()
+        run_id = _claimable(db, include_recovery=include_recovery)
         if run_id is None:
             return None
+        run = db.get(Run, run_id)
+        status = RunStatus(run.status)
+        conditions = [Run.id == run_id, Run.status == run.status, Run.cancel_requested.is_(False)]
+        if status is RunStatus.QUEUED:
+            conditions.append(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
+        else:
+            conditions.append(Run.lease_until.is_not(None))
+            conditions.append(Run.lease_until <= func.now())
         result = db.execute(
             update(Run)
-            .where(Run.id == run_id)
-            .where(Run.status == RunStatus.QUEUED)
-            .where(Run.cancel_requested.is_(False))
-            .where(or_(Run.lease_until.is_(None), Run.lease_until <= func.now()))
+            .where(*conditions)
             .values(lease_owner=worker_id, lease_until=_now() + timedelta(seconds=lease_seconds))
         )
         if result.rowcount == 1:
@@ -151,6 +179,18 @@ def is_worker_healthy(
     reference = now or _now()
     threshold = worker_heartbeat_timeout() if threshold_seconds is None else threshold_seconds
     return (reference - last_heartbeat) <= timedelta(seconds=threshold)
+
+
+def unsettled_call_count(db: Session, run_id: int) -> int:
+    """R23：本 run 中状态不明（RESERVED/UNKNOWN）的模型调用数；恢复时据此拒绝对账、不盲目重发。"""
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(ModelCall)
+            .where(ModelCall.run_id == run_id, ModelCall.status.in_(["RESERVED", "UNKNOWN"]))
+        )
+        or 0
+    )
 
 
 def request_cancel(db: Session, run: Run) -> Run:
@@ -196,6 +236,19 @@ def record_task(db: Session, run: Run, task_id: str, *, status: str = "PENDING")
     db.add(task)
     db.flush()
     return task
+
+
+def record_task_once(db: Session, run: Run, task_id: str, *, status: str = "PENDING") -> RunTask:
+    """R23：幂等登记任务（同一 run+task_id 只一行；恢复重放不重复插入/不违反唯一约束）。"""
+    row = db.scalars(
+        select(RunTask).where(RunTask.run_id == run.id, RunTask.task_id == task_id)
+    ).first()
+    if row is not None:
+        if status:
+            row.status = status
+        db.flush()
+        return row
+    return record_task(db, run, task_id, status=status)
 
 
 def record_artifact(

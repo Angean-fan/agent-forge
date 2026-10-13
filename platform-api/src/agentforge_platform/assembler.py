@@ -295,6 +295,11 @@ def assemble(
     )
 
 
+def manifest_hash_of(directory: str | Path) -> str:
+    """已有装配目录的清单哈希（R23 恢复时复用，不重建）。"""
+    return _manifest_hash(_collect_manifest(Path(directory)))
+
+
 def assemble_from_spec(spec: SoftwareSpecification, output_dir: str | Path) -> AssemblyResult:
     registry = default_registry()
     # 资产兼容性按 profile_id 匹配；具体 profile_version 由 spec 固定。
