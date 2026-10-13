@@ -1,9 +1,13 @@
 """M23 LangGraph 固定生成图。
 
-`load_confirmed_spec → resolve_assets → assemble → verify → package_or_fail`，由 worker 驱动。
+`load_confirmed_spec → resolve_assets → plan_tasks → assemble → verify → check_coverage →
+resolve_gaps → package_or_fail`，由 worker 驱动。
 
 - 生成图**只接收已确认的** `spec_id/spec_hash`，不读取原始聊天、不重新解释需求；
-- 不引入 DeepAgent / Qwen 技术规划 / 自动修复 / 并行节点；
+- R13 可选技术规划（`planning_client`）、R17 可选缺口局部 Patch（`gap_engine_factory`）**默认关闭**：
+  未注入时保持确定性转换与既有行为，不调用任何外部模型；
+- R17 `resolve_gaps` 对真实缺口「装配优先、缺口局部 Patch」：无缺口时不启动 Agent、无副作用；
+  有变更（复用装配或受限 Patch）后**必须重新验证并重算覆盖**，交付包只反映最后一次验证；
 - 数据库为权威状态，节点入口检查运行有效性，记录 task、事件与阶段结果；
 - **未通过全部必需检查不得进入 SUCCEEDED**（package_or_fail 决定终态）。
 """
@@ -11,13 +15,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session, sessionmaker
 
+from agentforge_platform.agent_files import FileBackend
 from agentforge_platform.assembler import assemble
 from agentforge_platform.asset_finder import (
     AssetSearchResult,
@@ -27,12 +33,13 @@ from agentforge_platform.asset_finder import (
 from agentforge_platform.asset_registry import AssetRegistry, default_registry
 from agentforge_platform.clients import ModelClient
 from agentforge_platform.contract import BusinessContract, compile_from_spec
-from agentforge_platform.coverage import analyze_coverage
+from agentforge_platform.coverage import CoverageGap, analyze_coverage
 from agentforge_platform.db import session_scope
 from agentforge_platform.errors import AppException
+from agentforge_platform.gap_patch import resolve_gaps
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.method_lock import resolve_lock
-from agentforge_platform.models import Project, Run, SpecVersion
+from agentforge_platform.models import Project, Run, RunTask, SpecVersion
 from agentforge_platform.packaging import (
     PackagingError,
     build_cost_report,
@@ -91,6 +98,9 @@ class GenerationContext:
     methods_root: Path = Path(DEFAULT_METHODS_ROOT)
     # R13：技术规划客户端（默认 None → 确定性转换，不调用 Qwen）；测试可注入假客户端。
     planning_client: ModelClient | None = None
+    # R17：缺口局部 Patch 的受限引擎工厂（默认 None → 仅装配优先/保持缺口，不调用 Agent）。
+    # 签名：``(allowed_paths, task_id) -> (PatchEngine, FileBackend)``。
+    gap_engine_factory: Callable[[list[str], str], tuple[Any, FileBackend]] | None = None
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
@@ -269,6 +279,92 @@ def build_graph(context: GenerationContext):
             ],
         }}
 
+    def resolve_gaps_node(state: GenerationState) -> GenerationState:
+        """R17：对真实缺口「装配优先，缺口局部 Patch」。无缺口则不启动 Agent、无副作用。"""
+        run_id = state["run_id"]
+        coverage = state.get("coverage") or {}
+        gaps_payload = coverage.get("gaps", [])
+        if not gaps_payload:
+            return {}
+        run_dir = run_directory(context.work_root, run_id)
+        gaps = [
+            CoverageGap(
+                acceptance_id=g["acceptance_id"], code=g["code"], reason=g["reason"],
+                allowed_paths=tuple(g["allowed_paths"]), task_id=g["task_id"],
+                mode=g.get("mode", "agent_patch"),
+            )
+            for g in gaps_payload
+        ]
+        resolutions = resolve_gaps(
+            gaps, search=state["search_result"], spec=state["spec"], contract=state["contract"],
+            lock=state["lock"], run_dir=run_dir, methods_root=context.methods_root,
+            engine_factory=context.gap_engine_factory,
+        )
+        status_by_action = {"reuse": "DONE", "patch": "DONE", "refuse": "PENDING"}
+        with session_scope(context.session_factory) as db:
+            run = _require_active(db, run_id, RunStatus.VERIFYING)
+            for resolution in resolutions:
+                row = (
+                    db.query(RunTask)
+                    .filter(RunTask.run_id == run_id, RunTask.task_id == resolution.task_id)
+                    .one_or_none()
+                )
+                if row is not None:
+                    row.status = status_by_action[resolution.action]
+            append_event(db, run, "gap_patch", json.dumps({
+                "resolutions": [
+                    {"task_id": r.task_id, "acceptance_id": r.acceptance_id, "action": r.action}
+                    for r in resolutions
+                ],
+                "agent_calls": sum(1 for r in resolutions if r.action == "patch"),
+            }))
+
+        applied = [r for r in resolutions if r.action != "refuse"]
+        if not applied:
+            return {}
+        # 变更后必须重新验证与重算覆盖：交付包只反映最后一次验证结果。
+        verification = context.runner.verify(state["artifact_dir"])
+        acceptance = context.runner.accept(state["artifact_dir"])
+        reused_units = [r.detail["locked_unit"] for r in resolutions if r.action == "reuse"]
+        lock = state["lock"]
+        if reused_units:
+            existing = {(u.id, u.version) for u in lock.method_units}
+            extra = [u for u in reused_units if (u["id"], u["version"]) not in existing]
+            from agentforge_platform.resolver import LockedAsset
+
+            lock = lock.model_copy(update={
+                "method_units": list(lock.method_units) + [LockedAsset(**u) for u in extra],
+            })
+        report = analyze_coverage(
+            state["spec"], state["contract"], lock,
+            state["search_result"], acceptance, methods_root=context.methods_root,
+        )
+        with session_scope(context.session_factory) as db:
+            run = _require_active(db, run_id, RunStatus.VERIFYING)
+            append_event(db, run, "verification", json.dumps({
+                "verify": verification.get("overall"), "accept": acceptance.get("overall"),
+                "after": "gap_patch",
+            }))
+        return {
+            "verification": verification,
+            "acceptance": acceptance,
+            "coverage": {
+                "mainline": report.mainline,
+                "acceptance_passed": report.acceptance_passed,
+                "covered_acceptance_ids": list(report.covered_acceptance_ids),
+                "gaps": [
+                    {"acceptance_id": g.acceptance_id, "code": g.code, "reason": g.reason,
+                     "allowed_paths": list(g.allowed_paths), "task_id": g.task_id, "mode": g.mode}
+                    for g in report.gaps
+                ],
+                "resolutions": [
+                    {"task_id": r.task_id, "acceptance_id": r.acceptance_id, "action": r.action,
+                     "reason": r.reason}
+                    for r in resolutions
+                ],
+            },
+        }
+
     def package_or_fail(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
         verification = state["verification"]
@@ -339,6 +435,7 @@ def build_graph(context: GenerationContext):
     graph.add_node("assemble", assemble_node)
     graph.add_node("verify", verify_node)
     graph.add_node("check_coverage", check_coverage_node)
+    graph.add_node("resolve_gaps", resolve_gaps_node)
     graph.add_node("package_or_fail", package_or_fail)
     graph.add_edge(START, "load_confirmed_spec")
     graph.add_edge("load_confirmed_spec", "resolve_assets")
@@ -346,7 +443,8 @@ def build_graph(context: GenerationContext):
     graph.add_edge("plan_tasks", "assemble")
     graph.add_edge("assemble", "verify")
     graph.add_edge("verify", "check_coverage")
-    graph.add_edge("check_coverage", "package_or_fail")
+    graph.add_edge("check_coverage", "resolve_gaps")
+    graph.add_edge("resolve_gaps", "package_or_fail")
     graph.add_edge("package_or_fail", END)
     return graph.compile()
 
