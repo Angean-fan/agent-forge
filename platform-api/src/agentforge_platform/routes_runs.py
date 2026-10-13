@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from agentforge_platform.accounts import Account
 from agentforge_platform.auth import get_current_account, require_csrf, require_project_owner
+from agentforge_platform.budget import effective_budget_micro, record_adjustment
 from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.middleware import get_request_id
@@ -20,6 +21,7 @@ from agentforge_platform.models import Artifact, Project, Run, RunEvent, SpecVer
 from agentforge_platform.responses import ApiResponse
 from agentforge_platform.retention import ensure_run_storage_available
 from agentforge_platform.runs import (
+    RunStatus,
     append_event,
     create_run,
     current_phase,
@@ -35,6 +37,8 @@ from agentforge_platform.runs import (
     run_cost,
     run_spec_hash,
     task_counts,
+    transition,
+    unsettled_call_count,
     verification_report,
     work_root,
 )
@@ -49,6 +53,15 @@ class RunCreateRequest(BaseModel):
     model_config = _STRICT
 
     spec_id: int | None = None
+
+
+class RunResumeRequest(BaseModel):
+    """R24：经确认的恢复——可选新增预算（记入可追溯调整）。"""
+
+    model_config = _STRICT
+
+    additional_budget_micro: int = 0
+    reason: str | None = None
 
 
 class RunView(BaseModel):
@@ -293,6 +306,44 @@ def cancel_run(
 ) -> ApiResponse[RunView]:
     """R22：幂等取消。QUEUED 直接取消；在途置标志由 worker 在节点边界落 CANCELLED，阻止新派发。"""
     request_cancel(db, run)
+    return ApiResponse(request_id=get_request_id(request), data=_run_view(db, run))
+
+
+@router.post("/runs/{run_id}/resume", response_model=ApiResponse[RunView])
+def resume_run(
+    request: Request,
+    payload: RunResumeRequest | None = None,
+    run: Run = Depends(require_run_owner),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+    account: Account = Depends(get_current_account),
+) -> ApiResponse[RunView]:
+    """R24：经确认的预算恢复。仅 PAUSED_BUDGET 可恢复；需预算确实增加；只重新入队续跑，不重复已提交任务。"""
+    if run.status != RunStatus.PAUSED_BUDGET:
+        raise AppException(ErrorCode.RUN_INVALID_TRANSITION, "仅预算暂停的运行可恢复。", status_code=409)
+    additional = payload.additional_budget_micro if payload is not None else 0
+    if additional < 0:
+        raise AppException(ErrorCode.BAD_REQUEST, "预算调整不能为负。", status_code=422)
+    if additional > 0:  # 可追溯预算调整
+        record_adjustment(
+            db, project_id=run.project_id, run_id=run.id, delta_micro=additional,
+            reason=(payload.reason if payload and payload.reason else "resume_topup"),
+            actor_id=account.id,
+        )
+    if unsettled_call_count(db, run.id) > 0:  # 恢复前核对：状态不明调用须先对账
+        raise AppException(
+            ErrorCode.RUN_INVALID_TRANSITION,
+            "存在状态不明的模型调用，需先完成账单对账再恢复。", status_code=409,
+        )
+    cost = run_cost(db, run.id)
+    available = effective_budget_micro(db, run.project_id) - cost["settled_micro"] - cost["reserved_micro"]
+    if available <= 0:  # 未增加预算 → 恢复被拒
+        raise AppException(ErrorCode.BUDGET_EXCEEDED, "预算仍不足，恢复被拒；请先增加预算。", status_code=402)
+    transition(db, run, RunStatus.QUEUED)  # 重新入队，由 worker 从安全检查点续跑
+    run.lease_owner = None
+    run.lease_until = None
+    append_event(db, run, "resumed", json.dumps({"additional_budget_micro": additional}))
+    db.flush()
     return ApiResponse(request_id=get_request_id(request), data=_run_view(db, run))
 
 

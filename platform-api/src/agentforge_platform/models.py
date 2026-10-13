@@ -171,6 +171,24 @@ class Worker(Base):
     )
 
 
+class BudgetAdjustment(Base):
+    """R24：可追溯的预算调整（项目级；可选关联 run 与操作者）。"""
+
+    __tablename__ = "budget_adjustment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delta_micro: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
 class ModelCall(Base):
     """模型调用账本；以 call_id 幂等结算。
 

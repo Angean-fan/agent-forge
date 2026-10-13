@@ -24,6 +24,7 @@ const STATUS_LABELS: Record<string, string> = {
   SUCCEEDED: '已完成',
   FAILED: '失败',
   CANCELLED: '已取消',
+  PAUSED_BUDGET: '预算不足已暂停',
 };
 
 const STAGE_LABELS: Record<string, string> = {

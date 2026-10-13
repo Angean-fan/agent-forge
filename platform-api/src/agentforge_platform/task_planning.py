@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from agentforge_platform.asset_finder import AssetSearchResult
 from agentforge_platform.clients import DashScopeClient, ModelClient
 from agentforge_platform.contract import BusinessContract
-from agentforge_platform.errors import AppException
+from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.model_gateway import invoke
 from agentforge_platform.models import Project
 from agentforge_platform.resolver import AssetLock
@@ -179,6 +179,12 @@ def plan_tasks(
         if issues:
             raise AppException("PLAN_INVALID", "；".join(issues), status_code=422)
     except AppException as exc:
+        # R24/R21：预算/调用/输出护栏**不属于可回退的规划失败**——须向上传播（触发暂停或拦截），
+        # 不得静默回退到确定性计划而绕过预算与次数限制。
+        if exc.code in (
+            ErrorCode.BUDGET_EXCEEDED, ErrorCode.CALL_LIMIT_EXCEEDED, ErrorCode.OUTPUT_LIMIT_EXCEEDED
+        ):
+            raise
         fallback = deterministic_plan(spec, contract, search, lock)
         reasons = dict(fallback.retrieval_reasons)
         reasons["technical_planning"] = [str(exc.code)]

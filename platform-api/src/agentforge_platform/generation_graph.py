@@ -726,6 +726,15 @@ def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
         return build_graph(context).invoke({"run_id": run_id}, config=config)
     except Exception as exc:  # noqa: BLE001  # 兜底落终态，避免未捕获异常造成假成功
         code = getattr(exc, "code", None) or type(exc).__name__
+        code = str(code)
+        if code == "BUDGET_EXCEEDED":
+            # R24：预算不足**暂停**（非终态）；不换廉价模型、不省检查，等经确认加预算后恢复。
+            with session_scope(context.session_factory) as db:
+                run = db.get(Run, run_id)
+                if run is not None and RunStatus(run.status) not in TERMINAL_STATUSES:
+                    transition(db, run, RunStatus.PAUSED_BUDGET)
+                    append_event(db, run, "paused_budget", json.dumps({"code": code}))
+            return {"run_id": run_id, "ok": False, "error_code": "PAUSED_BUDGET"}
         if code in ("RUN_TIMEOUT", "RUN_CANCELLED"):
             _cleanup_runner(context, run_id)  # 尽力停止在途、释放受控资源
         final = RunStatus.CANCELLED if code == "RUN_CANCELLED" else RunStatus.FAILED
@@ -733,10 +742,10 @@ def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
         with session_scope(context.session_factory) as db:
             run = db.get(Run, run_id)
             if run is not None and RunStatus(run.status) not in TERMINAL_STATUSES:
-                transition(db, run, final, error_code=str(code) if final is RunStatus.FAILED else None)
+                transition(db, run, final, error_code=code if final is RunStatus.FAILED else None)
             if run is not None:
-                append_event(db, run, event_type, json.dumps({"code": str(code)}))
-        return {"run_id": run_id, "ok": False, "error_code": str(code)}
+                append_event(db, run, event_type, json.dumps({"code": code}))
+        return {"run_id": run_id, "ok": False, "error_code": code}
 
 
 def default_context(

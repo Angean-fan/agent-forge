@@ -18,6 +18,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from agentforge_platform.budget import effective_budget_micro
 from agentforge_platform.clients import Completion, ModelClient, ProviderPreflightError, Usage
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.limits import runtime_limits
@@ -388,7 +389,8 @@ def reserve(
     price = lookup_price(route.model)
     reserve_micro = _reserve_micro(price, max_input_tokens, max_output_tokens)
     settled, reserved = _totals(db, project_id)
-    if project_budget_micro() - settled - reserved < reserve_micro:
+    # R24：生效预算 = 基础额度 + 可追溯调整；调用方据此在预算不足时暂停而非硬失败。
+    if effective_budget_micro(db, project_id) - settled - reserved < reserve_micro:
         raise AppException(ErrorCode.BUDGET_EXCEEDED, "预算不足，未调用模型。", status_code=402)
 
     row = ModelCall(

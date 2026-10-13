@@ -44,17 +44,24 @@ class RunStatus(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"  # R22：取消（非失败；账本保留在途/已确认额度）
+    PAUSED_BUDGET = "PAUSED_BUDGET"  # R24：预算不足暂停（非终态，经确认加预算后可恢复）
 
 
 TERMINAL_STATUSES = frozenset({RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED})
 # R23：崩溃后可由新 worker 接管的在途状态（租约过期时）。
 RECOVERABLE_STATUSES = frozenset({RunStatus.PLANNING, RunStatus.GENERATING, RunStatus.VERIFYING})
+# R24：预算暂停状态（经确认增预算后可恢复续跑）。
+PAUSED_STATUSES = frozenset({RunStatus.PAUSED_BUDGET})
 
 ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     RunStatus.QUEUED: {RunStatus.PLANNING, RunStatus.CANCELLED},
-    RunStatus.PLANNING: {RunStatus.GENERATING, RunStatus.FAILED, RunStatus.CANCELLED},
-    RunStatus.GENERATING: {RunStatus.VERIFYING, RunStatus.FAILED, RunStatus.CANCELLED},
-    RunStatus.VERIFYING: {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED},
+    RunStatus.PLANNING: {RunStatus.GENERATING, RunStatus.FAILED, RunStatus.CANCELLED,
+                         RunStatus.PAUSED_BUDGET},
+    RunStatus.GENERATING: {RunStatus.VERIFYING, RunStatus.FAILED, RunStatus.CANCELLED,
+                           RunStatus.PAUSED_BUDGET},
+    RunStatus.VERIFYING: {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED,
+                          RunStatus.PAUSED_BUDGET},
+    RunStatus.PAUSED_BUDGET: {RunStatus.QUEUED},  # 恢复：经确认后重新入队续跑
     RunStatus.SUCCEEDED: set(),
     RunStatus.FAILED: set(),
     RunStatus.CANCELLED: set(),
