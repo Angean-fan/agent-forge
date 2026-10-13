@@ -1,11 +1,12 @@
 """M23 LangGraph 固定生成图。
 
-`load_confirmed_spec → resolve_assets → plan_tasks → assemble → verify → check_coverage →
+`load_confirmed_spec → resolve_assets → plan_tasks → assemble → verify → repair → check_coverage →
 resolve_gaps → package_or_fail`，由 worker 驱动。
 
 - 生成图**只接收已确认的** `spec_id/spec_hash`，不读取原始聊天、不重新解释需求；
-- R13 可选技术规划（`planning_client`）、R17 可选缺口局部 Patch（`gap_engine_factory`）**默认关闭**：
-  未注入时保持确定性转换与既有行为，不调用任何外部模型；
+- R13 可选技术规划（`planning_client`）、R17 缺口局部 Patch（`gap_engine_factory`）、
+  R18 失败自动修复（`repair_engine_factory`）**默认关闭**：未注入时保持确定性转换与既有行为，不调用任何外部模型；
+- R18 `repair` 只修可复现的代码/契约错误（基础设施/`NOT_RUN` 不盲改、不计业务次数），每任务 ≤2、全 run ≤6；
 - R17 `resolve_gaps` 对真实缺口「装配优先、缺口局部 Patch」：无缺口时不启动 Agent、无副作用；
   有变更（复用装配或受限 Patch）后**必须重新验证并重算覆盖**，交付包只反映最后一次验证；
 - 数据库为权威状态，节点入口检查运行有效性，记录 task、事件与阶段结果；
@@ -45,6 +46,13 @@ from agentforge_platform.packaging import (
     build_cost_report,
     package_run,
     verification_passed,
+)
+from agentforge_platform.repair import (
+    CODE as REPAIR_CODE,
+)
+from agentforge_platform.repair import (
+    repair_allowed_paths,
+    run_repair_loop,
 )
 from agentforge_platform.resolver import AssetLock
 from agentforge_platform.runner_client import RunnerClient
@@ -101,6 +109,8 @@ class GenerationContext:
     # R17：缺口局部 Patch 的受限引擎工厂（默认 None → 仅装配优先/保持缺口，不调用 Agent）。
     # 签名：``(allowed_paths, task_id) -> (PatchEngine, FileBackend)``。
     gap_engine_factory: Callable[[list[str], str], tuple[Any, FileBackend]] | None = None
+    # R18：失败自动修复的受限引擎工厂（默认 None → 不修复）。签名：``(model_role, allowed_paths, task_id)``。
+    repair_engine_factory: Callable[[str, list[str], str], tuple[Any, FileBackend]] | None = None
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:
@@ -249,6 +259,54 @@ def build_graph(context: GenerationContext):
                             "accept": acceptance.get("overall")}),
             )
         return {"verification": verification, "acceptance": acceptance}
+
+    def repair_node(state: GenerationState) -> GenerationState:
+        """R18：失败分类与有限自动修复；基础设施故障不计业务次数、不盲改。"""
+        if context.repair_engine_factory is None:
+            return {}
+        run_id = state["run_id"]
+        contract = state["contract"]
+        allowed_paths = repair_allowed_paths(contract)
+        run_dir = run_directory(context.work_root, run_id)
+        with session_scope(context.session_factory) as db:
+            used = db.query(RunTask).filter(
+                RunTask.run_id == run_id, RunTask.task_id.like("repair:%")
+            ).all()
+            run_used = sum(int(row.attempt or 0) for row in used)
+        outcome = run_repair_loop(
+            verify=context.runner.verify, accept=context.runner.accept,
+            artifact_dir=state["artifact_dir"], contract=contract, run_dir=run_dir,
+            allowed_paths=allowed_paths, task_id="repair:verify",
+            engine_factory=context.repair_engine_factory, run_used=run_used,
+            search=state.get("search_result"), spec=state["spec"],
+            methods_root=context.methods_root,
+        )
+        if outcome.classification != REPAIR_CODE:
+            with session_scope(context.session_factory) as db:
+                run = _require_active(db, run_id, RunStatus.VERIFYING)
+                append_event(db, run, "repair", json.dumps({
+                    "classification": outcome.classification, "attempts": 0, "roles": [],
+                }))
+            return {}
+        with session_scope(context.session_factory) as db:
+            run = _require_active(db, run_id, RunStatus.VERIFYING)
+            row = (
+                db.query(RunTask)
+                .filter(RunTask.run_id == run_id, RunTask.task_id == "repair:verify")
+                .one_or_none()
+            )
+            if row is None:
+                row = record_task(db, run, "repair:verify", status="PENDING")
+            row.attempt = run_used + outcome.attempts
+            row.status = "DONE" if outcome.passed else "FAILED"
+            append_event(db, run, "repair", json.dumps({
+                "classification": outcome.classification, "attempts": outcome.attempts,
+                "roles": outcome.roles, "passed": outcome.passed,
+                "replaced_refs": outcome.replaced_refs,
+            }))
+        if outcome.attempts == 0:
+            return {}
+        return {"verification": outcome.verification, "acceptance": outcome.acceptance}
 
     def check_coverage_node(state: GenerationState) -> GenerationState:
         run_id = state["run_id"]
@@ -434,6 +492,7 @@ def build_graph(context: GenerationContext):
     graph.add_node("plan_tasks", plan_tasks_node)
     graph.add_node("assemble", assemble_node)
     graph.add_node("verify", verify_node)
+    graph.add_node("repair", repair_node)
     graph.add_node("check_coverage", check_coverage_node)
     graph.add_node("resolve_gaps", resolve_gaps_node)
     graph.add_node("package_or_fail", package_or_fail)
@@ -442,7 +501,8 @@ def build_graph(context: GenerationContext):
     graph.add_edge("resolve_assets", "plan_tasks")
     graph.add_edge("plan_tasks", "assemble")
     graph.add_edge("assemble", "verify")
-    graph.add_edge("verify", "check_coverage")
+    graph.add_edge("verify", "repair")
+    graph.add_edge("repair", "check_coverage")
     graph.add_edge("check_coverage", "resolve_gaps")
     graph.add_edge("resolve_gaps", "package_or_fail")
     graph.add_edge("package_or_fail", END)

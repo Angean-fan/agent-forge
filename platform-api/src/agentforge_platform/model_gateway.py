@@ -74,7 +74,18 @@ def _role_enabled(model_role: str) -> bool:
         return os.environ.get(
             "AGENTFORGE_CODING_ENABLED", ""
         ).strip().lower() in {"1", "true", "yes"}
-    return False  # complex_repair 仍禁用（R18）
+    if model_role == "complex_repair":
+        # R18：第二次修复的升级角色（Qwen3.8 Max），按环境变量显式开启。
+        return os.environ.get(
+            "AGENTFORGE_COMPLEX_REPAIR_ENABLED", ""
+        ).strip().lower() in {"1", "true", "yes"}
+    return False
+
+
+def role_enabled(model_role: str) -> bool:
+    """该模型角色当前是否可用（内建启用或经环境变量显式开启）。不发起任何请求。"""
+    route = ROUTES.get(model_role)
+    return bool(route and (route.enabled or _role_enabled(model_role)))
 
 
 def resolve_route(model_role: str) -> Route:
