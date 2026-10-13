@@ -19,6 +19,13 @@ from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.middleware import get_request_id
 from agentforge_platform.models import Artifact, Project, Run, RunEvent, SpecVersion, Worker
 from agentforge_platform.packaging import build_cost_report
+from agentforge_platform.readiness import (
+    ExternalService,
+    code_delivery_status,
+    compute_readiness,
+    declared_services,
+    readiness_notice,
+)
 from agentforge_platform.responses import ApiResponse
 from agentforge_platform.retention import ensure_run_storage_available
 from agentforge_platform.runs import (
@@ -46,7 +53,7 @@ from agentforge_platform.runs import (
     work_root,
 )
 from agentforge_platform.spec import scope_issues
-from agentforge_platform.spec_service import require_frozen_spec
+from agentforge_platform.spec_service import load_spec, require_frozen_spec
 
 router = APIRouter(prefix="/api", tags=["runs"])
 _STRICT = ConfigDict(extra="forbid")
@@ -132,8 +139,30 @@ class PackageView(BaseModel):
     notice: str | None = None
 
 
+class ExternalServiceView(BaseModel):
+    """E04：单个外部服务的**脱敏**就绪快照（Mock/Live/配置，不含真实值）。"""
+
+    model_config = _STRICT
+
+    service_id: str
+    name: str
+    mode: str
+    required: bool
+    required_for_live: bool
+    secret: bool
+    env_name: str
+    config_present: bool
+    mock_status: str
+    live_status: str
+    reason: str | None = None
+
+
 class RunDetailView(BaseModel):
-    """运行详情：阶段、任务计数、成本（已结算/预留分列）、产物、验证报告与失败摘要。"""
+    """运行详情：阶段、任务计数、成本（已结算/预留分列）、产物、验证报告与失败摘要。
+
+    E04：``code_delivery_status``（代码交付）与 ``external_readiness``（外部服务就绪）**分开**呈现；
+    逐服务 Mock/Live/配置状态用于结果页分列展示。
+    """
 
     model_config = _STRICT
 
@@ -154,6 +183,11 @@ class RunDetailView(BaseModel):
     verification: dict | None = None
     cancellation: CancellationView | None = None
     package: PackageView | None = None
+    # E04：代码交付与外部就绪分开；缺配置/第三方故障分别呈现，不伪称验证。
+    code_delivery_status: str = "NOT_RUN"
+    external_readiness: str = "NOT_REQUIRED"
+    external_notice: str | None = None
+    external_services: list[ExternalServiceView] = []
 
 
 class RunEventView(BaseModel):
@@ -266,9 +300,40 @@ def _package_view(db: Session, run: Run) -> PackageView:
     )
 
 
+def _run_spec(db: Session, run: Run):
+    """读取 run 冻结规格（用于解析声明的外部服务）；缺失/不可解析返回 None（不新增失败模式）。"""
+    row = db.get(SpecVersion, run.spec_id)
+    if row is None:
+        return None
+    try:
+        return load_spec(row)
+    except ValueError:
+        return None
+
+
+def _service_view(service: ExternalService) -> ExternalServiceView:
+    return ExternalServiceView(
+        service_id=service.service_id,
+        name=service.name,
+        mode=service.mode,
+        required=service.required,
+        required_for_live=service.required_for_live,
+        secret=service.secret,
+        env_name=service.env_name,
+        config_present=service.config_present,
+        mock_status=service.mock_status,
+        live_status=service.live_status,
+        reason=service.reason,
+    )
+
+
 def _detail_view(db: Session, run: Run) -> RunDetailView:
     total, done = task_counts(db, run.id)
     cost = run_cost(db, run.id)
+    report = verification_report(run.id)
+    spec = _run_spec(db, run)
+    services = declared_services(spec, report) if spec is not None else []
+    readiness = compute_readiness(services)
     return RunDetailView(
         id=run.id,
         project_id=run.project_id,
@@ -284,13 +349,13 @@ def _detail_view(db: Session, run: Run) -> RunDetailView:
         tasks=TaskSummary(total=total, done=done),
         cost=CostSummary(currency_unit="micro_yuan", **cost),
         artifacts=[_artifact_view(item) for item in list_artifacts(db, run.id)],
-        verification=(
-            verification_report(run.id)
-            if run.status in ("SUCCEEDED", "FAILED")
-            else None
-        ),
+        verification=report if run.status in ("SUCCEEDED", "FAILED") else None,
         cancellation=_cancellation_view(run),
         package=_package_view(db, run),
+        code_delivery_status=code_delivery_status(run.status, error_code=run.error_code),
+        external_readiness=readiness,
+        external_notice=readiness_notice(readiness, services),
+        external_services=[_service_view(service) for service in services],
     )
 
 

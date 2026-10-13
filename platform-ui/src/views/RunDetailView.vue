@@ -34,6 +34,44 @@ const STAGE_LABELS: Record<string, string> = {
   verify: '构建与验收',
 };
 
+// E04：代码交付与外部服务就绪分开呈现。
+const CODE_DELIVERY_LABELS: Record<string, string> = {
+  PASS: '代码交付通过',
+  FAIL: '代码交付失败',
+  NOT_RUN: '代码交付未运行',
+};
+
+const READINESS_LABELS: Record<string, string> = {
+  NOT_REQUIRED: '无外部服务',
+  MOCK_ONLY: '仅 Mock 已验证',
+  AWAITING_USER_CONFIG: '待配置 Live 凭据',
+  LIVE_VERIFIED: 'Live 已验证',
+  LIVE_FAILED: 'Live 验证失败',
+};
+
+function checkTagType(status: string): 'success' | 'danger' | 'info' {
+  if (status === 'PASS') {
+    return 'success';
+  }
+  if (status === 'FAIL') {
+    return 'danger';
+  }
+  return 'info';
+}
+
+function readinessTagType(readiness: string): 'success' | 'danger' | 'warning' | 'info' {
+  if (readiness === 'LIVE_VERIFIED') {
+    return 'success';
+  }
+  if (readiness === 'LIVE_FAILED') {
+    return 'danger';
+  }
+  if (readiness === 'AWAITING_USER_CONFIG') {
+    return 'warning';
+  }
+  return 'info';
+}
+
 const runId = computed(() => Number(props.id));
 
 const run = ref<RunDetail | null>(null);
@@ -81,6 +119,13 @@ const canCancel = computed(
   () => run.value !== null && !isTerminal.value && !run.value.cancellation?.requested,
 );
 const cancelNotice = computed(() => run.value?.cancellation?.notice ?? null);
+const externalServices = computed(() => run.value?.external_services ?? []);
+const codeDeliveryLabel = computed(() =>
+  run.value ? (CODE_DELIVERY_LABELS[run.value.code_delivery_status] ?? run.value.code_delivery_status) : '',
+);
+const readinessLabel = computed(() =>
+  run.value ? (READINESS_LABELS[run.value.external_readiness] ?? run.value.external_readiness) : '',
+);
 const canceling = ref(false);
 
 async function cancelRun(): Promise<void> {
@@ -308,6 +353,71 @@ watch(() => props.id, restart);
         </p>
       </el-card>
 
+      <el-card class="block-gap" data-testid="external-readiness">
+        <h2 class="section-title">代码交付与外部服务就绪</h2>
+        <div class="metrics">
+          <div class="metric">
+            <span class="metric-label">代码交付</span>
+            <el-tag
+              :type="checkTagType(run.code_delivery_status)"
+              size="small"
+              disable-transitions
+              data-testid="code-delivery-status"
+            >
+              {{ codeDeliveryLabel }}
+            </el-tag>
+          </div>
+          <div class="metric">
+            <span class="metric-label">外部服务就绪</span>
+            <el-tag
+              :type="readinessTagType(run.external_readiness)"
+              size="small"
+              disable-transitions
+              data-testid="external-readiness-status"
+            >
+              {{ readinessLabel }}
+            </el-tag>
+          </div>
+        </div>
+        <p v-if="run.external_notice" class="unknown-note" data-testid="external-notice">
+          {{ run.external_notice }}
+        </p>
+        <el-table
+          v-if="externalServices.length"
+          :data="externalServices"
+          size="small"
+          border
+          class="external-table"
+          data-testid="external-services"
+        >
+          <el-table-column prop="name" label="外部服务" />
+          <el-table-column prop="mode" label="模式" width="110" />
+          <el-table-column label="Mock" width="110">
+            <template #default="{ row }">
+              <el-tag :type="checkTagType(row.mock_status)" size="small" disable-transitions>
+                {{ row.mock_status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="Live" width="110">
+            <template #default="{ row }">
+              <el-tag :type="checkTagType(row.live_status)" size="small" disable-transitions>
+                {{ row.live_status }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="配置" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.config_present ? 'success' : 'info'" size="small" disable-transitions>
+                {{ row.config_present ? '已配置' : '待配置' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="reason" label="说明" />
+        </el-table>
+        <el-empty v-else description="无第三方外部服务，无须配置" :image-size="60" />
+      </el-card>
+
       <el-card class="block-gap">
         <h2 class="section-title">交付产物</h2>
         <template v-if="zipArtifact">
@@ -407,6 +517,9 @@ watch(() => props.id, restart);
   margin: 12px 0 0;
   color: #e6a23c;
   font-size: 13px;
+}
+.external-table {
+  margin-top: 12px;
 }
 .fail-list {
   margin-top: 8px;

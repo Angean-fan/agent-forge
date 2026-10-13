@@ -42,6 +42,10 @@ function detail(overrides: Partial<RunDetail> = {}): RunDetail {
     artifacts: [],
     verification: null,
     cancellation: null,
+    code_delivery_status: 'NOT_RUN',
+    external_readiness: 'NOT_REQUIRED',
+    external_notice: null,
+    external_services: [],
     ...overrides,
   };
 }
@@ -240,5 +244,90 @@ describe('RunDetailView', () => {
     expect(wrapper.find('[data-testid="cancel-run"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="cancel-notice"]').text()).toContain('运行已取消');
     expect(wrapper.text()).toContain('取消不会撤回模型 Provider 已处理的调用');
+  });
+
+  it('separates code delivery from external readiness with no external services', async () => {
+    vi.mocked(runsApi.get).mockResolvedValue(
+      detail({ status: 'SUCCEEDED', code_delivery_status: 'PASS', external_readiness: 'NOT_REQUIRED' }),
+    );
+    vi.mocked(runsApi.events).mockResolvedValue({ run_id: 5, items: [], latest_sequence: 0 });
+
+    const wrapper = await mountView();
+
+    expect(wrapper.get('[data-testid="code-delivery-status"]').text()).toContain('代码交付通过');
+    expect(wrapper.get('[data-testid="external-readiness-status"]').text()).toContain('无外部服务');
+    expect(wrapper.text()).toContain('无第三方外部服务，无须配置');
+  });
+
+  it('shows awaiting-config readiness with per-service Mock/Live/config columns', async () => {
+    vi.mocked(runsApi.get).mockResolvedValue(
+      detail({
+        status: 'SUCCEEDED',
+        code_delivery_status: 'PASS',
+        external_readiness: 'AWAITING_USER_CONFIG',
+        external_notice: '缺少 Live 必需配置：WEATHER_API_KEY；Mock 通过不代表 Live 可用。',
+        external_services: [
+          {
+            service_id: 'weather-lookup@0.3.0#api-key',
+            name: '天气服务 API Key',
+            mode: 'mock-only',
+            required: true,
+            required_for_live: true,
+            secret: true,
+            env_name: 'WEATHER_API_KEY',
+            config_present: false,
+            mock_status: 'PASS',
+            live_status: 'NOT_RUN',
+            reason: null,
+          },
+        ],
+      }),
+    );
+    vi.mocked(runsApi.events).mockResolvedValue({ run_id: 5, items: [], latest_sequence: 0 });
+
+    const wrapper = await mountView();
+
+    expect(wrapper.get('[data-testid="code-delivery-status"]').text()).toContain('代码交付通过');
+    expect(wrapper.get('[data-testid="external-readiness-status"]').text()).toContain('待配置 Live 凭据');
+    expect(wrapper.get('[data-testid="external-notice"]').text()).toContain('缺少 Live 必需配置');
+    const rows = wrapper.findAll('[data-testid="external-services"] tbody tr');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text()).toContain('天气服务 API Key');
+    expect(rows[0].text()).toContain('PASS'); // Mock
+    expect(rows[0].text()).toContain('NOT_RUN'); // Live
+    expect(rows[0].text()).toContain('待配置');
+  });
+
+  it('keeps code delivery PASS while reporting LIVE_FAILED separately', async () => {
+    vi.mocked(runsApi.get).mockResolvedValue(
+      detail({
+        status: 'SUCCEEDED',
+        code_delivery_status: 'PASS',
+        external_readiness: 'LIVE_FAILED',
+        external_notice: 'Live 验证失败：代码交付结果单独保留，请查看各服务的失败原因。',
+        external_services: [
+          {
+            service_id: 'weather-lookup@0.3.0#api-key',
+            name: '天气服务 API Key',
+            mode: 'live',
+            required: true,
+            required_for_live: true,
+            secret: true,
+            env_name: 'WEATHER_API_KEY',
+            config_present: true,
+            mock_status: 'PASS',
+            live_status: 'FAIL',
+            reason: '第三方鉴权失败（凭据错误）',
+          },
+        ],
+      }),
+    );
+    vi.mocked(runsApi.events).mockResolvedValue({ run_id: 5, items: [], latest_sequence: 0 });
+
+    const wrapper = await mountView();
+
+    expect(wrapper.get('[data-testid="code-delivery-status"]').text()).toContain('代码交付通过');
+    expect(wrapper.get('[data-testid="external-readiness-status"]').text()).toContain('Live 验证失败');
+    expect(wrapper.text()).toContain('第三方鉴权失败（凭据错误）');
   });
 });

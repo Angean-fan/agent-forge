@@ -184,6 +184,21 @@ export interface CancellationView {
   notice: string | null;
 }
 
+// E04：外部服务的脱敏就绪快照（Mock/Live/配置分开呈现，不含真实值）。
+export interface ExternalServiceView {
+  service_id: string;
+  name: string;
+  mode: string;
+  required: boolean;
+  required_for_live: boolean;
+  secret: boolean;
+  env_name: string;
+  config_present: boolean;
+  mock_status: string;
+  live_status: string;
+  reason: string | null;
+}
+
 export interface RunDetail {
   id: number;
   project_id: number;
@@ -198,6 +213,10 @@ export interface RunDetail {
   artifacts: RunArtifact[];
   verification: VerificationReport | null;
   cancellation: CancellationView | null;
+  code_delivery_status: string;
+  external_readiness: string;
+  external_notice: string | null;
+  external_services: ExternalServiceView[];
 }
 
 export interface RunEvent {
