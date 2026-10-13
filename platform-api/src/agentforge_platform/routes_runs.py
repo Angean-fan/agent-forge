@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse
@@ -16,9 +17,23 @@ from agentforge_platform.auth import get_current_account, require_csrf, require_
 from agentforge_platform.budget import effective_budget_micro, record_adjustment
 from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.live_validation import parse_live_services
 from agentforge_platform.middleware import get_request_id
 from agentforge_platform.models import Artifact, Project, Run, RunEvent, SpecVersion, Worker
 from agentforge_platform.packaging import build_cost_report
+from agentforge_platform.preview import (
+    ACCESS_OK,
+    PREVIEW_STATUS_ACTIVE,
+    PreviewSession,
+    authorized_url,
+    build_preview_env,
+    create_preview,
+    is_expired,
+    isolation_issues,
+    preview_access,
+    recycle,
+    secret_env_names,
+)
 from agentforge_platform.readiness import (
     ExternalService,
     code_delivery_status,
@@ -229,6 +244,21 @@ class WorkerListData(BaseModel):
     items: list[WorkerView]
 
 
+class PreviewView(BaseModel):
+    """E08：在线预览会话（脱敏；随机授权地址，默认 15 分钟回收）。"""
+
+    model_config = _STRICT
+
+    run_id: int
+    url: str
+    status: str
+    demo_data: bool
+    runtime_attached: bool
+    created_at: str
+    expires_at: str
+    notice: str | None = None
+
+
 # R25：失败原因用**确定性模板**（不调用模型；需要用户解释时才另走 DeepSeek user_interaction 并计账）。
 _FAILURE_MESSAGES = {
     "VERIFICATION_FAILED": "构建或验收未通过，请查看验证报告中的未通过项。",
@@ -309,6 +339,43 @@ def _run_spec(db: Session, run: Run):
         return load_spec(row)
     except ValueError:
         return None
+
+
+_PREVIEW_NOTICE = "预览运行时（隔离实例）未接入本环境：本接口只做授权与生命周期管理，不公开运行未知代码。"
+
+
+def _preview_path(run_id: int) -> Path:
+    return work_root().resolve() / f"run-{run_id}" / "preview.json"
+
+
+def _read_preview(run_id: int) -> PreviewSession | None:
+    try:
+        payload = json.loads(_preview_path(run_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    try:
+        return PreviewSession(**payload)
+    except TypeError:
+        return None
+
+
+def _write_preview(session: PreviewSession) -> None:
+    path = _preview_path(session.run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(session.__dict__, ensure_ascii=False), encoding="utf-8")
+
+
+def _preview_view(session: PreviewSession) -> PreviewView:
+    return PreviewView(
+        run_id=session.run_id, url=authorized_url(session.token), status=session.status,
+        demo_data=session.demo_data, runtime_attached=session.runtime_attached,
+        created_at=session.created_at, expires_at=session.expires_at, notice=_PREVIEW_NOTICE,
+    )
+
+
+def _preview_services(db: Session, run: Run) -> list:
+    spec = _run_spec(db, run)
+    return parse_live_services(getattr(spec, "external_requirements", None)) if spec else []
 
 
 def _service_view(service: ExternalService) -> ExternalServiceView:
@@ -584,3 +651,77 @@ def list_workers(
         for worker in rows
     ]
     return ApiResponse(request_id=get_request_id(request), data=WorkerListData(items=items))
+
+
+@router.post("/runs/{run_id}/preview", response_model=ApiResponse[PreviewView])
+def start_preview(
+    request: Request,
+    run: Run = Depends(require_run_owner),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> ApiResponse[PreviewView]:
+    """E08：为**已通过全部代码必需验收**的产物开启短时预览（随机地址；默认 15 分钟回收）。
+
+    预览只用**演示数据**，绝不注入秘密/正式凭据；未验证产物拒绝（``PREVIEW_INELIGIBLE``）。
+    """
+    session = create_preview(
+        run.id, run_status=run.status,
+        code_delivery_status=code_delivery_status(run.status, error_code=run.error_code),
+    )
+    services = _preview_services(db, run)
+    env = build_preview_env(services)
+    issues = isolation_issues(env, secret_env_names(services))
+    if issues:
+        raise AppException(ErrorCode.PREVIEW_INELIGIBLE, "预览隔离校验未通过：" + "；".join(issues), status_code=409)
+    _write_preview(session)
+    return ApiResponse(request_id=get_request_id(request), data=_preview_view(session))
+
+
+@router.get("/runs/{run_id}/preview", response_model=ApiResponse[PreviewView])
+def get_preview(
+    request: Request,
+    run: Run = Depends(require_run_owner),
+) -> ApiResponse[PreviewView]:
+    """查询预览会话（仅归属者）；已到期则**自动回收**并如实标注 EXPIRED。"""
+    session = _read_preview(run.id)
+    if session is None:
+        raise AppException(ErrorCode.NOT_FOUND, "该运行没有在线预览。", status_code=404)
+    if session.status == PREVIEW_STATUS_ACTIVE and is_expired(session):
+        session = recycle(session)
+        _write_preview(session)
+    return ApiResponse(request_id=get_request_id(request), data=_preview_view(session))
+
+
+@router.delete("/runs/{run_id}/preview", response_model=ApiResponse[PreviewView])
+def stop_preview(
+    request: Request,
+    run: Run = Depends(require_run_owner),
+    _csrf: None = Depends(require_csrf),
+) -> ApiResponse[PreviewView]:
+    """E08：停止预览——**只**回收预览实例/数据；源码与 ZIP 不受影响，仍可下载。"""
+    session = _read_preview(run.id)
+    if session is None:
+        raise AppException(ErrorCode.NOT_FOUND, "该运行没有在线预览。", status_code=404)
+    stopped = recycle(session, stopped=True)
+    _write_preview(stopped)
+    return ApiResponse(request_id=get_request_id(request), data=_preview_view(stopped))
+
+
+@router.get("/preview/{token}")
+def open_preview(token: str) -> dict:
+    """E08 授权网关：按**随机 token** 授权访问；未知/过期/已停止一律 404（不泄露存在性）。
+
+    本环境**不接入**真实隔离实例，仅返回会话描述；真实预览运行时需开发者确认（NOT_RUN）。
+    """
+    for run_dir in sorted(work_root().resolve().glob("run-*")):
+        try:
+            run_id = int(run_dir.name.removeprefix("run-"))
+        except ValueError:
+            continue
+        session = _read_preview(run_id)
+        if session is None:
+            continue
+        if preview_access(session, token) == ACCESS_OK:
+            return {"run_id": session.run_id, "status": session.status,
+                    "runtime_attached": False, "notice": _PREVIEW_NOTICE}
+    raise AppException(ErrorCode.NOT_FOUND, "预览地址无效或已过期。", status_code=404)

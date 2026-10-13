@@ -62,6 +62,8 @@ class ErrorCode(StrEnum):
     OPENAPI_REJECTED = "OPENAPI_REJECTED"
     # E07：第三方文档不足以冻结 Integration Spec（存在未确认项）→ 暂停并返回问题清单。
     INTEGRATION_PENDING = "INTEGRATION_PENDING"
+    # E08：产物未通过全部代码必需验收（或运行中），不允许开启在线预览。
+    PREVIEW_INELIGIBLE = "PREVIEW_INELIGIBLE"
 
 
 class AppException(Exception):
