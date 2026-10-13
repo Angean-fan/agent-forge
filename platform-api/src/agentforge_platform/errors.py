@@ -56,6 +56,8 @@ class ErrorCode(StrEnum):
     OUTPUT_LIMIT_EXCEEDED = "OUTPUT_LIMIT_EXCEEDED"
     TOOL_LIMIT_EXCEEDED = "TOOL_LIMIT_EXCEEDED"
     RUN_TIMEOUT = "RUN_TIMEOUT"
+    # E05：Live 验证前置未满足（缺配置/未声明允许域名端口/副作用未批准）→ 阻止启动。
+    LIVE_NOT_READY = "LIVE_NOT_READY"
 
 
 class AppException(Exception):
