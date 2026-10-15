@@ -26,6 +26,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from agentforge_platform.clients import ProviderPreflightError
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.integration_doc import (
     Doc,
@@ -110,8 +111,6 @@ def augment_questions_with_deepseek(
     只把**脱敏结构化事实**交给模型；缺凭据（``ProviderPreflightError``）→ ``NOT_RUN`` 并保留草稿；
     任何模型调用经网关预留/结算并记 ``run_id/task_id/call_id``（此处为草稿期，``run_id=None``）。
     """
-    from agentforge_platform.clients import ProviderPreflightError
-
     facts = json.dumps(
         {
             "provider": result.provider,

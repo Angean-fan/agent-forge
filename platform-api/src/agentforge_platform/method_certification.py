@@ -33,13 +33,18 @@ _BUILD_TIMEOUT_SECONDS = 600
 
 _PACKAGE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
 _TEST_SUMMARY = re.compile(r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)")
+# 依赖/插件**解析**类失败（环境受限）→ NOT_RUN。**不含** "cannot access"：javac 对真实编译错误
+# 同样输出 "cannot access X"，若纳入会把编译失败误判为环境阻塞，弱化拒绝案例。
 _ENV_BLOCKED = (
     "could not resolve",
-    "cannot access",
     "pluginresolutionexception",
     "dependencyresolutionexception",
     "non-resolvable",
+    "could not transfer artifact",
+    "in offline mode",
     "was cached in the local repository",
+    "unknown host",
+    "connection refused",
 )
 
 
@@ -203,7 +208,18 @@ def certify_unit(
             toolchain, ("缺少 src/ 或 tests/ 目录",),
         )
 
-    root = Path(workdir) if workdir is not None else Path(tempfile.mkdtemp(prefix="cert-"))
+    if workdir is not None:
+        return _certify_in_root(src_dir, tests_dir, Path(workdir), unit_id, version,
+                                profile, java_release, toolchain, notes)
+    with tempfile.TemporaryDirectory(prefix="cert-") as tmp:
+        return _certify_in_root(src_dir, tests_dir, Path(tmp), unit_id, version,
+                                profile, java_release, toolchain, notes)
+
+
+def _certify_in_root(
+    src_dir: Path, tests_dir: Path, root: Path, unit_id: str, version: str,
+    profile: str, java_release: str, toolchain: Toolchain, notes: list[str],
+) -> CertificationResult:
     build_root = root / f"{unit_id}-{version}"
     if build_root.exists():
         shutil.rmtree(build_root)
