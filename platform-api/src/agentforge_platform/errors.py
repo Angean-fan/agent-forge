@@ -68,6 +68,8 @@ class ErrorCode(StrEnum):
     ITERATION_INELIGIBLE = "ITERATION_INELIGIBLE"
     # C01：角色被显式开启但缺少运行所需配置/凭据 → 安全禁用并如实报告，不发请求。
     CONFIG_REQUIRED = "CONFIG_REQUIRED"
+    # F02：模块记忆写入被拒（未验证/未提交、含秘密、超限）或越权读取。
+    MODULE_MEMORY_REJECTED = "MODULE_MEMORY_REJECTED"
 
 
 class AppException(Exception):
