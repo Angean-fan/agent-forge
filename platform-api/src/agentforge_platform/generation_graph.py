@@ -56,6 +56,7 @@ from agentforge_platform.repair import (
     CODE as REPAIR_CODE,
 )
 from agentforge_platform.repair import (
+    classify_repair_failure,
     repair_allowed_paths,
     run_repair_loop,
 )
@@ -379,6 +380,13 @@ def build_graph(context: GenerationContext):
                 RunTask.run_id == run_id, RunTask.task_id.like("repair:%")
             ).all()
             run_used = sum(int(row.attempt or 0) for row in used)
+            # C02：受限引擎的账本上下文要求 task_id 先存在（model_gateway._require_task_context）；
+            # 仅在真实需要修复（CODE 分类）时预登记 repair:verify，避免基础设施故障留下悬空任务。
+            if classify_repair_failure(
+                state["verification"], state["acceptance"]
+            ) == REPAIR_CODE:
+                run = _require_active(db, run_id, RunStatus.VERIFYING)
+                record_task_once(db, run, "repair:verify", status="RUNNING")
         outcome = run_repair_loop(
             verify=context.runner.verify, accept=context.runner.accept,
             artifact_dir=state["artifact_dir"], contract=contract, run_dir=run_dir,
