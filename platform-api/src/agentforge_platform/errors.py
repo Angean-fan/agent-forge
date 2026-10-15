@@ -70,6 +70,8 @@ class ErrorCode(StrEnum):
     CONFIG_REQUIRED = "CONFIG_REQUIRED"
     # F02：模块记忆写入被拒（未验证/未提交、含秘密、超限）或越权读取。
     MODULE_MEMORY_REJECTED = "MODULE_MEMORY_REJECTED"
+    # F03：项目内公共接口注册冲突（重复/破坏性变更/越权变更）。
+    INTERFACE_CONFLICT = "INTERFACE_CONFLICT"
 
 
 class AppException(Exception):
