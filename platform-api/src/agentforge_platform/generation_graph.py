@@ -131,6 +131,9 @@ class GenerationContext:
     repair_engine_factory: Callable[[str, list[str], str], tuple[Any, FileBackend]] | None = None
     # R19：可选技术语义审查客户端（默认 None → 不审查；需 technical_planning 角色开启）。
     review_client: ModelClient | None = None
+    # C01：生产运行级编码路由（默认 None → 行为与旧路径完全一致）。
+    # 为 ``None`` 且未显式注入 gap/repair 工厂时，节点按 run 上下文惰性构造受限引擎工厂。
+    coding_routing: Any | None = None
     # R21：运行总时限（单调时钟截止点）；由 run_generation 设置，节点边界检查超时。
     deadline_monotonic: float | None = None
     # R23：LangGraph checkpointer（默认 None → 无检查点持久化）。检查点存于状态，**不含密钥**。
@@ -160,6 +163,36 @@ def _check_cancel(context: GenerationContext, run_id: int) -> None:
         run = db.get(Run, run_id)
         if run is not None and run.cancel_requested:
             raise GenerationError("RUN_CANCELLED", "运行已被取消")
+
+
+def _run_project_id(context: GenerationContext, run_id: int) -> int | None:
+    with session_scope(context.session_factory) as db:
+        run = db.get(Run, run_id)
+        return run.project_id if run is not None else None
+
+
+def _gap_factory(context: GenerationContext, run_id: int):
+    """C01：显式注入优先；否则在生产编码路由就绪时按 run 上下文惰性构造，未就绪返回 ``None``。"""
+    if context.gap_engine_factory is not None:
+        return context.gap_engine_factory
+    if context.coding_routing is None:
+        return None
+    project_id = _run_project_id(context, run_id)
+    if project_id is None:
+        return None
+    return context.coding_routing.gap_engine_factory(run_id=run_id, project_id=project_id)
+
+
+def _repair_factory(context: GenerationContext, run_id: int):
+    """C01：同 :func:`_gap_factory`，针对 R18 修复工厂。"""
+    if context.repair_engine_factory is not None:
+        return context.repair_engine_factory
+    if context.coding_routing is None:
+        return None
+    project_id = _run_project_id(context, run_id)
+    if project_id is None:
+        return None
+    return context.coding_routing.repair_engine_factory(run_id=run_id, project_id=project_id)
 
 
 def _verify_error_code(verification: dict, acceptance: dict) -> str:
@@ -334,9 +367,10 @@ def build_graph(context: GenerationContext):
 
     def repair_node(state: GenerationState) -> GenerationState:
         """R18：失败分类与有限自动修复；基础设施故障不计业务次数、不盲改。"""
-        if context.repair_engine_factory is None:
-            return {}
         run_id = state["run_id"]
+        repair_factory = _repair_factory(context, run_id)
+        if repair_factory is None:
+            return {}
         contract = state["contract"]
         allowed_paths = repair_allowed_paths(contract)
         run_dir = run_directory(context.work_root, run_id)
@@ -349,7 +383,7 @@ def build_graph(context: GenerationContext):
             verify=context.runner.verify, accept=context.runner.accept,
             artifact_dir=state["artifact_dir"], contract=contract, run_dir=run_dir,
             allowed_paths=allowed_paths, task_id="repair:verify",
-            engine_factory=context.repair_engine_factory, run_used=run_used,
+            engine_factory=repair_factory, run_used=run_used,
             search=state.get("search_result"), spec=state["spec"],
             methods_root=context.methods_root,
         )
@@ -438,7 +472,7 @@ def build_graph(context: GenerationContext):
         resolutions = resolve_gaps(
             gaps, search=state["search_result"], spec=state["spec"], contract=state["contract"],
             lock=state["lock"], run_dir=run_dir, methods_root=context.methods_root,
-            engine_factory=context.gap_engine_factory,
+            engine_factory=_gap_factory(context, run_id),
         )
         status_by_action = {"reuse": "DONE", "patch": "DONE", "refuse": "PENDING"}
         with session_scope(context.session_factory) as db:
@@ -754,13 +788,22 @@ def default_context(
     work_root: str | Path,
     runner: RunnerClient,
     methods_root: str | Path = DEFAULT_METHODS_ROOT,
+    routing: Any | None = None,
 ) -> GenerationContext:
+    """构造生成上下文。
+
+    ``routing`` 为 ``None`` 时不注入任何生产模型客户端（**默认零 Qwen 请求**）；
+    传入 :class:`production_routing.ProductionRouting` 时按其已授权状态显式注入。
+    """
     return GenerationContext(
         session_factory=session_factory,
         runner=runner,
         work_root=Path(work_root),
         registry=default_registry(),
         methods_root=Path(methods_root),
+        planning_client=getattr(routing, "planning_client", None),
+        review_client=getattr(routing, "review_client", None),
+        coding_routing=getattr(routing, "coding_routing", None),
     )
 
 

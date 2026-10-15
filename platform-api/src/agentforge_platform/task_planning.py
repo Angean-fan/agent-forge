@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.orm import Session
 
 from agentforge_platform.asset_finder import AssetSearchResult
-from agentforge_platform.clients import DashScopeClient, ModelClient
+from agentforge_platform.clients import DashScopeClient, ModelClient, ProviderPreflightError
 from agentforge_platform.contract import BusinessContract
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.model_gateway import invoke
@@ -164,7 +164,12 @@ def plan_tasks(
     run_id: int,
     client: ModelClient | None = None,
 ) -> tuple[TaskPlan, list[str]]:
-    """返回 ``(最终计划, 回退原因)``：确定性优先；仅在需要规划时调用模型，失败即回退并记录原因。"""
+    """返回 ``(最终计划, 回退原因)``：确定性优先；仅在需要规划时调用模型，失败即回退并记录原因。
+
+    路由**禁用**（开关关）→ ``MODEL_ROLE_DISABLED`` 回退，**零请求**；
+    凭据缺失（开关开但无 Key）→ ``ProviderPreflightError`` 被归类为 ``CONFIG_REQUIRED`` 回退，**零请求**。
+    预算/次数/输出护栏异常仍向上传播（触发暂停或拦截），不静默回退。
+    """
     if not needs_planning(search, spec):
         return deterministic_plan(spec, contract, search, lock), []
 
@@ -178,6 +183,14 @@ def plan_tasks(
         )
         if issues:
             raise AppException("PLAN_INVALID", "；".join(issues), status_code=422)
+    except ProviderPreflightError:
+        # C01：开关已开但缺凭据 → 请求未发出（preflight 拦截），安全回退并如实标注。
+        fallback = deterministic_plan(spec, contract, search, lock)
+        reasons = dict(fallback.retrieval_reasons)
+        reasons["technical_planning"] = [ErrorCode.CONFIG_REQUIRED.value]
+        return fallback.model_copy(update={"retrieval_reasons": reasons}), [
+            ErrorCode.CONFIG_REQUIRED.value
+        ]
     except AppException as exc:
         # R24/R21：预算/调用/输出护栏**不属于可回退的规划失败**——须向上传播（触发暂停或拦截），
         # 不得静默回退到确定性计划而绕过预算与次数限制。

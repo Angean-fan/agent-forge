@@ -66,6 +66,8 @@ class ErrorCode(StrEnum):
     PREVIEW_INELIGIBLE = "PREVIEW_INELIGIBLE"
     # E09：源产物不是 AgentForge 自有产物（缺 spec.json / asset-lock.json），不支持迭代。
     ITERATION_INELIGIBLE = "ITERATION_INELIGIBLE"
+    # C01：角色被显式开启但缺少运行所需配置/凭据 → 安全禁用并如实报告，不发请求。
+    CONFIG_REQUIRED = "CONFIG_REQUIRED"
 
 
 class AppException(Exception):
