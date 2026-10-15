@@ -42,6 +42,10 @@ from agentforge_platform.coverage import CoverageGap, analyze_coverage
 from agentforge_platform.db import session_scope
 from agentforge_platform.errors import AppException
 from agentforge_platform.gap_patch import resolve_gaps
+from agentforge_platform.integration_generation import (
+    backfill_external_requirements,
+    build_integration_lock,
+)
 from agentforge_platform.limits import runtime_limits
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.method_lock import resolve_lock
@@ -52,6 +56,7 @@ from agentforge_platform.packaging import (
     package_run,
     verification_passed,
 )
+from agentforge_platform.readiness import compute_readiness, declared_services
 from agentforge_platform.repair import (
     CODE as REPAIR_CODE,
 )
@@ -248,6 +253,14 @@ def build_graph(context: GenerationContext):
                 context.registry, state["profile"], state["spec"], state["contract"],
                 methods_root_path=context.methods_root,
             )
+            # C03：开关开启且规格请求集成包时并入 0.3 集成锁（以 R06D 方法单元锁为基座）。
+            integration = build_integration_lock(state["spec"], base_lock=lock)
+            if integration is not None:
+                lock = integration
+        # C03：锁含集成包时回填 spec.external_requirements（供装配/打包/就绪），不改冻结 spec 行。
+        spec = state["spec"]
+        if lock.integration_packs:
+            spec = backfill_external_requirements(spec, lock)
         # R12：记录 Finder 审计（候选方法 / 复用方法 ID+版本 / 未覆盖规则），随 run 报告留痕。
         search = find_assets(
             derive_capability_query(state["spec"], state["contract"]),
@@ -278,6 +291,7 @@ def build_graph(context: GenerationContext):
         return {
             "lock_hash": lock.lock_hash, "lock": lock,
             "asset_search": audit, "search_result": search,
+            "spec": spec,
         }
 
     def plan_tasks_node(state: GenerationState) -> GenerationState:
@@ -667,6 +681,10 @@ def build_graph(context: GenerationContext):
 
         with session_scope(context.session_factory) as db:
             run = _require_active(db, run_id, RunStatus.VERIFYING)
+            # C03：仅当锁含集成包时把外部就绪快照**落库**（权威）；普通 Task 不落库 → 保持
+            # E04 的读时派生行为，旧数据（NULL）亦读时派生。
+            if state["lock"].integration_packs:
+                run.external_readiness = compute_readiness(declared_services(state["spec"]))
             record_artifact(
                 db, run, package.zip_path, package.zip_sha256, "zip", verified=package.verified
             )

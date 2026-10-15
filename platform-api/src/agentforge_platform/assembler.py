@@ -21,10 +21,12 @@ from agentforge_platform.asset_registry import (
     AssetRegistry,
     MethodUnitManifest,
     default_registry,
+    integration_registry,
 )
 from agentforge_platform.capability_packs import inject_dependencies, render_pack_files
 from agentforge_platform.contract import BusinessContract, compile_from_spec
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.integration_generation import docs_for
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.resolver import AssetLock, resolve_assets
 from agentforge_platform.spec import SoftwareSpecification
@@ -188,6 +190,41 @@ def _copy_method_units(lock: AssetLock, writer: _Writer, methods_root: Path) -> 
             writer.write(target, rel, path.read_bytes())
 
 
+def _copy_integration_packs(lock: AssetLock, writer: _Writer) -> None:
+    """C03：把锁定的集成包 ``src/`` COPY 到其 ``target_dir``（Port/Adapter/Mock）。
+
+    只做 COPY（不改写业务代码）；路径写重由 ``_Writer`` 拒绝（不覆盖模板/能力包文件）。
+    """
+    registry = integration_registry()
+    for unit in lock.integration_packs:
+        manifest, directory = registry.get("integration-pack", unit.id, unit.version)
+        target = manifest.target_dir or (manifest.owned_paths[0] if manifest.owned_paths else "")
+        target = target.rstrip("/")
+        if not target:
+            raise AssemblyError(f"集成包未声明安装目标：{unit.id}@{unit.version}")
+        source = Path(directory) / "src"
+        for path in sorted(source.rglob("*")):
+            if path.is_symlink():
+                raise AssemblyError(f"集成包包含符号链接，拒绝：{path}")
+            if not path.is_file():
+                continue
+            # pack `src/**` → `<target_dir>/src/**`（与 manifest.owned_paths 目标一致）。
+            rel = path.relative_to(source).as_posix()
+            writer.write(f"{target}/src", rel, path.read_bytes())
+
+
+def _write_external_docs(lock: AssetLock, writer: _Writer) -> None:
+    """C03：写入 ``.env.example``（追加外部服务变量，保留模板原有块）与 ``EXTERNAL_SERVICES.md``。"""
+    docs = docs_for(lock)
+    if docs is None:
+        return
+    env_path = writer.root / ".env.example"
+    existing = env_path.read_text(encoding="utf-8") if env_path.is_file() else ""
+    merged = (existing.rstrip("\n") + "\n\n" + docs.env_example.strip() + "\n") if existing else docs.env_example
+    env_path.write_text(merged, encoding="utf-8")
+    writer.write("", "EXTERNAL_SERVICES.md", docs.external_services_md.encode("utf-8"))
+
+
 def _readme(spec: SoftwareSpecification, contract: BusinessContract, lock: AssetLock) -> str:
     entity = contract.permissions[0].entity if contract.permissions else "未知实体"
     lines = [
@@ -278,6 +315,9 @@ def assemble(
             lock, writer,
             Path(methods_root) if methods_root is not None else Path(DEFAULT_METHODS_ROOT),
         )
+    if lock.integration_packs:  # C03：仅当锁含集成包（开关开启）时 COPY 并写入外部配置指南
+        _copy_integration_packs(lock, writer)
+        _write_external_docs(lock, writer)
     writer.write("", _ASSET_LOCK_NAME, (lock.model_dump_json(indent=2) + "\n").encode("utf-8"))
     writer.write("", _SPEC_NAME, (spec.model_dump_json(indent=2) + "\n").encode("utf-8"))
     writer.write(

@@ -145,7 +145,8 @@ class SoftwareSpecification(BaseModel):
     exclusions: list[str] = []
     capability_requests: list[dict[str, Any]] = []
     recipe_requests: list[dict[str, Any]] = []
-    integrations: list[dict[str, Any]] = []
+    # C03：集成包请求，支持 `"id@version"` 字符串或 `{"id","version"}` 映射；默认空 → 零漂移。
+    integrations: list[dict[str, Any] | str] = []
     external_requirements: list[dict[str, Any]] = []
     # R06D：显式请求的**预审核方法单元**（`id` 或 `id@version`）；默认空 → MVP 路径不变。
     method_requests: list[str] = []
@@ -321,8 +322,13 @@ def confirmation_issues(spec: SoftwareSpecification) -> list[str]:
     ):
         issues.append("存在不支持的权限操作")
     # relations 为 R10 多实体所需，允许保留；其余扩展能力仍不在 Demo 范围内。
-    if any((spec.capability_requests, spec.recipe_requests,
-            spec.integrations, spec.external_requirements)):
+    # C03：仅当集成包接入开关开启时放行 `integrations`/`external_requirements`，否则行为不变。
+    from agentforge_platform.integration_generation import integration_generation_enabled
+
+    external_allowed = integration_generation_enabled()
+    if any((spec.capability_requests, spec.recipe_requests)) or (
+        any((spec.integrations, spec.external_requirements)) and not external_allowed
+    ):
         issues.append("MVP 不支持能力请求、Recipe、外部集成或外部需求")
     if not is_supported_profile(spec.technical_profile):
         issues.append(

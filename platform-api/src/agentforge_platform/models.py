@@ -92,6 +92,9 @@ class Run(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # R22：取消请求标志（幂等置位）；worker 在节点边界观察后把 run 落 CANCELLED。
     cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # C03：外部服务就绪快照（NOT_REQUIRED/MOCK_ONLY/AWAITING_USER_CONFIG/LIVE_VERIFIED/LIVE_FAILED）。
+    # 旧数据为 NULL → API 读取时派生（无侵入迁移）。
+    external_readiness: Mapped[str | None] = mapped_column(String(24), nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

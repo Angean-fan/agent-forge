@@ -431,7 +431,8 @@ def _detail_view(db: Session, run: Run) -> RunDetailView:
     report = verification_report(run.id)
     spec = _run_spec(db, run)
     services = declared_services(spec, report) if spec is not None else []
-    readiness = compute_readiness(services)
+    # C03：优先读取**已持久化**的就绪快照（权威）；旧数据该列为 NULL → 读时派生，行为不变。
+    readiness = run.external_readiness or compute_readiness(services)
     return RunDetailView(
         id=run.id,
         project_id=run.project_id,

@@ -241,9 +241,12 @@ def package_run(
         json.dumps(cost_report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     (run_dir / "API.md").write_text(_api_doc(contract), encoding="utf-8")
-    (run_dir / "EXTERNAL_SERVICES.md").write_text(
-        "# 外部服务\n\n本 MVP 无第三方外部服务，**无须配置**。\n", encoding="utf-8"
-    )
+    # C03：集成包装配已写入外部服务指南时保留之；否则写占位（无第三方外部服务）。
+    external_services = run_dir / "EXTERNAL_SERVICES.md"
+    if not external_services.is_file():
+        external_services.write_text(
+            "# 外部服务\n\n本 MVP 无第三方外部服务，**无须配置**。\n", encoding="utf-8"
+        )
 
     files, total_bytes = collect_files(run_dir, limits)
     zip_path = run_dir / ZIP_NAME

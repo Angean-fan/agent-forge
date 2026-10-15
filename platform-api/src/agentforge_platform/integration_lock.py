@@ -99,14 +99,17 @@ def resolve_integration_lock(
     requests: Iterable[str],
     *,
     pins: dict[str, str] | None = None,
+    base_lock: AssetLock | None = None,
 ) -> AssetLock:
     """按显式请求锁定 Mock-only Integration Pack；无请求时返回 MVP 0.1 锁（不变）。
 
     ``requests``：条目为 ``<id>`` 或 ``<id>@<version>``；``<id>`` 取该 id 的最高版本。
     ``pins``：可选的 ``{id: version}`` 固定项，语义与 ``resolve_assets`` 一致（复现实验）。
+    ``base_lock``（C03，可选）：以既有锁（含 R06D 方法单元）为基座并入集成包；默认 ``None`` →
+    用 ``resolve_assets`` 结果，**行为与 E01/E02 完全一致**（含既有 0.3 锁字节/哈希）。
     """
     registry = registry or integration_registry()
-    base = resolve_assets(registry, profile, pins=pins)
+    base = base_lock if base_lock is not None else resolve_assets(registry, profile, pins=pins)
     requests = list(requests)
     if not requests:
         return base  # MVP 路径：锁与哈希完全不变
@@ -197,6 +200,7 @@ def resolve_integration_lock(
         profile=base.profile,
         mysql_image=base.mysql_image,
         assets=base.assets,
+        method_units=base.method_units,
         lock_hash="",
         integration_packs=units,
         selection_reason="integration_packs=" + ",".join(reason_entries),
