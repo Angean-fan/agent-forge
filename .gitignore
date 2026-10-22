@@ -31,6 +31,8 @@ target/
 runs/
 var/
 backups/
+# 本地解包的生成产物 / 临时导出（不是源码）
+out/
 *.log
 logs/
 *.db
