@@ -7,7 +7,9 @@ M03 仅落地 ``project`` 与 ``spec_version`` 两张最小表；后续 ``run``/
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -230,5 +232,72 @@ class ModelCall(Base):
         DateTime(), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class AssetRelease(Base):
+    """A02：不可变资产版本表（覆盖 template / capability-pack / method-unit / integration-pack）。
+
+    ``checksum`` 与 ``asset_registry.compute_checksum(asset_dir)`` 字节级一致。
+    """
+
+    __tablename__ = "asset_release"
+    __table_args__ = (
+        UniqueConstraint("kind", "asset_id", "version", name="uq_asset_release_kind_id_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    provides_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    requires_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    search_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+    @property
+    def profile_tags(self) -> list[str]:
+        return list(json.loads(self.profile_tags_json or "[]"))
+
+    @property
+    def provides(self) -> list[str]:
+        return list(json.loads(self.provides_json or "[]"))
+
+    @property
+    def requires(self) -> list[str]:
+        return list(json.loads(self.requires_json or "[]"))
+
+    @property
+    def manifest_dict(self) -> dict[str, Any]:
+        return dict(json.loads(self.manifest_json or "{}"))
+
+
+class AssetFile(Base):
+    """A02：资产版本内的逐文件源码与符号摘要表（供物化缓存与子 Agent 精准检索/读取）。"""
+
+    __tablename__ = "asset_file"
+    __table_args__ = (
+        UniqueConstraint("release_id", "rel_path", name="uq_asset_file_release_rel_path"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    release_id: Mapped[int] = mapped_column(
+        ForeignKey("asset_release.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    rel_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_binary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    symbol_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    search_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.now()
     )

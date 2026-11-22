@@ -56,8 +56,9 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
 
     # upgrade head：全部受管表与 0003 新增列存在
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0015"
+    assert _revision(sqlite_url) == "0016"
     assert MANAGED_TABLES <= _tables(sqlite_url)
+    assert {"asset_release", "asset_file"} <= _tables(sqlite_url)
     assert "requirement_text" in _columns(sqlite_url, "project")
     assert {"summary", "missing_fields_json", "questions_json", "draft_revision"} <= _columns(sqlite_url, "spec_version")
     assert "reasoning_effort" in _columns(sqlite_url, "model_call")
@@ -73,6 +74,11 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
     with session_scope(make_session_factory(engine)) as session:
         session.add(Project(owner_id=1, name="demo", requirement_text="需求文本"))
     engine.dispose()
+
+    # downgrade 一步（0016 → 0015）：逐文件资产表被删除
+    command.downgrade(config, "0015")
+    assert _revision(sqlite_url) == "0015"
+    assert not ({"asset_release", "asset_file"} & _tables(sqlite_url))
 
     # downgrade 一步（0015 → 0014）：外部就绪快照列被删除
     command.downgrade(config, "0014")
@@ -153,7 +159,7 @@ def test_migration_upgrade_downgrade_roundtrip(sqlite_url: str) -> None:
 
     # 再次 upgrade head：表重建，但之前的行已随回退丢失
     command.upgrade(config, "head")
-    assert _revision(sqlite_url) == "0015"
+    assert _revision(sqlite_url) == "0016"
     assert MANAGED_TABLES <= _tables(sqlite_url)
     engine = make_engine(sqlite_url)
     with session_scope(make_session_factory(engine)) as session:
