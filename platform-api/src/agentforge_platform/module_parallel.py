@@ -56,11 +56,20 @@ class ParallelPlan:
 
 
 def _resources(module: Any) -> dict[str, str]:
-    """模块占用的**共享资源**标签（migration 命名空间 / DTO 命名 / 具体文件）。"""
+    """模块占用的**共享资源**标签（migration 命名空间 / DTO 命名 / 具体文件）。
+
+    A06：若模块显式分配了互不重叠的 ``migration_range``，则按号段隔离，不再粗粒度互斥；
+    旧模块未设 ``migration_range`` 时保持原有全局互斥语义（确保 F08 单测零回归）。
+    """
     tags: dict[str, str] = {}
+    mig_range = getattr(module, "migration_range", None)
     for path in module.owned_paths:
         if "/db/migration/" in path:
-            tags.setdefault(MIGRATION_RESOURCE, path)  # 全局版本命名空间：互斥
+            if mig_range is not None:
+                lo, hi = mig_range
+                tags.setdefault(f"{MIGRATION_RESOURCE}:{lo}-{hi}", path)
+            else:
+                tags.setdefault(MIGRATION_RESOURCE, path)  # 全局版本命名空间：互斥
         base = path.rsplit("/", 1)[-1]
         if "/dto/" in path:
             tags.setdefault(f"dto:{base}", path)
@@ -68,8 +77,21 @@ def _resources(module: Any) -> dict[str, str]:
     return tags
 
 
+def _has_migration_path(module: Any) -> bool:
+    return any("/db/migration/" in path for path in module.owned_paths)
+
+
 def _conflicts(left: Any, right: Any) -> list[str]:
     shared = set(_resources(left)) & set(_resources(right))
+    if _has_migration_path(left) and _has_migration_path(right):
+        l_range = getattr(left, "migration_range", None)
+        r_range = getattr(right, "migration_range", None)
+        if (
+            l_range is None
+            or r_range is None
+            or max(l_range[0], r_range[0]) <= min(l_range[1], r_range[1])
+        ):
+            shared.add(MIGRATION_RESOURCE)
     return sorted(shared)
 
 

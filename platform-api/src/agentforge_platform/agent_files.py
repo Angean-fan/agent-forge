@@ -68,7 +68,15 @@ def _safe_join(root: Path, relative: str) -> Path:
 def _is_protected(relative: str) -> bool:
     if PurePosixPath(relative).name in PROTECTED_FILES:
         return True
-    return any(relative.startswith(prefix) for prefix in PROTECTED_PREFIXES)
+    if any(relative.startswith(prefix) for prefix in PROTECTED_PREFIXES):
+        return True
+    # A06：生成的跨模块 Java Facade Stub 与公共 API DTO 纳入只读受保护路径，禁止单部门私自篡改接口签名
+    parts = PurePosixPath(relative).parts
+    if "modules" in parts and "api" in parts and relative.endswith(".java"):
+        mod_idx = parts.index("modules")
+        if mod_idx + 2 < len(parts) and parts[mod_idx + 2] == "api":
+            return True
+    return False
 
 
 def _within_allowed(relative: str, allowed: list[str]) -> bool:

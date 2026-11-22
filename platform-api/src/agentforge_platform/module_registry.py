@@ -70,6 +70,10 @@ class Module(BaseModel):
     contract_revision: int = 0
     execution_mode: str = EXECUTION_SERIAL
     lifecycle: str = LIFECYCLE_READY
+    # A06：工厂并行模式可选扩展字段（保留向后兼容默认值，不破坏 F01—F08 旧单测）
+    migration_range: tuple[int, int] | None = None
+    test_paths: list[str] = []
+    owned_package: str | None = None
 
 
 class ModuleRegistry(BaseModel):
@@ -188,6 +192,18 @@ def registry_issues(registry: ModuleRegistry) -> list[str]:
             for shared in registry.shared_paths:
                 if _overlaps(path, shared):
                     issues.append(f"{module.module_id} 不得声明共享文件：{path}")
+        for path in module.test_paths:
+            if not is_safe_task_path(path):
+                issues.append(f"{module.module_id} 越界 test_paths：{path}")
+            for shared in registry.shared_paths:
+                if _overlaps(path, shared):
+                    issues.append(f"{module.module_id} 不得在 test_paths 中声明共享文件：{path}")
+        if module.migration_range is not None:
+            start, end = module.migration_range
+            if start < 1 or end < start:
+                issues.append(
+                    f"{module.module_id} 非法 SQL 号段 migration_range：({start}, {end})"
+                )
         for dep in module.depends_on_modules:
             if dep not in id_set:
                 issues.append(f"{module.module_id} 依赖未知模块：{dep}")
@@ -196,13 +212,27 @@ def registry_issues(registry: ModuleRegistry) -> list[str]:
 
     for index, left in enumerate(registry.modules):
         for right in registry.modules[index + 1:]:
-            for left_path in left.owned_paths:
-                for right_path in right.owned_paths:
+            left_all = [*left.owned_paths, *left.test_paths]
+            right_all = [*right.owned_paths, *right.test_paths]
+            for left_path in left_all:
+                for right_path in right_all:
                     if _overlaps(left_path, right_path):
                         issues.append(
                             f"唯一写入权冲突：{left.module_id} 的 {left_path} 与 "
                             f"{right.module_id} 的 {right_path}"
                         )
+            if left.migration_range is not None and right.migration_range is not None:
+                l_start, l_end = left.migration_range
+                r_start, r_end = right.migration_range
+                if max(l_start, r_start) <= min(l_end, r_end):
+                    issues.append(
+                        f"SQL 号段重叠：{left.module_id} ({l_start}–{l_end}) 与 "
+                        f"{right.module_id} ({r_start}–{r_end})"
+                    )
+            if left.owned_package and right.owned_package and left.owned_package == right.owned_package:
+                issues.append(
+                    f"包路径冲突：{left.module_id} 与 {right.module_id} 共用包 {left.owned_package}"
+                )
     if _has_cycle(registry.modules):
         issues.append("模块依赖存在环")
     return issues
@@ -221,10 +251,13 @@ def _has_cycle(modules: list[Module]) -> bool:
 
 
 def owners_of(path: str, registry: ModuleRegistry) -> list[str]:
-    """某路径被哪些业务模块声明（含前缀归属）；共享文件返回 ``[]``（归 shared_owner）。"""
+    """某路径被哪些业务模块声明（含前缀归属，含 test_paths）；共享文件返回 ``[]``（归 shared_owner）。"""
     return [
         module.module_id for module in registry.modules
-        if any(_within(path, owned) or _within(owned, path) for owned in module.owned_paths)
+        if any(
+            _within(path, owned) or _within(owned, path)
+            for owned in (*module.owned_paths, *module.test_paths)
+        )
     ]
 
 
@@ -266,7 +299,8 @@ def write_issues(registry: ModuleRegistry, module_id: str, paths: list[str]) -> 
         if any(_overlaps(path, shared) for shared in registry.shared_paths):
             issues.append(f"{module_id} 不得写共享文件：{path}")
             continue
-        if not any(_within(path, owned) or _within(owned, path) for owned in module.owned_paths):
+        module_writable = (*module.owned_paths, *module.test_paths)
+        if not any(_within(path, owned) or _within(owned, path) for owned in module_writable):
             issues.append(f"{module_id} 越权写入（不在其 owned_paths 内）：{path}")
             continue
         others = [mid for mid in owners_of(path, registry) if mid != module_id]

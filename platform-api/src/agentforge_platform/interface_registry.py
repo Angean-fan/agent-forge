@@ -28,8 +28,13 @@ INTERFACE_REGISTRY_VERSION = "0.1"
 INTERFACES_FILE = "interfaces.json"
 
 STATUS_DRAFT = "DRAFT"
+# A06：开工前契约冻结态（项目总管在并发开工前锁定，用于生成只读 Facade Stub 供跨部门编译/Mock）
+STATUS_APPROVED_FOR_BUILD = "APPROVED_FOR_BUILD"
 STATUS_VERIFIED = "VERIFIED"
 STATUS_DEPRECATED = "DEPRECATED"
+_ALLOWED_STATUSES = frozenset(
+    {STATUS_DRAFT, STATUS_APPROVED_FOR_BUILD, STATUS_VERIFIED, STATUS_DEPRECATED}
+)
 
 KIND_JAVA_METHOD = "JAVA_METHOD"
 KIND_HTTP = "HTTP"
@@ -195,32 +200,92 @@ def register_capability(
     return registry.model_copy(update={"capabilities": capabilities})
 
 
+def approve_for_build(
+    registry: InterfaceRegistry,
+    capability: PublicCapability,
+    *,
+    allow_breaking: bool = False,
+) -> InterfaceRegistry:
+    """A06：开工前冻结公共能力契约（状态置为 ``APPROVED_FOR_BUILD``，用于生成只读 Facade Stub）。"""
+    issues = _kind_issues(capability)
+    if issues:
+        raise AppException(ErrorCode.VALIDATION_ERROR, "；".join(issues), status_code=422)
+
+    existing = next(
+        (c for c in registry.capabilities if c.capability_id == capability.capability_id), None
+    )
+    capabilities = list(registry.capabilities)
+    if existing is not None:
+        if existing.owner_module_id != capability.owner_module_id:
+            raise AppException(
+                ErrorCode.FORBIDDEN,
+                f"能力 {capability.capability_id} 属 {existing.owner_module_id}，他人不得覆盖。",
+                status_code=403,
+            )
+        reasons = breaking_change(existing, capability)
+        if reasons and not allow_breaking:
+            raise AppException(
+                ErrorCode.INTERFACE_CONFLICT,
+                f"{capability.capability_id} 破坏性升级被阻塞：" + "；".join(reasons),
+                status_code=409,
+            )
+        capabilities = [c for c in registry.capabilities if c.capability_id != capability.capability_id]
+        if reasons:
+            capabilities.append(existing.model_copy(update={"status": STATUS_DEPRECATED}))
+
+    capabilities.append(
+        capability.model_copy(
+            update={"status": STATUS_APPROVED_FOR_BUILD, "verification_ref": None}
+        )
+    )
+    capabilities.sort(key=lambda c: (c.capability_id, c.version, c.status))
+    return registry.model_copy(update={"capabilities": capabilities})
+
+
 def registry_issues(registry: InterfaceRegistry) -> list[str]:
-    """全局校验：同 id+version 冲突、同 id 多个 VERIFIED、非法字段。"""
+    """全局校验：同 id+version 冲突、同 id 多个 VERIFIED/APPROVED_FOR_BUILD、非法字段。"""
     issues: list[str] = []
     seen: set[tuple[str, int]] = set()
     verified_count: dict[str, int] = {}
+    approved_count: dict[str, int] = {}
     for capability in registry.capabilities:
         key = (capability.capability_id, capability.version)
         if key in seen:
             issues.append(f"能力 ID+版本冲突：{capability.capability_id}@{capability.version}")
         seen.add(key)
+        if capability.status not in _ALLOWED_STATUSES:
+            issues.append(f"{capability.capability_id} 未知契约状态：{capability.status}")
         issues.extend(_kind_issues(capability))
         if capability.status == STATUS_VERIFIED:
             verified_count[capability.capability_id] = (
                 verified_count.get(capability.capability_id, 0) + 1
             )
+        elif capability.status == STATUS_APPROVED_FOR_BUILD:
+            approved_count[capability.capability_id] = (
+                approved_count.get(capability.capability_id, 0) + 1
+            )
     for capability_id, count in verified_count.items():
         if count > 1:
             issues.append(f"{capability_id} 存在多个 VERIFIED 版本：{count}")
+    for capability_id, count in approved_count.items():
+        if count > 1:
+            issues.append(f"{capability_id} 存在多个 APPROVED_FOR_BUILD 版本：{count}")
     return issues
 
 
 def lookup(
-    registry: InterfaceRegistry, capability_id: str, *, include_draft: bool = False
+    registry: InterfaceRegistry,
+    capability_id: str,
+    *,
+    include_draft: bool = False,
+    include_approved: bool = False,
 ) -> PublicCapability | None:
-    """按能力 ID 取**最新**契约；默认只返回消费者可用的 ``VERIFIED``（DRAFT 仅供规划）。"""
-    allowed = {STATUS_VERIFIED} | ({STATUS_DRAFT} if include_draft else set())
+    """按能力 ID 取**最新**契约；默认只返回 ``VERIFIED``（规划可含 ``DRAFT``，并行构建可含 ``APPROVED_FOR_BUILD``）。"""
+    allowed = {STATUS_VERIFIED}
+    if include_draft:
+        allowed.add(STATUS_DRAFT)
+    if include_approved:
+        allowed.add(STATUS_APPROVED_FOR_BUILD)
     matches = [
         c for c in registry.capabilities
         if c.capability_id == capability_id and c.status in allowed
@@ -269,6 +334,7 @@ __all__ = [
     "INTERFACE_REGISTRY_VERSION",
     "KIND_HTTP",
     "KIND_JAVA_METHOD",
+    "STATUS_APPROVED_FOR_BUILD",
     "STATUS_DEPRECATED",
     "STATUS_DRAFT",
     "STATUS_VERIFIED",
@@ -276,6 +342,7 @@ __all__ = [
     "InterfaceKind",
     "InterfaceRegistry",
     "PublicCapability",
+    "approve_for_build",
     "breaking_change",
     "deprecate",
     "load_registry",
