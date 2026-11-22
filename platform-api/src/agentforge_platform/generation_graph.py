@@ -751,6 +751,11 @@ def _cleanup_runner(context: GenerationContext, run_id: int) -> None:
 
 def run_generation(context: GenerationContext, run_id: int) -> GenerationState:
     """worker 处理入口：QUEUED→PLANNING 后驱动生成图；异常落 FAILED 并留事件。"""
+    from agentforge_platform.factory_pipeline import factory_pipeline_enabled, run_factory_pipeline
+
+    if factory_pipeline_enabled():
+        return run_factory_pipeline(context, run_id)  # type: ignore[return-value]
+
     context = replace(
         context, deadline_monotonic=time.monotonic() + runtime_limits().run_timeout_seconds
     )

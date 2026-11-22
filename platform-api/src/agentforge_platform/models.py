@@ -305,3 +305,91 @@ class AssetFile(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.now()
     )
+
+
+class FactoryBlueprint(Base):
+    """FP01：异步工厂流水线的阶段架构蓝图持久化表（按 run + phase + version 唯一）。"""
+
+    __tablename__ = "factory_blueprint"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "phase",
+            "version",
+            name="uq_factory_blueprint_run_phase_version",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    blueprint_json: Mapped[str] = mapped_column(Text, nullable=False)
+    blueprint_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class DepartmentRun(Base):
+    """FP01：工厂流水线部门级持久化运行状态（支撑并发更新、取消与崩溃断点续跑）。"""
+
+    __tablename__ = "department_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "phase",
+            "dept_id",
+            name="uq_department_run_run_phase_dept",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    dept_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    current_round: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    staging_dir: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    api_fragment_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+
+
+class DefectTicketRow(Base):
+    """FP01：工厂流水线缺陷单持久化记录（部门小循环或总装归因大循环产出的结构化缺陷）。"""
+
+    __tablename__ = "defect_ticket"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("run.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    dept_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    error_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
