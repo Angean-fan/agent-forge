@@ -29,7 +29,7 @@
 
 | 路径 | 权威内容 | 当前存储方式 |
 |---|---|---|
-| `platform-api/src/agentforge_platform/` | 79 个后端 Python 模块（FastAPI / SQLAlchemy / LangChain / LangGraph / DeepAgents） | Git 源码 |
+| `platform-api/src/agentforge_platform/` | 78 个后端 Python 模块（FastAPI / SQLAlchemy / LangChain / LangGraph / DeepAgents） | Git 源码 |
 | `platform-api/migrations/versions/` | 15 个 Alembic 数据库迁移（`0001` 至 `0015`） | 默认 SQLite（WAL，`agentforge.db`） |
 | `platform-ui/src/` | 7 个 Vue 3 页面（`LoginView`、`ProjectListView`、`ProjectCreateView`、`ProjectDetailView`、`InterviewView`、`RunDetailView`、`ProfilesView`） | Vite + Element Plus |
 | `runner/src/agentforge_runner/` | 独立受控沙箱执行服务（依赖 Docker Engine，默认 `container_network=none`） | 独立 FastAPI 服务 |
@@ -65,7 +65,7 @@
 | `routes_projects.py` | `POST /api/projects`、`GET /api/projects`、`GET /api/projects/{project_id}` | 项目创建与归属查询 |
 | `routes_interview.py` | `GET /api/projects/{project_id}/interview`、`POST /api/projects/{project_id}/interview` | 多轮动态访谈（LangGraph interrupt/resume） |
 | `routes_spec.py` | `GET/PUT /api/projects/{project_id}/spec`、`POST .../extract`、`POST .../confirm`、`POST .../summary`、`GET .../spec/diff` | 规格提取、乐观锁编辑、冻结与版本 diff |
-| `routes_profiles.py` | `GET /api/profiles`、`POST /api/profiles/explain` | 4 组合 Profile 查询与推荐理由解释 |
+| `routes_profiles.py` | `GET /api/profiles`、`POST /api/projects/{project_id}/profile-explanation` | 4 组合 Profile 查询与推荐理由解释 |
 | `routes_runs.py` | `POST/GET /api/projects/{project_id}/runs`、`GET /api/runs/{run_id}`、`GET .../events`、`GET .../cost`、`POST .../cancel`、`POST .../resume`、`GET .../artifact`、`GET .../artifacts/{artifact_id}`、`POST .../iterate`、`POST/GET/DELETE .../preview`、`GET /api/preview/{token}`、`GET /api/workers` | 运行触发、事件流轮询、取消恢复、下载、迭代与预览状态管理 |
 | `runner/main.py` | `GET /health`、`POST /run`、`POST /verify`、`POST /accept`（需 `X-Runner-Token`） | 独立 Docker 沙箱执行、构建校验与固定 HTTP 业务验收 |
 
