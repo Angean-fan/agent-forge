@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from agentforge_platform.budget import effective_budget_micro
 from agentforge_platform.clients import Completion, ModelClient, ProviderPreflightError, Usage
+from agentforge_platform.db import is_postgres, lock_row
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.limits import runtime_limits
 from agentforge_platform.models import ModelCall, Project, RunTask
@@ -639,7 +640,7 @@ def _enforce_run_limits(db: Session, run_id: int, max_output_tokens: int) -> Non
     used = db.scalar(
         select(func.count())
         .select_from(ModelCall)
-        .where(ModelCall.run_id == run_id, ModelCall.status != "NOT_SENT")
+        .where(ModelCall.run_id == run_id, ModelCall.status.not_in(("NOT_SENT", "RELEASED")))
     )
     if int(used or 0) >= limits.max_model_calls_per_run:
         raise AppException(
@@ -673,6 +674,9 @@ def reserve(
     draft_id: int | None = None,
     run_id: int | None = None,
     task_id: str | None = None,
+    dept_id: str | None = None,
+    phase: str | None = None,
+    round_num: int | None = None,
     thinking_mode: str | None = None,
     reasoning_effort: str | None = None,
 ) -> ModelCall:
@@ -705,6 +709,9 @@ def reserve(
         draft_id=draft_id,
         run_id=run_id,
         task_id=task_id,
+        dept_id=dept_id,
+        phase=phase,
+        round=round_num,
         thinking_mode=thinking_mode,
         reasoning_effort=reasoning_effort,
         price_version=price.version if price else UNKNOWN,
@@ -783,14 +790,19 @@ def invoke(
     json_mode: bool = False,
     reasoning_effort: str | None = None,
     task_id: str | None = None,
+    dept_id: str | None = None,
+    phase: str | None = None,
+    round_num: int | None = None,
 ) -> Completion:
     route = resolve_route(model_role)
     _validate_thinking(thinking_mode, reasoning_effort)
-    # SQLite WAL 允许多读单写。先拿写锁，再检查预算/频率并写入预留，
+    # SQLite WAL 拿写锁，PostgreSQL 对 Project 行加 SELECT ... FOR UPDATE 行锁，
     # 防止并发请求都从相同的旧余额通过检查。
     db.commit()
     if db.get_bind().dialect.name == "sqlite":
         db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    elif is_postgres(db):
+        lock_row(db, Project, project_id)
     reserve(
         db,
         call_id=call_id,
@@ -801,6 +813,9 @@ def invoke(
         draft_id=draft_id,
         run_id=run_id,
         task_id=task_id,
+        dept_id=dept_id,
+        phase=phase,
+        round_num=round_num,
         thinking_mode=thinking_mode,
         reasoning_effort=reasoning_effort,
     )

@@ -212,6 +212,10 @@ class ModelCall(Base):
     run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     # R13：生成期调用所属 DAG 任务；生成前（draft）与旧行均为 NULL。
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # A07：工厂模式部门与阶段维度记账（可空，旧数据与草稿均为 NULL）。
+    dept_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    phase: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    round: Mapped[int | None] = mapped_column(Integer, nullable=True)
     thinking_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     reasoning_effort: Mapped[str | None] = mapped_column(String(16), nullable=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

@@ -18,6 +18,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agentforge_platform.budget_pg import cost_by_department
 from agentforge_platform.contract import BusinessContract
 from agentforge_platform.models import ModelCall
 from agentforge_platform.resolver import AssetLock
@@ -168,7 +169,7 @@ def build_cost_report(db: Session, *, project_id: int, run_id: int) -> dict:
             output_tokens += int(row.output_tokens or 0)
             if row.status == "SETTLED":
                 settled += int(row.cost_micro or 0)
-            else:
+            elif row.status != "RELEASED":
                 unknown += 1
             entry = by_model.setdefault(row.model, {
                 "provider": row.provider, "model_role": row.model_role,
@@ -181,7 +182,7 @@ def build_cost_report(db: Session, *, project_id: int, run_id: int) -> dict:
             entry["output_tokens"] += int(row.output_tokens or 0)
             if row.status == "SETTLED":
                 entry["cost_micro"] += int(row.cost_micro or 0)
-            else:
+            elif row.status != "RELEASED":
                 entry["unknown_calls"] += 1
             entry["modes"].add(row.thinking_mode)
             entry["strengths"].add(row.reasoning_effort)
@@ -210,6 +211,7 @@ def build_cost_report(db: Session, *, project_id: int, run_id: int) -> dict:
         "draft_phase": draft,       # 兼容旧键
         "run_level": bucket(by_run=run_id, task_null=True),  # run 级（空 task，含规划/复核等）
         "by_task": by_task,
+        "by_department": cost_by_department(db, run_id),
         "generation_phase": bucket(by_run=run_id),
     }
 
