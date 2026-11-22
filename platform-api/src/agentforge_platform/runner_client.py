@@ -42,5 +42,26 @@ class HttpRunnerClient:
     def verify(self, artifact_dir: str) -> dict:
         return self._post("/verify", {"artifact_dir": artifact_dir})
 
+    def verify_module(
+        self,
+        *,
+        artifact_dir: str,
+        module_id: str,
+        stack: str,
+        test_selector: str,
+        timeout_seconds: int = 120,
+    ) -> dict:
+        """A08：调用 Runner 单模块快检端点 ``POST /verify-module``。"""
+        return self._post(
+            "/verify-module",
+            {
+                "artifact_dir": artifact_dir,
+                "module_id": module_id,
+                "stack": stack,
+                "test_selector": test_selector,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+
     def accept(self, artifact_dir: str) -> dict:
         return self._post("/accept", {"artifact_dir": artifact_dir})

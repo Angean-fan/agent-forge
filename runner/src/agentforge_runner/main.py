@@ -19,6 +19,11 @@ from agentforge_runner.acceptance import AcceptanceResult, run_acceptance
 from agentforge_runner.checks import ALL_CHECKS, VerificationResult, overall_of, run_verification
 from agentforge_runner.config import RunnerConfig, load_config
 from agentforge_runner.container import build_run_argv, container_runtime_available, run_container
+from agentforge_runner.module_checks import (
+    ModuleVerificationResult,
+    ModuleVerifyRequest,
+    run_module_verification,
+)
 from agentforge_runner.security import UnsafePathError, resolve_artifact_dir
 from agentforge_runner.tasks import get_task
 
@@ -101,6 +106,18 @@ def create_app(config: RunnerConfig | None = None) -> FastAPI:
             overall=overall_of(results),
             checks=results,
         )
+
+    @app.post(
+        "/verify-module",
+        dependencies=[Depends(require_token)],
+        response_model=ModuleVerificationResult,
+    )
+    def verify_module(request: ModuleVerifyRequest) -> ModuleVerificationResult:
+        try:
+            host_dir = resolve_artifact_dir(cfg.work_root, request.artifact_dir)
+        except UnsafePathError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return run_module_verification(host_dir, cfg, request)
 
     @app.post("/accept", dependencies=[Depends(require_token)], response_model=AcceptanceResult)
     def accept(request: AcceptRequest) -> AcceptanceResult:
