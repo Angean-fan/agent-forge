@@ -142,6 +142,17 @@ def extract_symbol_summary(rel_path: str, content_text: str) -> str:
     return " ".join(symbols[:40])
 
 
+def _query_terms(query: str) -> list[str]:
+    """将用户/Agent 搜索词（含驼峰如 TaskController 或连字符如 task-crud）拆分为独立小写词项。"""
+    de_camel = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", query or "")
+    terms: list[str] = []
+    for raw in _WORD_SPLIT_RE.findall(de_camel):
+        lowered = raw.lower().strip()
+        if lowered and lowered not in terms:
+            terms.append(lowered)
+    return terms
+
+
 def _tokenize_for_fts(parts: Sequence[str]) -> str:
     """将标识符、驼峰词、路径片段与中文词拆分为空格分隔的词元，适配 PG ``to_tsvector('simple', ...)``。"""
     raw = " ".join(p for p in parts if p)
@@ -473,7 +484,7 @@ class PgAssetStore:
         limit: int = 20,
     ) -> list[AssetRelease]:
         """全文检索资产版本：PG 下使用 ``to_tsvector('simple', search_text)`` + ``ILIKE``，SQLite 下使用 ``LIKE``。"""
-        terms = [t.lower() for t in _WORD_SPLIT_RE.findall(query) if t.strip()]
+        terms = _query_terms(query)
         if not terms:
             return self.list_releases(kind=kind, profile=profile)[:limit]
 
@@ -536,7 +547,7 @@ class PgAssetStore:
         limit: int = 20,
     ) -> list[AssetFile]:
         """全文检索资产文件（支持按版本、类型或关键词搜索源码与符号摘要）。"""
-        terms = [t.lower() for t in _WORD_SPLIT_RE.findall(query) if t.strip()]
+        terms = _query_terms(query)
         stmt = select(AssetFile).join(AssetRelease, AssetFile.release_id == AssetRelease.id)
         if release_id is not None:
             stmt = stmt.where(AssetFile.release_id == release_id)

@@ -42,6 +42,8 @@ logs/
 *.sqlite3
 # R06/R27 方法索引是可重建的本地派生视图。
 methods/.index/
+# A03：从 PG 物化的本地只读资产缓存目录（可随时从 PG 重建，不入库）
+.cache/
 *.zip
 
 # ---- OS / editor ----

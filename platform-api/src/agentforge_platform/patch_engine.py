@@ -73,6 +73,12 @@ RESTRICTED_TOOLS: tuple[str, ...] = (
     "glob",
     "grep",
 )
+# A03：工厂模式下显式启用的只读资产检索/读取/暂存套用扩展白名单（默认关闭）。
+ASSET_READONLY_TOOLS: tuple[str, ...] = (
+    "search_assets",
+    "read_asset_file",
+    "apply_asset_to_staging",
+)
 # 绝不能出现的工具：shell（任意命令）与子代理委派（未受控）。
 FORBIDDEN_TOOL_NAMES: frozenset[str] = frozenset({"execute", "task"})
 
@@ -390,7 +396,7 @@ def audit_tool_table(agent: Any) -> set[str]:
     return set()
 
 
-def assert_restricted_tools(agent: Any) -> set[str]:
+def assert_restricted_tools(agent: Any, *, allow_asset_tools: bool = False) -> set[str]:
     """构造后的第二道闸：出现 shell/委派/白名单之外的任何工具即拒绝。"""
     names = audit_tool_table(agent)
     forbidden = names & FORBIDDEN_TOOL_NAMES
@@ -398,7 +404,10 @@ def assert_restricted_tools(agent: Any) -> set[str]:
         raise AppException(
             ErrorCode.FORBIDDEN, f"Agent 暴露危险工具：{sorted(forbidden)}", status_code=500
         )
-    unexpected = names - set(RESTRICTED_TOOLS)
+    allowed = set(RESTRICTED_TOOLS)
+    if allow_asset_tools:
+        allowed |= set(ASSET_READONLY_TOOLS)
+    unexpected = names - allowed
     if unexpected:
         raise AppException(
             ErrorCode.FORBIDDEN, f"Agent 暴露未授权工具：{sorted(unexpected)}", status_code=500
@@ -443,6 +452,7 @@ def build_patch_engine(
     model_name: str | None = None,
     model: BaseChatModel | None = None,
     extra_tools: tuple[Callable[..., Any], ...] = (),
+    allow_asset_tools: bool = False,
 ) -> PatchEngine:
     """用受限工具 + R15 暂存 backend 构造单任务 patch engine，并审计真实工具表。
 
@@ -459,13 +469,14 @@ def build_patch_engine(
         middleware=[filesystem],
         subagents=[],
     )
-    tool_names = frozenset(assert_restricted_tools(agent))
+    tool_names = frozenset(assert_restricted_tools(agent, allow_asset_tools=allow_asset_tools))
     return PatchEngine(
         model=model, backend=staging_backend, agent=agent, tool_names=tool_names
     )
 
 
 __all__ = [
+    "ASSET_READONLY_TOOLS",
     "CODING_API_KEY_ENV",
     "DEFAULT_CODING_MODEL",
     "DEFAULT_DASHSCOPE_BASE_URL",
