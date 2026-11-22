@@ -250,5 +250,5 @@ B01—B04（文档一基线核对完成）
 
 满足以下全部条件后，方可进入《文档三：异步工厂流水线与开源交付》：
 1. `A01—A09` 全部提交并各有 `docs/Axx_*.md` 实施记录；
-2. 本地 PostgreSQL 上跑通 `alembic upgrade head` + `seed_assets` + 逐文件检索 + 只读缓存装配 + 并发预算行锁压测；
+2. PostgreSQL 上跑通 `alembic upgrade head` + `seed_assets` + 逐文件检索 + 只读缓存装配 + 并发预算行锁压测；
 3. 原有 772 后端 / 41 前端 / 30 Runner 测试与 7 份旧 `asset-lock` 重放全部零回归。
