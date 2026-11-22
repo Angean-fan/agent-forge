@@ -51,10 +51,11 @@ B01—B04（文档一基线核对完成）
 
 - **接口选用：**
   - **复用并扩展：** `platform-api/src/agentforge_platform/db.py`（`get_database_url()`, `make_engine()`, `make_session_factory()`, `session_scope()`, `get_db()`）、`platform-api/migrations/env.py`、`platform-api/pyproject.toml`
-  - **新增接口：** `db.is_postgres(engine_or_url) -> bool`、`db.lock_row(db, model, row_id)`（PG 下自动加 `WITH FOR UPDATE`，SQLite 下优雅退化为短事务）
-- **Goal：** 让平台后端原生支持连接本地 PostgreSQL（`postgresql+psycopg://...`）运行全量 15 个 Alembic 迁移与全部 ORM 读写操作，同时保留内存/文件 SQLite 对现有单元测试的无缝兼容。
+  - **新增接口：** `db.is_postgres(engine_or_url) -> bool`、`db.lock_row(db, model, row_id)`（PG 下自动加 `WITH FOR UPDATE`，SQLite 下优雅退化为短事务）、`db.read_local_env_var(name)`（自动读取环境变量或未入库 `platform-api/.env` 并过滤 `<...>` 占位符）、`db.ensure_postgres_database(url)`（首次连接目标库不存在时自动经维护库 `CREATE DATABASE`）、`db.isolated_schema_url(url, schema)` / `ensure_postgres_schema()` / `drop_postgres_schema()`（测试使用独立 Schema 隔离，严防 `downgrade` 误删 `public` 正式表）
+- **Goal：** 让平台后端原生支持连接本地或本机隧道转发（如 `127.0.0.1:15432`）PostgreSQL（`postgresql+psycopg://...`）运行全量 15 个 Alembic 迁移与全部 ORM 读写操作，同时保留内存/文件 SQLite 对现有单元测试的无缝兼容。
 - **Context：**
   - 当前 `db.py` 默认使用 `sqlite+pysqlite:///./agentforge.db` 并在连接事件中硬编码了 `PRAGMA journal_mode=WAL` 与 `PRAGMA foreign_keys=ON`；若直接传入 PostgreSQL URL，执行 SQLite PRAGMA 会报错。
+  - 针对通过本机 `127.0.0.1:15432` 端口转发连接云服务器 PG 的场景，需配置 `pool_pre_ping=True, pool_recycle=300, connect_args={"connect_timeout": 5}` 防隧道空闲断连挂死，且 `pytest` 配置 `--tb=short` 防止连接失败时局部变量泄露连接串。
   - 现有 15 个迁移脚本（`migrations/versions/0001..0015`）及 `models.py` 需核对所有字段类型、索引、布尔默认值与自增主键在 PostgreSQL 方言下完全合法。
   - `platform-api/pyproject.toml` 需新增锁定版本的 `psycopg[binary]` 驱动依赖，并更新 `uv.lock`。
 - **Constraints：**
@@ -84,7 +85,7 @@ B01—B04（文档一基线核对完成）
   - **绝不修改** Git 仓库内任何既有模板/能力包/方法单元/集成包源码文件；
   - `seed_assets` 必须**严格幂等**：同一 `(kind, asset_id, version)` 若 `checksum` 相同则跳过；若试图用不同内容覆盖已发布版本必须直接拒绝报错（不可变版本保护）；
   - 二进制文件或超大文件（> 2 MiB）禁止直接存纯文本，按安全策略拒绝或跳过并记录原因；严禁跟随符号链接导入宿主机文件；
-  - 保留 SQLite 测试回退查询（SQLite 下可用 `LIKE` / 既有 FTS5 降级，PG 下走 `to_tsvector/plainto_tsquery`）；完成后提交 git（`feat(a02): ...`）。
+  - 保留 SQLite 测试回退查询（SQLite 下可用 `LIKE` / 既有 FTS5 降级，PG 下固定使用标准内置 `'simple'` 分词配置 `to_tsvector('simple', ...)` / `plainto_tsquery('simple', ...)` 配合 `ILIKE` 兜底，兼容未安装第三方中文分词插件的云端标准 PG）；`seed_assets` 优先读取 `AGENTFORGE_DATABASE_URL` 或 `db.read_local_env_var("AGENTFORGE_DATABASE_URL")` 并自动调用 `ensure_postgres_database()`；完成后提交 git（`feat(a02): ...`）。
 - **WhenDone：**
   - 迁移 `0016` 在 SQLite 与本地 PG 均可干净升级与回滚；
   - 运行 `uv run python -m agentforge_platform.seed_assets` 可一次性把仓库全部 5 模板、4 族能力包、3 方法单元、1 集成包完整同步入库，且每条 `checksum` 与 `B02` 核对值 100% 一致；

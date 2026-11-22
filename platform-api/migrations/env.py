@@ -11,7 +11,13 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from agentforge_platform.db import get_database_url
+from agentforge_platform.db import (
+    DEFAULT_DATABASE_URL,
+    ensure_postgres_database,
+    get_database_url,
+    is_postgres,
+    read_local_env_var,
+)
 from agentforge_platform.models import Base
 
 config = context.config
@@ -20,17 +26,21 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", get_database_url())
+    configured_url = get_database_url()
+    if configured_url == DEFAULT_DATABASE_URL:
+        configured_url = read_local_env_var("AGENTFORGE_DATABASE_URL") or configured_url
+    config.set_main_option("sqlalchemy.url", configured_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=url,
         target_metadata=target_metadata,
         literal_binds=True,
-        render_as_batch=True,
+        render_as_batch=not is_postgres(url),
         dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():
@@ -38,6 +48,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    url = config.get_main_option("sqlalchemy.url") or ""
+    if is_postgres(url):
+        ensure_postgres_database(url)
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -47,7 +60,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            render_as_batch=True,
+            render_as_batch=not is_postgres(connection),
         )
         with context.begin_transaction():
             context.run_migrations()

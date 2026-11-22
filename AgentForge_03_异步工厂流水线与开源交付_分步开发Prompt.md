@@ -280,7 +280,7 @@
 
 在公开发布到 GitHub 前，核对以下 6 条总验收门槛：
 1. **向后兼容零回归：** 关闭工厂开关时，原有 772 后端 / 41 前端 / 30 Runner 测试与 7 份旧 `asset-lock` 重放全部 PASS。
-2. **本地 PostgreSQL 闭环：** 新用户克隆仓库后，按 `README.md` 启动本地 PG → `alembic upgrade head` → `seed_assets` → 配置任意 OpenAI 兼容模型 `config/models.json` 即可跑通。
+2. **本地 / 隧道 PostgreSQL 闭环：** 新用户克隆仓库后，按 `README.md` 启动本地 PG（或连接 `127.0.0.1:15432` 等转发端口并在 `platform-api/.env` 填入连接串）→ 自动建库并执行 `alembic upgrade head` → `seed_assets` → 配置任意 OpenAI 兼容模型 `config/models.json` 即可跑通。
 3. **真实并行与安全隔离：** 多部门异步并发运行时，目录/SQL 零冲突、底座与 Facade Stub 不可被单部门篡改、预算行锁零双扣、单部门小循环与总装大循环均有界收敛。
 4. **真实沙箱底线：** 后端总验收与全栈总验收强制由独立 Docker Runner 给出 `PASS`，绝不凭模型口头审查标 `SUCCEEDED`。
 5. **支付与第三方安全：** 电商示例的支付能力完整运行在本地沙箱/Mock 模式，交付包零真实密钥、零生产支付凭据，明确标 `MOCK_ONLY / SANDBOX_VERIFIED`。

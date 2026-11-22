@@ -118,7 +118,7 @@
 - **Goal：** 明确本机开源开发与测试环境已就绪的工具链与缺失项，为后续《文档二》切换本地 PG 与《文档三》分层沙箱测试扫清环境盲区。
 - **Context：** 后续架构已锁定：本地 PostgreSQL 存储元数据与逐文件资产表；部门小循环允许本地轻量沙箱/受限进程跑 `mvn test` / `vitest`，但后端总验收与全栈总验收必须强制走独立 Docker Runner。
 - **Constraints：** 只做环境探针，不自动安装未经确认的系统软件，不擅自修改本机数据库密码或系统配置；未启动的服务如实标记为 `NOT_RUN / ENV_MISSING`。
-- **WhenDone：** 明确记录本地 PostgreSQL 版本与连接串可用性、JDK 17/21 与 Maven 本地缓存可用性、Node 22 可用性、Docker Daemon 与 Runner 镜像状态，以及尚需安装的项。
+- **WhenDone：** 明确记录本地或本机端口转发（如 `127.0.0.1:15432` 云端隧道）PostgreSQL 版本与连接串可用性、JDK 17/21 与 Maven 本地缓存可用性、Node 22 可用性、Docker Daemon 与 Runner 镜像状态，以及尚需安装的项。
 
 ### B04｜未接线模块与现有 API 边界盘点
 
