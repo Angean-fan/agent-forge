@@ -72,6 +72,8 @@ class ErrorCode(StrEnum):
     MODULE_MEMORY_REJECTED = "MODULE_MEMORY_REJECTED"
     # F03：项目内公共接口注册冲突（重复/破坏性变更/越权变更）。
     INTERFACE_CONFLICT = "INTERFACE_CONFLICT"
+    # FP02：项目总管架构蓝图未通过确定性硬校验（含纠正重试耗尽）。
+    BLUEPRINT_INVALID = "BLUEPRINT_INVALID"
 
 
 class AppException(Exception):
