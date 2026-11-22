@@ -19,16 +19,24 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentforge_platform.agent_files import FileBackend
-from agentforge_platform.clients import DashScopeClient, ModelClient
-from agentforge_platform.errors import ErrorCode
-from agentforge_platform.model_gateway import ROUTES, role_enabled
+from agentforge_platform.clients import DashScopeClient, ModelClient, OpenAICompatibleClient
+from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.model_gateway import (
+    DEFAULT_DEEPSEEK_BASE_URL,
+    FACTORY_ROLES,
+    ROUTES,
+    TOOL_REQUIRED_ROLES,
+    Route,
+    load_custom_routes,
+    role_enabled,
+)
 from agentforge_platform.patch_engine import (
     LedgerBinding,
     LedgerChatModel,
@@ -59,24 +67,102 @@ def dashscope_key_present() -> bool:
     return bool(os.environ.get(DASHSCOPE_KEY_ENV))
 
 
+def _effective_route(role: str) -> Route:
+    custom = load_custom_routes()
+    if role in custom:
+        return custom[role]
+    if role in FACTORY_ROLES:
+        fallback = FACTORY_ROLES[role]
+        if fallback in custom:
+            base = custom[fallback]
+            if role in TOOL_REQUIRED_ROLES and not base.supports_tools:
+                raise AppException(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"角色 {role} 回退到的角色 {fallback} 不支持工具调用（supports_tools=false）",
+                    status_code=422,
+                )
+            return replace(base, role=role)
+        if fallback in ROUTES:
+            base = ROUTES[fallback]
+            override = os.environ.get(f"AGENTFORGE_{role.upper()}_MODEL") or base.model
+            return replace(base, role=role, model=override)
+    if role in ROUTES:
+        return ROUTES[role]
+    raise AppException(
+        ErrorCode.VALIDATION_ERROR,
+        f"未知的模型角色：{role!r}",
+        status_code=422,
+    )
+
+
+def _route_endpoint(route: Route) -> str:
+    if os.environ.get("AGENTFORGE_MODELS_CONFIG", "").strip() and route.base_url:
+        return route.base_url
+    if route.provider == "deepseek_official":
+        return route.base_url or DEFAULT_DEEPSEEK_BASE_URL
+    return dashscope_base_url()
+
+
 def resolved_model_name(role: str) -> str:
-    """角色实际模型名：优先 ``AGENTFORGE_<ROLE>_MODEL`` 覆盖，否则用路由表真值。"""
+    """角色实际模型名：优先 ``AGENTFORGE_<ROLE>_MODEL`` 覆盖，否则用自定义或默认路由表真值。"""
     override = os.environ.get(f"AGENTFORGE_{role.upper()}_MODEL")
-    return override or ROUTES[role].model
+    if override:
+        return override
+    return _effective_route(role).model
+
+
+def build_client_for_role(role: str) -> OpenAICompatibleClient:
+    """A04：为给定角色（含工厂角色）构造绑定该角色路由的 ``OpenAICompatibleClient``。
+
+    缺密钥时抛 ``AppException(CONFIG_REQUIRED)``，绝不打印密钥。
+    """
+    route = _effective_route(role)
+    if not role_enabled(role):
+        raise AppException(
+            ErrorCode.MODEL_ROLE_DISABLED,
+            f"模型角色 {role} 未启用",
+            status_code=422,
+        )
+    api_key = os.environ.get(route.api_key_env, "").strip()
+    if not api_key:
+        raise AppException(
+            ErrorCode.CONFIG_REQUIRED,
+            f"角色 {role} 缺少环境变量密钥：{route.api_key_env}",
+            status_code=422,
+        )
+    return OpenAICompatibleClient(
+        provider=route.provider,
+        api_key_env=route.api_key_env,
+        base_url=_route_endpoint(route),
+        default_max_output_tokens=route.max_output_tokens,
+        supports_tools=route.supports_tools,
+    )
 
 
 def build_ledger_model(role: str, binding: LedgerBinding) -> LedgerChatModel:
-    """为给定角色构造账本模型（百炼 OpenAI 兼容端点）；缺密钥由调用方在此之前拦截。"""
-    api_key = os.environ.get(DASHSCOPE_KEY_ENV)
+    """为给定角色（含工厂角色）构造账本模型（OpenAI 兼容端点）；缺密钥在构造时即拦截。"""
+    route = _effective_route(role)
+    if role in TOOL_REQUIRED_ROLES and not route.supports_tools:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            f"编码/测试角色 {role} 要求 supports_tools=true",
+            status_code=422,
+        )
+    api_key = os.environ.get(route.api_key_env, "").strip()
     if not api_key:
-        # 正常路径下不会到达（构造前已按凭据门控）；此处为最后一道防御，且不回显密钥。
-        raise RuntimeError(f"环境变量 {DASHSCOPE_KEY_ENV} 未配置")
+        raise AppException(
+            ErrorCode.CONFIG_REQUIRED,
+            f"环境变量 {route.api_key_env} 未配置",
+            status_code=422,
+        )
+    role_binding = replace(binding, model_role=role) if binding.model_role != role else binding
+    max_tokens = route.max_output_tokens or role_binding.max_output_tokens
     return LedgerChatModel(
-        ledger_binding=binding,
+        ledger_binding=role_binding,
         model=resolved_model_name(role),
-        base_url=dashscope_base_url(),
+        base_url=_route_endpoint(route),
         api_key=api_key,
-        max_tokens=binding.max_output_tokens,
+        max_tokens=max_tokens,
         temperature=0,
     )
 
@@ -159,6 +245,7 @@ class RoleStatus:
     key_present: bool
     enabled: bool
     reason: str | None
+    endpoint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -169,14 +256,15 @@ class RoleStatus:
             "key_present": self.key_present,
             "enabled": self.enabled,
             "reason": self.reason,
-            "endpoint": dashscope_base_url(),
+            "endpoint": self.endpoint or dashscope_base_url(),
         }
 
 
-def _status(role: str) -> RoleStatus:
-    route = ROUTES[role]
+def role_status(role: str) -> RoleStatus:
+    """获取任意已知角色（含工厂角色）的脱敏就绪状态。"""
+    route = _effective_route(role)
     flag_on = role_enabled(role)
-    key_present = dashscope_key_present()
+    key_present = bool(os.environ.get(route.api_key_env, "").strip())
     enabled = flag_on and key_present
     if not flag_on:
         reason = "DISABLED"
@@ -184,7 +272,20 @@ def _status(role: str) -> RoleStatus:
         reason = ErrorCode.CONFIG_REQUIRED.value
     else:
         reason = None
-    return RoleStatus(role, route.provider, resolved_model_name(role), flag_on, key_present, enabled, reason)
+    return RoleStatus(
+        role=role,
+        provider=route.provider,
+        model=resolved_model_name(role),
+        flag_on=flag_on,
+        key_present=key_present,
+        enabled=enabled,
+        reason=reason,
+        endpoint=_route_endpoint(route),
+    )
+
+
+def _status(role: str) -> RoleStatus:
+    return role_status(role)
 
 
 @dataclass(frozen=True)
@@ -213,8 +314,11 @@ def build_production_routing(
     planning_client: ModelClient | None = None
     review_client: ModelClient | None = None
     if by_role[PLANNING_ROLE].enabled:
-        # 规划与审查同属 technical_planning 角色；共享一个无状态客户端实例。
-        planning_client = DashScopeClient()
+        # 规划与审查同属 technical_planning 角色；支持自定义多 Provider 或默认 DashScopeClient。
+        if os.environ.get("AGENTFORGE_MODELS_CONFIG", "").strip():
+            planning_client = build_client_for_role(PLANNING_ROLE)
+        else:
+            planning_client = DashScopeClient()
         review_client = planning_client
 
     coding_routing: CodingRouting | None = None
@@ -239,8 +343,10 @@ __all__ = [
     "CodingRouting",
     "ProductionRouting",
     "RoleStatus",
+    "build_client_for_role",
     "build_ledger_model",
     "build_production_routing",
     "dashscope_key_present",
     "resolved_model_name",
+    "role_status",
 ]

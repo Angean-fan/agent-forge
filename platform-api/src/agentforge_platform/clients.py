@@ -47,14 +47,47 @@ class ProviderPreflightError(RuntimeError):
     """The provider request was definitely not sent."""
 
 
-class DeepSeekClient:
-    """DeepSeek 官方 API 客户端（OpenAI 兼容 chat/completions）。"""
+class OpenAICompatibleClient:
+    """A04：通用 OpenAI 兼容（Chat Completions）客户端。
+
+    支持 DeepSeek、百炼 Qwen、OpenAI、GLM、Kimi 及本地 Ollama/vLLM 等任意兼容端点。
+    密钥**仅从 ``api_key_env`` 指定的环境变量读取**，绝不硬编码、不打印、不落日志。
+    """
 
     def __init__(
-        self, *, api_key_env: str = "DEEPSEEK_API_KEY", base_url: str = "https://api.deepseek.com"
+        self,
+        *,
+        provider: str = "openai_compatible",
+        api_key_env: str = "OPENAI_API_KEY",
+        base_url: str = "https://api.openai.com/v1",
+        default_max_output_tokens: int | None = None,
+        supports_tools: bool = True,
     ) -> None:
+        self._provider = provider
         self._api_key_env = api_key_env
         self._base_url = base_url.rstrip("/")
+        self._default_max_output_tokens = default_max_output_tokens
+        self._supports_tools = supports_tools
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
+    @property
+    def api_key_env(self) -> str:
+        return self._api_key_env
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def default_max_output_tokens(self) -> int | None:
+        return self._default_max_output_tokens
+
+    @property
+    def supports_tools(self) -> bool:
+        return self._supports_tools
 
     @property
     def timeout_seconds(self) -> int:
@@ -89,8 +122,13 @@ class DeepSeekClient:
             payload["reasoning_effort"] = reasoning_effort
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        if max_output_tokens is not None:
-            payload["max_tokens"] = max_output_tokens
+        effective_max_tokens = (
+            max_output_tokens
+            if max_output_tokens is not None
+            else self._default_max_output_tokens
+        )
+        if effective_max_tokens is not None:
+            payload["max_tokens"] = effective_max_tokens
 
         request = urllib.request.Request(
             f"{self._base_url}/chat/completions",
@@ -105,7 +143,7 @@ class DeepSeekClient:
                 request_id = response.headers.get("x-request-id") or body.get("id")
         except urllib.error.HTTPError as error:
             # 不回显响应体（可能含敏感信息）
-            raise RuntimeError(f"DeepSeek API HTTP {error.code}") from None
+            raise RuntimeError(f"{self._provider} API HTTP {error.code}") from None
 
         choices = body.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}
@@ -122,6 +160,19 @@ class DeepSeekClient:
             request_id=request_id,
             usage=usage,
             finish_reason=choices[0].get("finish_reason") if choices else None,
+        )
+
+
+class DeepSeekClient(OpenAICompatibleClient):
+    """DeepSeek 官方 API 客户端（OpenAI 兼容 chat/completions）。"""
+
+    def __init__(
+        self, *, api_key_env: str = "DEEPSEEK_API_KEY", base_url: str = "https://api.deepseek.com"
+    ) -> None:
+        super().__init__(
+            provider="DeepSeek",
+            api_key_env=api_key_env,
+            base_url=base_url,
         )
 
 

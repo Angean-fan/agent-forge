@@ -50,6 +50,37 @@ def get_database_url() -> str:
     return os.environ.get("AGENTFORGE_DATABASE_URL") or DEFAULT_DATABASE_URL
 
 
+def postgres_reachable(url: str | None, *, timeout_seconds: int = 2) -> bool:
+    """探测给定 PostgreSQL 连接串当前是否可达（含本地隧道转发端口未开启/断开时的优雅降级判定）。"""
+    if not url or not is_postgres(url):
+        return False
+    try:
+        parsed = make_url(url)
+    except (ArgumentError, ValueError):
+        return False
+    for db_name in (parsed.database or "postgres", "postgres"):
+        probe_engine = create_engine(
+            parsed.set(database=db_name),
+            future=True,
+            connect_args={"connect_timeout": timeout_seconds},
+        )
+        try:
+            with probe_engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+                return True
+        except OperationalError as exc:
+            orig = getattr(exc, "orig", None)
+            sqlstate = getattr(orig, "sqlstate", None)
+            if sqlstate == "3D000":
+                continue
+            return False
+        except Exception:  # noqa: BLE001
+            return False
+        finally:
+            probe_engine.dispose()
+    return False
+
+
 def ensure_postgres_database(url: str, *, admin_db: str = "postgres") -> bool:
     """若目标 PostgreSQL 数据库尚未创建，自动连接同实例维护库（默认 ``postgres``）创建它。
 

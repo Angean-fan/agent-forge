@@ -26,6 +26,7 @@ from agentforge_platform.db import (
     lock_row,
     make_engine,
     make_session_factory,
+    postgres_reachable,
     read_local_env_var,
     session_scope,
 )
@@ -222,8 +223,8 @@ def test_read_local_env_var_and_database_name_validation(
 
 def test_live_postgres_migrations_crud_and_isolation() -> None:
     pg_url = read_local_env_var("AGENTFORGE_TEST_PG_URL") or ""
-    if not pg_url:
-        pytest.skip("NOT_RUN: 未配置 AGENTFORGE_TEST_PG_URL 本地/隧道 PostgreSQL 测试环境")
+    if not pg_url or not postgres_reachable(pg_url):
+        pytest.skip("NOT_RUN: 未配置或当前未启动 AGENTFORGE_TEST_PG_URL 本地/隧道 PostgreSQL 环境")
 
     assert is_postgres(pg_url) is True
     # 1. 若云服务器 15432 上尚未创建测试库（如 agentforge_test），自动连接默认维护库创建

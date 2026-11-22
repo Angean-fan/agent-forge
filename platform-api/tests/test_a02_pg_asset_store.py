@@ -30,6 +30,7 @@ from agentforge_platform.db import (
     isolated_schema_url,
     make_engine,
     make_session_factory,
+    postgres_reachable,
     read_local_env_var,
     session_scope,
 )
@@ -279,8 +280,8 @@ def test_search_releases_and_files_and_cli_entry(
 
 def test_live_postgres_migration_0016_seed_and_fts_search() -> None:
     pg_url = read_local_env_var("AGENTFORGE_TEST_PG_URL") or ""
-    if not pg_url:
-        pytest.skip("NOT_RUN: 未配置 AGENTFORGE_TEST_PG_URL 本地/隧道 PostgreSQL 测试环境")
+    if not pg_url or not postgres_reachable(pg_url):
+        pytest.skip("NOT_RUN: 未配置或当前未启动 AGENTFORGE_TEST_PG_URL 本地/隧道 PostgreSQL 环境")
 
     assert is_postgres(pg_url) is True
     ensure_postgres_database(pg_url)

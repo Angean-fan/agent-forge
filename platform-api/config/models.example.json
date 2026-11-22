@@ -1,0 +1,82 @@
+{
+  "version": "a04-example-1",
+  "currency": "CNY",
+  "roles": {
+    "user_interaction": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "max_output_tokens": 4096,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000
+      }
+    },
+    "technical_planning": {
+      "provider": "dashscope",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3.7-plus",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "max_output_tokens": 8192,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 2000000,
+        "output_micro_per_million": 6000000
+      }
+    },
+    "coding": {
+      "provider": "dashscope",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3-coder-flash",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "max_output_tokens": 12000,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000
+      }
+    },
+    "complex_repair": {
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4.1",
+      "api_key_env": "OPENAI_API_KEY",
+      "max_output_tokens": 12000,
+      "supports_tools": true
+    },
+    "chief_architect": {
+      "provider": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "model": "gpt-4.1",
+      "api_key_env": "OPENAI_API_KEY",
+      "max_output_tokens": 8192,
+      "supports_tools": true
+    },
+    "dept_lead": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "max_output_tokens": 8192,
+      "supports_tools": true
+    },
+    "dept_coder": {
+      "provider": "dashscope",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "model": "qwen3-coder-flash",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "max_output_tokens": 12000,
+      "supports_tools": true
+    },
+    "dept_tester": {
+      "provider": "ollama_local",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "qwen2.5-coder:14b",
+      "api_key_env": "OLLAMA_API_KEY",
+      "max_output_tokens": 8192,
+      "supports_tools": true
+    }
+  }
+}

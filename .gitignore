@@ -4,6 +4,8 @@
 !.env.example
 # 真实预置账号（含密码哈希）不入库，参见 accounts.example.json
 platform-api/config/accounts.json
+# A04：用户自定义模型路由配置不入库，参见 models.example.json
+platform-api/config/models.json
 
 # ---- Python ----
 __pycache__/

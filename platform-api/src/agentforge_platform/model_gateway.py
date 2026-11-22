@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -35,35 +38,278 @@ def _now() -> datetime:
 
 
 @dataclass(frozen=True)
+class Price:
+    version: str
+    input_micro_per_million: int
+    output_micro_per_million: int
+    currency: str = "CNY"
+
+
+@dataclass(frozen=True)
 class Route:
     role: str
     provider: str
     model: str
     api_key_env: str
     enabled: bool
+    base_url: str | None = None
+    max_output_tokens: int | None = None
+    supports_tools: bool = True
+    price: Price | None = None
 
+
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 ROUTES: dict[str, Route] = {
     "user_interaction": Route(
-        "user_interaction", "deepseek_official", "deepseek-flash", "DEEPSEEK_API_KEY", True
+        "user_interaction",
+        "deepseek_official",
+        "deepseek-flash",
+        "DEEPSEEK_API_KEY",
+        True,
+        base_url=DEFAULT_DEEPSEEK_BASE_URL,
     ),
     # 后续阶段才实现：仅文档占位，MVP 不实例化、不检查密钥
     "technical_planning": Route(
-        "technical_planning", "dashscope", "qwen3.7-plus", "DASHSCOPE_API_KEY", False
+        "technical_planning",
+        "dashscope",
+        "qwen3.7-plus",
+        "DASHSCOPE_API_KEY",
+        False,
+        base_url=DEFAULT_DASHSCOPE_BASE_URL,
     ),
-    "coding": Route("coding", "dashscope", "qwen3-coder-flash", "DASHSCOPE_API_KEY", False),
+    "coding": Route(
+        "coding",
+        "dashscope",
+        "qwen3-coder-flash",
+        "DASHSCOPE_API_KEY",
+        False,
+        base_url=DEFAULT_DASHSCOPE_BASE_URL,
+    ),
     "complex_repair": Route(
-        "complex_repair", "dashscope", "qwen3.8-max", "DASHSCOPE_API_KEY", False
+        "complex_repair",
+        "dashscope",
+        "qwen3.8-max",
+        "DASHSCOPE_API_KEY",
+        False,
+        base_url=DEFAULT_DASHSCOPE_BASE_URL,
     ),
 }
 
+# A04：工厂流水线角色及其向已有角色的回退映射。
+FACTORY_ROLES: dict[str, str] = {
+    "chief_architect": "technical_planning",
+    "dept_lead": "technical_planning",
+    "dept_coder": "coding",
+    "dept_tester": "coding",
+}
+KNOWN_ROLES: frozenset[str] = frozenset(set(ROUTES) | set(FACTORY_ROLES))
+TOOL_REQUIRED_ROLES: frozenset[str] = frozenset(
+    {"coding", "complex_repair", "dept_coder", "dept_tester"}
+)
 
-@dataclass(frozen=True)
-class Price:
-    version: str
-    input_micro_per_million: int
-    output_micro_per_million: int
-    currency: str = "CNY"
+_SAFE_API_KEY_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+_SUSPECTED_SECRET_PREFIXES = ("sk-", "ghp_", "github_pat_", "ak-", "akia", "bearer ", "eyj")
+_FORBIDDEN_CONFIG_KEYS = frozenset({"api_key", "apikey", "secret", "token", "password"})
+
+
+def _looks_like_raw_secret(value: str) -> bool:
+    stripped = value.strip()
+    lower = stripped.lower()
+    if lower.startswith(_SUSPECTED_SECRET_PREFIXES):
+        return True
+    return _SAFE_API_KEY_ENV_RE.fullmatch(stripped) is None
+
+
+def _parse_custom_price(
+    raw_price: Any, *, default_version: str, default_currency: str
+) -> Price | None:
+    if raw_price is None:
+        return None
+    if not isinstance(raw_price, dict):
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            "price_micro 必须为对象（包含 input_micro_per_million / output_micro_per_million）",
+            status_code=422,
+        )
+    if "input_micro_per_million" not in raw_price or "output_micro_per_million" not in raw_price:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            "price_micro 缺少 input_micro_per_million 或 output_micro_per_million",
+            status_code=422,
+        )
+    try:
+        in_micro = int(raw_price["input_micro_per_million"])
+        out_micro = int(raw_price["output_micro_per_million"])
+    except (TypeError, ValueError) as exc:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            "price_micro 单价必须为非负整数",
+            status_code=422,
+        ) from exc
+    if in_micro < 0 or out_micro < 0:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            "price_micro 单价不能为负数",
+            status_code=422,
+        )
+    version = str(raw_price.get("version") or default_version or UNKNOWN).strip() or UNKNOWN
+    currency = str(raw_price.get("currency") or default_currency or "CNY").strip().upper()
+    return Price(version, in_micro, out_micro, currency)
+
+
+def load_custom_routes(config_path: str | Path | None = None) -> dict[str, Route]:
+    """A04：加载并严格校验用户自定义模型路由配置（``config/models.json`` 或 ``AGENTFORGE_MODELS_CONFIG``）。
+
+    未配置路径时返回空字典（回退至默认路由）。
+    """
+    raw_path = (
+        str(config_path).strip()
+        if config_path is not None
+        else os.environ.get("AGENTFORGE_MODELS_CONFIG", "").strip()
+    )
+    if not raw_path:
+        return {}
+    path = Path(raw_path)
+    if not path.is_file():
+        raise AppException(
+            ErrorCode.CONFIG_REQUIRED,
+            f"模型路由配置文件不存在：{path}",
+            status_code=422,
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            f"模型路由配置文件不是合法 JSON：{path}",
+            status_code=422,
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            "模型路由配置顶层必须为 JSON 对象",
+            status_code=422,
+        )
+
+    roles_block = payload.get("roles") if "roles" in payload else payload
+    if not isinstance(roles_block, dict) or not roles_block:
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            "模型路由配置必须包含非空的 roles 映射",
+            status_code=422,
+        )
+
+    default_version = str(payload.get("version") or "custom-1").strip()
+    default_currency = str(payload.get("currency") or "CNY").strip().upper()
+
+    custom: dict[str, Route] = {}
+    for role, entry in roles_block.items():
+        if role not in KNOWN_ROLES:
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"未知的模型角色：{role!r}（允许：{sorted(KNOWN_ROLES)}）",
+                status_code=422,
+            )
+        if not isinstance(entry, dict):
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"角色 {role} 配置必须为 JSON 对象",
+                status_code=422,
+            )
+
+        forbidden_present = {k.lower() for k in entry} & _FORBIDDEN_CONFIG_KEYS
+        if forbidden_present:
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"角色 {role} 包含禁止直写的密钥字段 {sorted(forbidden_present)}，请仅使用 api_key_env",
+                status_code=422,
+            )
+
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        base_url = str(entry.get("base_url") or "").strip()
+        api_key_env = str(entry.get("api_key_env") or "").strip()
+
+        if not provider or not model:
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"角色 {role} 缺少必需字段 provider 或 model",
+                status_code=422,
+            )
+        if not base_url:
+            raise AppException(
+                ErrorCode.CONFIG_REQUIRED,
+                f"角色 {role} 缺少必需字段 base_url",
+                status_code=422,
+            )
+        parsed_url = urlparse(base_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc or " " in base_url:
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"角色 {role} 的 base_url 无效：{base_url!r}",
+                status_code=422,
+            )
+        if not api_key_env or _looks_like_raw_secret(api_key_env):
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"角色 {role} 的 api_key_env 非法或疑似直接写入了密钥明文（仅允许大写环境变量名）",
+                status_code=422,
+            )
+
+        supports_tools_raw = entry.get("supports_tools", True)
+        if not isinstance(supports_tools_raw, bool):
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"角色 {role} 的 supports_tools 必须为布尔值",
+                status_code=422,
+            )
+        if role in TOOL_REQUIRED_ROLES and not supports_tools_raw:
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"编码/测试角色 {role} 要求 supports_tools=true，拒绝绑定不支持工具调用的模型",
+                status_code=422,
+            )
+
+        max_out_raw = entry.get("max_output_tokens")
+        max_out: int | None = None
+        if max_out_raw is not None:
+            if isinstance(max_out_raw, bool) or not isinstance(max_out_raw, int) or max_out_raw <= 0:
+                raise AppException(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"角色 {role} 的 max_output_tokens 必须为正整数",
+                    status_code=422,
+                )
+            max_out = max_out_raw
+
+        enabled_raw = entry.get("enabled", True)
+        if not isinstance(enabled_raw, bool):
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"角色 {role} 的 enabled 必须为布尔值",
+                status_code=422,
+            )
+
+        price = _parse_custom_price(
+            entry.get("price_micro"),
+            default_version=default_version,
+            default_currency=default_currency,
+        )
+
+        custom[role] = Route(
+            role=role,
+            provider=provider,
+            model=model,
+            api_key_env=api_key_env,
+            enabled=enabled_raw,
+            base_url=base_url.rstrip("/"),
+            max_output_tokens=max_out,
+            supports_tools=supports_tools_raw,
+            price=price,
+        )
+    return custom
 
 
 def _role_enabled(model_role: str) -> bool:
@@ -82,17 +328,67 @@ def _role_enabled(model_role: str) -> bool:
         return os.environ.get(
             "AGENTFORGE_COMPLEX_REPAIR_ENABLED", ""
         ).strip().lower() in {"1", "true", "yes"}
+    if model_role in FACTORY_ROLES:
+        own_flag = os.environ.get(
+            f"AGENTFORGE_{model_role.upper()}_ENABLED", ""
+        ).strip().lower()
+        if own_flag in {"1", "true", "yes"}:
+            return True
+        return _role_enabled(FACTORY_ROLES[model_role])
     return False
 
 
+def _find_route_candidate(model_role: str) -> Route | None:
+    custom = load_custom_routes()
+    if model_role in custom:
+        return custom[model_role]
+    if model_role in FACTORY_ROLES:
+        fallback_role = FACTORY_ROLES[model_role]
+        if fallback_role in custom:
+            base = custom[fallback_role]
+            if model_role in TOOL_REQUIRED_ROLES and not base.supports_tools:
+                raise AppException(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"编码/测试角色 {model_role} 回退到的角色 {fallback_role} 不支持工具调用（supports_tools=false）",
+                    status_code=422,
+                )
+            return replace(base, role=model_role)
+        if fallback_role in ROUTES:
+            base = ROUTES[fallback_role]
+            override_model = os.environ.get(f"AGENTFORGE_{model_role.upper()}_MODEL") or base.model
+            return replace(base, role=model_role, model=override_model)
+    return ROUTES.get(model_role)
+
+
 def role_enabled(model_role: str) -> bool:
-    """该模型角色当前是否可用（内建启用或经环境变量显式开启）。不发起任何请求。"""
-    route = ROUTES.get(model_role)
+    """该模型角色当前是否可用（内建启用、自定义配置启用或经环境变量显式开启）。不发起任何请求。"""
+    custom = load_custom_routes()
+    if model_role in custom:
+        return custom[model_role].enabled
+    if model_role in FACTORY_ROLES and FACTORY_ROLES[model_role] in custom:
+        return custom[FACTORY_ROLES[model_role]].enabled
+    route = _find_route_candidate(model_role)
     return bool(route and (route.enabled or _role_enabled(model_role)))
 
 
 def resolve_route(model_role: str) -> Route:
-    route = ROUTES.get(model_role)
+    custom = load_custom_routes()
+    if model_role in custom:
+        route = custom[model_role]
+        if not route.enabled:
+            raise AppException(
+                ErrorCode.MODEL_ROLE_DISABLED, f"未启用或未知的模型角色：{model_role}", status_code=422
+            )
+        return route
+    if model_role in FACTORY_ROLES and FACTORY_ROLES[model_role] in custom:
+        route = _find_route_candidate(model_role)
+        if route is None or not route.enabled:
+            raise AppException(
+                ErrorCode.MODEL_ROLE_DISABLED, f"未启用或未知的模型角色：{model_role}", status_code=422
+            )
+        return route
+
+    route = _find_route_candidate(model_role)
     if route is None or not (route.enabled or _role_enabled(model_role)):
         raise AppException(
             ErrorCode.MODEL_ROLE_DISABLED, f"未启用或未知的模型角色：{model_role}", status_code=422
@@ -182,7 +478,14 @@ def price_table() -> dict[str, Price]:
 
 
 def lookup_price(model: str) -> Price | None:
-    return price_table().get(model)
+    table_hit = price_table().get(model)
+    if table_hit is not None:
+        return table_hit
+    if os.environ.get("AGENTFORGE_MODELS_CONFIG", "").strip():
+        for route in load_custom_routes().values():
+            if route.model == model and route.price is not None:
+                return route.price
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -386,7 +689,7 @@ def reserve(
     else:
         _enforce_run_limits(db, run_id, max_output_tokens)
 
-    price = lookup_price(route.model)
+    price = route.price or lookup_price(route.model)
     reserve_micro = _reserve_micro(price, max_input_tokens, max_output_tokens)
     settled, reserved = _totals(db, project_id)
     # R24：生效预算 = 基础额度 + 可追溯调整；调用方据此在预算不足时暂停而非硬失败。

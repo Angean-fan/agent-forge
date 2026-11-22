@@ -32,6 +32,7 @@ from agentforge_platform.db import (
     is_postgres,
     make_engine,
     make_session_factory,
+    postgres_reachable,
     read_local_env_var,
     session_scope,
 )
@@ -363,8 +364,8 @@ def test_patch_engine_asset_tools_whitelist_opt_in_and_agent_execution(
 
 def test_live_postgres_materialize_assemble_and_agent_tools(tmp_path: Path) -> None:
     pg_url = read_local_env_var("AGENTFORGE_DATABASE_URL") or ""
-    if not pg_url or not is_postgres(pg_url):
-        pytest.skip("NOT_RUN: 未配置 AGENTFORGE_DATABASE_URL 真实 PostgreSQL 环境")
+    if not pg_url or not is_postgres(pg_url) or not postgres_reachable(pg_url):
+        pytest.skip("NOT_RUN: 未配置或当前未启动 AGENTFORGE_DATABASE_URL 真实 PostgreSQL 环境")
 
     spec = SoftwareSpecification.model_validate_json(
         TASK_SPEC_PATH.read_text(encoding="utf-8")
