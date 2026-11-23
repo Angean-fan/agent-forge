@@ -494,6 +494,171 @@ class ChiefArchitect:
             status_code=422,
         )
 
+    def plan_frontend_blueprint(
+        self,
+        spec: SoftwareSpecification,
+        openapi_doc: dict[str, Any],
+        profile: TechnicalProfile | dict[str, Any] | str | None,
+        run_id: int,
+        *,
+        openapi_sha256: str | None = None,
+        blueprint_version: int = 1,
+    ) -> ArchitectureBlueprint:
+        """FP07：前端项目总管——以权威冻结 ``openapi.json`` 与冻结规格为唯一输入，规划并冻结前端多部门蓝图。"""
+        from agentforge_platform.factory_frontend_base import (
+            FRONTEND_PROTECTED_PREFIXES,
+            require_backend_ready_for_frontend,
+            validate_frontend_blueprint,
+        )
+
+        project_id = self._resolve_run_project_id(run_id)
+        self._state_store.raise_if_cancelled(run_id, boundary="chief_frontend_preflight")
+
+        # 1. 硬门禁：必须校验后端阶段 PASSED 且权威 openapi.json 已冻结且哈希有效
+        verified_oa_sha = require_backend_ready_for_frontend(
+            openapi_doc,
+            expected_openapi_sha256=openapi_sha256,
+            state_store=self._state_store,
+            run_id=run_id,
+        )
+
+        # 2. 前置工厂范围与安全红线检查（在副本上执行，不修改冻结 spec）
+        scope_result = validate_scope_for_mode(spec.model_copy(deep=True), mode=MODE_FACTORY)
+        if not scope_result.ok:
+            joined = "；".join(scope_result.issues)
+            is_security_block = any(
+                "安全红线拦截" in msg or "安全与架构边界拦截" in msg
+                for msg in scope_result.issues
+            )
+            code = ErrorCode.VALIDATION_ERROR if is_security_block else ErrorCode.UNSUPPORTED_SCOPE
+            raise AppException(code, joined, status_code=422)
+
+        route, client = self._resolve_route_and_client()
+        spec_hash = content_hash(spec)
+        profile_ref = _normalize_profile_ref(profile, spec)
+        max_modules = factory_max_modules()
+        detected_tp = detect_third_party_capabilities(spec)
+
+        last_issues: list[str] = []
+        total_attempts = 1 + self._max_retries
+
+        for round_num in range(1, total_attempts + 1):
+            self._state_store.raise_if_cancelled(
+                run_id,
+                boundary=f"chief_frontend_round_{round_num}",
+            )
+            prompt_lines = [
+                "你是 AgentForge 异步工厂流水线的【前端项目总管 ChiefArchitect】。",
+                "你的唯一职责是基于后端已冻结权威 openapi.json 与冻结需求，产出前端架构蓝图 JSON（ArchitectureBlueprint, phase='frontend'）；你零文件写入权限，不写前端源码。",
+                "",
+                "【前端架构硬性规则】",
+                f"1. 前端业务部门数量必须 <= {max_modules}（如 auth-ui、home-ui、cart-ui、order-ui、payment-ui）。",
+                "2. 每个前端部门独占 frontend/src/modules/<dept_id>/ 与 frontend/test/<dept_id>/，彼此零交集。",
+                f"3. 严禁将只读受保护路径纳入 owned_paths：{json.dumps(list(FRONTEND_PROTECTED_PREFIXES), ensure_ascii=False)}。",
+                "4. 各前端部门路由前缀不可冲突；引用后端 API 时必须严格匹配权威 openapi.json 中已存在的路径与方法。",
+                "5. 必须通过 covered_pages 覆盖冻结规格中的全部业务页面。",
+                f"- project_id: \"{project_id}\"",
+                "- phase: \"frontend\"",
+                f"- blueprint_version: {blueprint_version}",
+                f"- based_on_spec_hash: \"{spec_hash}\"",
+                f"- profile_ref: \"{profile_ref}\"",
+                f"- authoritative_openapi_sha256: \"{verified_oa_sha}\"",
+                "",
+                "【权威后端 openapi.json】",
+                json.dumps(openapi_doc, ensure_ascii=False, indent=2),
+                "",
+                "【冻结业务规格 SoftwareSpecification】",
+                json.dumps(spec.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            ]
+            if last_issues:
+                prompt_lines.extend(
+                    [
+                        "",
+                        "【上一轮确定性校验失败错误列表——请逐条修复】",
+                        *[f"- {err}" for err in last_issues],
+                    ]
+                )
+            prompt_lines.append("请仅输出一个严格符合 ArchitectureBlueprint Schema 的合法 JSON 对象。")
+
+            raw_content = self._invoke_billed_model(
+                project_id=project_id,
+                run_id=run_id,
+                route=route,
+                client=client,
+                prompt="\n".join(prompt_lines),
+                phase=FactoryPhase.FRONTEND,
+                round_num=round_num,
+            )
+
+            issues: list[str] = []
+            blueprint: ArchitectureBlueprint | None = None
+            try:
+                payload = _extract_json_object(raw_content)
+                payload.setdefault("phase", FactoryPhase.FRONTEND.value)
+                payload.setdefault("project_id", str(project_id))
+                payload.setdefault("based_on_spec_hash", spec_hash)
+                payload.setdefault("profile_ref", profile_ref)
+                payload.setdefault("base_package", self._base_package)
+                payload.setdefault("blueprint_version", blueprint_version)
+                blueprint = ArchitectureBlueprint.model_validate(payload)
+            except (ValueError, TypeError, ValidationError) as exc:
+                issues.append(f"前端蓝图 JSON/Schema 解析失败：{exc}")
+
+            if blueprint is not None:
+                issues.extend(validate_frontend_blueprint(blueprint, spec, openapi_doc))
+                issues.extend(
+                    _blueprint_safety_issues(
+                        blueprint,
+                        raw_content=raw_content,
+                        detected_third_party=detected_tp,
+                    )
+                )
+
+            if blueprint is not None and not issues:
+                canonical_json = json.dumps(
+                    blueprint.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                self._state_store.save_blueprint(
+                    run_id,
+                    FactoryPhase.FRONTEND,
+                    version=blueprint_version,
+                    blueprint_json=canonical_json,
+                    blueprint_hash=blueprint.blueprint_hash(),
+                    status=BlueprintStatus.APPROVED_FOR_BUILD,
+                )
+                return blueprint
+
+            last_issues = issues
+            self._state_store.record_event(
+                run_id,
+                "factory_blueprint_retry",
+                {
+                    "phase": FactoryPhase.FRONTEND.value,
+                    "round": round_num,
+                    "max_attempts": total_attempts,
+                    "issue_count": len(issues),
+                    "issues": [item[:240] for item in issues[:10]],
+                },
+            )
+
+        self._state_store.record_event(
+            run_id,
+            "factory_blueprint_invalid",
+            {
+                "phase": FactoryPhase.FRONTEND.value,
+                "attempts": total_attempts,
+                "issue_count": len(last_issues),
+                "issues": [item[:240] for item in last_issues[:10]],
+            },
+        )
+        raise AppException(
+            ErrorCode.BLUEPRINT_INVALID,
+            f"前端架构蓝图经 {total_attempts} 轮规划仍未通过硬校验：" + "；".join(last_issues),
+            status_code=422,
+        )
+
     def triage_integration_failures(
         self,
         *,
