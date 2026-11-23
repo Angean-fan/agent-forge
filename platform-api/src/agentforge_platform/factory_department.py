@@ -66,7 +66,7 @@ from agentforge_platform.factory_tickets import (
     TestEvidence,
     sanitize_defect_log,
 )
-from agentforge_platform.model_gateway import Route, lookup_price, resolve_route
+from agentforge_platform.model_gateway import Route, lookup_price, resolve_route, role_enabled
 from agentforge_platform.models import Run
 from agentforge_platform.module_registry import Module
 from agentforge_platform.module_verifier import ModuleVerificationResult, ModuleVerifier
@@ -481,6 +481,7 @@ class DepartmentRunner:
         lead_role: str = DEPT_LEAD_ROLE,
         coder_role: str = DEPT_CODER_ROLE,
         tester_role: str = DEPT_TESTER_ROLE,
+        round_3_coder_role: str | None = None,
         reserve_micro: int | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -493,6 +494,7 @@ class DepartmentRunner:
         self._lead_role = lead_role
         self._coder_role = coder_role
         self._tester_role = tester_role
+        self._round_3_coder_role = round_3_coder_role
         self._reserve_micro = reserve_micro
 
     def _resolve_project_id(self, run_id: int) -> int:
@@ -578,12 +580,19 @@ class DepartmentRunner:
         round_num: int,
         coder_fb: CoderFileBackend,
     ) -> PatchEngine:
+        active_role = self._coder_role
+        if (
+            round_num >= 3
+            and self._round_3_coder_role
+            and role_enabled(self._round_3_coder_role)
+        ):
+            active_role = self._round_3_coder_role
         binding = LedgerBinding(
             session_factory=self._session_factory,
             project_id=project_id,
             run_id=run_id,
             task_id=f"{phase.value}:{dept_id}:coder:r{round_num}",
-            model_role=self._coder_role,
+            model_role=active_role,
             dept_id=dept_id,
             phase=phase.value,
             round_num=round_num,
@@ -591,7 +600,7 @@ class DepartmentRunner:
         model = (
             self._coder_model_factory(binding, round_num)
             if self._coder_model_factory is not None
-            else build_ledger_model(self._coder_role, binding)
+            else build_ledger_model(active_role, binding)
         )
         asset_tools = build_agent_asset_tools(
             file_backend=coder_fb,
