@@ -258,7 +258,7 @@ class StagingBackend(BackendProtocol):
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class LedgerBinding:
-    """把 Agent 内部每次模型请求绑定到既有账本（run/task 上下文）。"""
+    """把 Agent 内部每次模型请求绑定到既有账本（run/task 及可选工厂 dept/phase/round 上下文）。"""
 
     session_factory: sessionmaker[Session]
     project_id: int
@@ -267,6 +267,9 @@ class LedgerBinding:
     model_role: str = "coding"
     max_input_tokens: int = DEFAULT_MAX_INPUT_TOKENS
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    dept_id: str | None = None
+    phase: str | None = None
+    round_num: int | None = None
 
 
 def _usage_from_chat_result(result: Any) -> Usage | None:
@@ -302,6 +305,22 @@ class LedgerChatModel(ChatOpenAI):
 
     def _reserve(self, call_id: str) -> None:
         binding = self._binding
+        if binding.dept_id is not None or binding.phase is not None:
+            from agentforge_platform.budget_pg import PgBudgetLedger
+
+            PgBudgetLedger(binding.session_factory).reserve_atomic(
+                call_id=call_id,
+                project_id=binding.project_id,
+                model_role=binding.model_role,
+                max_input_tokens=binding.max_input_tokens,
+                max_output_tokens=binding.max_output_tokens,
+                run_id=binding.run_id,
+                task_id=binding.task_id,
+                dept_id=binding.dept_id,
+                phase=binding.phase,
+                round_num=binding.round_num,
+            )
+            return
         with session_scope(binding.session_factory) as db:
             model_gateway.reserve(
                 db,
@@ -316,6 +335,15 @@ class LedgerChatModel(ChatOpenAI):
 
     def _settle(self, call_id: str, usage: Usage | None, error_class: str | None = None) -> None:
         binding = self._binding
+        if binding.dept_id is not None or binding.phase is not None:
+            from agentforge_platform.budget_pg import PgBudgetLedger
+
+            PgBudgetLedger(binding.session_factory).settle_idempotent(
+                call_id,
+                usage=usage,
+                error_class=error_class,
+            )
+            return
         with session_scope(binding.session_factory) as db:
             model_gateway.settle(db, call_id, usage=usage, error_class=error_class)
 
