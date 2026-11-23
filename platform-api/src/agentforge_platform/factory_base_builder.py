@@ -462,17 +462,30 @@ def assert_base_integrity(
 def check_department_paths_against_base(
     changed_paths: Sequence[str],
     manifest_or_path: BaseManifest | str | Path,
+    *,
+    allowed_test_paths: Sequence[str] = (),
 ) -> list[str]:
     """在合并前快速拦截触及受保护底座或 ``api/*Facade.java`` 路径的部门变更清单。"""
+    from agentforge_platform.agent_files import _within_allowed
+
     manifest = load_base_manifest(manifest_or_path)
     protected_files = {entry.path for entry in manifest.files}
+    test_whitelist = [p for p in allowed_test_paths if p]
     violations: list[str] = []
     for raw in changed_paths:
         normalized = raw.lstrip("/")
         if normalized in protected_files:
             violations.append(f"禁止修改只读底座或已冻结 Facade 文件：{normalized}")
             continue
-        if any(normalized.startswith(prefix) for prefix in manifest.protected_prefixes):
+        matched_prefix = False
+        for prefix in manifest.protected_prefixes:
+            if not normalized.startswith(prefix):
+                continue
+            if prefix == "backend/src/test/" and test_whitelist and _within_allowed(normalized, test_whitelist):
+                continue
+            matched_prefix = True
+            break
+        if matched_prefix:
             violations.append(f"禁止写入受保护底座/跨模块接口前缀路径：{normalized}")
             continue
         parts = PurePosixPath(normalized).parts

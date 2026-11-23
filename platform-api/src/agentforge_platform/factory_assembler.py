@@ -414,8 +414,12 @@ def merge_department_deliverables(
 
         dept_files = _iter_dept_candidate_files(dept_staging, base_file_set)
 
-        # 2b. 禁止部门产出任何触及底座/受保护 api/ 前缀的新增文件
-        base_path_violations = check_department_paths_against_base(dept_files, base_manifest)
+        # 2b. 禁止部门产出任何触及底座/受保护 api/ 前缀的新增文件（放行本部门专属 test_paths）
+        base_path_violations = check_department_paths_against_base(
+            dept_files,
+            base_manifest,
+            allowed_test_paths=module.test_paths,
+        )
         if base_path_violations:
             tickets.append(
                 _make_contract_mismatch_ticket(

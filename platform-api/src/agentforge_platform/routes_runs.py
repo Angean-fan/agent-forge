@@ -501,13 +501,25 @@ def start_run(
     if spec_row is not None:
         spec = require_frozen_spec(spec_row)
         spec_hash = spec_row.hash
-        scope = scope_issues(spec)
-        if scope:
-            raise AppException(
-                ErrorCode.UNSUPPORTED_SCOPE,
-                "超出 Demo 范围：" + "；".join(scope) + "。",
-                status_code=422,
-            )
+        from agentforge_platform.factory_pipeline import factory_pipeline_enabled
+        from agentforge_platform.scope_policy import MODE_FACTORY, validate_scope_for_mode
+
+        if factory_pipeline_enabled():
+            factory_scope = validate_scope_for_mode(spec.model_copy(deep=True), mode=MODE_FACTORY)
+            if not factory_scope.ok:
+                raise AppException(
+                    ErrorCode.UNSUPPORTED_SCOPE,
+                    "超出工厂模式范围：" + "；".join(factory_scope.issues) + "。",
+                    status_code=422,
+                )
+        else:
+            scope = scope_issues(spec)
+            if scope:
+                raise AppException(
+                    ErrorCode.UNSUPPORTED_SCOPE,
+                    "超出 Demo 范围：" + "；".join(scope) + "。",
+                    status_code=422,
+                )
 
     # 配额/剩余空间达标才接受新运行（超限拒绝；过期产物由维护任务清理）。
     ensure_run_storage_available()

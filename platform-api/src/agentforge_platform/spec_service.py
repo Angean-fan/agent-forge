@@ -146,13 +146,25 @@ def confirm_draft(
         raise AppException(ErrorCode.SPEC_CONFLICT, "草稿已被修改，请重新读取。", status_code=409)
 
     spec = load_spec(latest)
-    scope = scope_issues(spec)
-    if scope:
-        raise AppException(
-            ErrorCode.UNSUPPORTED_SCOPE,
-            "超出 Demo 范围：" + "；".join(scope) + "。",
-            status_code=422,
-        )
+    from agentforge_platform.factory_pipeline import factory_pipeline_enabled
+    from agentforge_platform.scope_policy import MODE_FACTORY, validate_scope_for_mode
+
+    if factory_pipeline_enabled():
+        factory_scope = validate_scope_for_mode(spec.model_copy(deep=True), mode=MODE_FACTORY)
+        if not factory_scope.ok:
+            raise AppException(
+                ErrorCode.UNSUPPORTED_SCOPE,
+                "超出工厂模式范围：" + "；".join(factory_scope.issues) + "。",
+                status_code=422,
+            )
+    else:
+        scope = scope_issues(spec)
+        if scope:
+            raise AppException(
+                ErrorCode.UNSUPPORTED_SCOPE,
+                "超出 Demo 范围：" + "；".join(scope) + "。",
+                status_code=422,
+            )
     issues = confirmation_issues(spec)
     if not issues:
         # 确认前先验证契约与能力包能接收它（R10 起对每个业务实体逐一验证）。

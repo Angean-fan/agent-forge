@@ -144,6 +144,8 @@ class GenerationContext:
     deadline_monotonic: float | None = None
     # R23：LangGraph checkpointer（默认 None → 无检查点持久化）。检查点存于状态，**不含密钥**。
     checkpointer: Any | None = None
+    # FP09：工厂模式运行时配置（默认 None，仅当 AGENTFORGE_FACTORY_PIPELINE_ENABLED=1 时启用）。
+    factory_runtime: Any | None = None
 
 
 def _require_active(db: Session, run_id: int, expected: RunStatus) -> Run:

@@ -17,34 +17,50 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agentforge_platform.asset_registry import default_registry
 from agentforge_platform.db import SessionLocal, session_scope
+from agentforge_platform.factory_pipeline import build_factory_runtime, factory_pipeline_enabled
 from agentforge_platform.generation_graph import GenerationContext, run_generation
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.production_routing import build_production_routing
-from agentforge_platform.runner_client import HttpRunnerClient
+from agentforge_platform.runner_client import HttpRunnerClient, RunnerClient
 from agentforge_platform.runs import claim_run, heartbeat
 
 Handler = Callable[[int], None]
 
 
-def build_generation_handler(session_factory: sessionmaker[Session]) -> Handler:
-    """默认处理函数：驱动 M23 生成图（Runner 地址/密钥/工作根来自环境）。
+def build_generation_handler(
+    session_factory: sessionmaker[Session],
+    *,
+    runner: RunnerClient | None = None,
+    factory_runtime: object | None = None,
+) -> Handler:
+    """默认处理函数：驱动 M23 生成图或 FP09 异步工厂流水线（Runner 地址/密钥/工作根来自环境）。
 
     C01：按显式开关与凭据注入生产模型路由（默认全关 → 标准资产路径零 Qwen 请求）。
+    FP09：当 ``AGENTFORGE_FACTORY_PIPELINE_ENABLED=1`` 时注入工厂运行时并由 ``run_generation`` 顶层分发。
     """
     work_root = Path(os.environ.get("RUNNER_WORK_ROOT", "./var/runs"))
     routing = build_production_routing(session_factory=session_factory, work_root=work_root)
+    active_runner: RunnerClient = runner or HttpRunnerClient(
+        base_url=os.environ.get("RUNNER_BASE_URL", "http://127.0.0.1:9000"),
+        token=os.environ.get("RUNNER_TOKEN", ""),
+    )
+    resolved_factory_runtime = factory_runtime
+    if resolved_factory_runtime is None and factory_pipeline_enabled():
+        resolved_factory_runtime = build_factory_runtime(
+            session_factory=session_factory,
+            runner_client=active_runner,
+            work_root=work_root,
+        )
     context = GenerationContext(
         session_factory=session_factory,
-        runner=HttpRunnerClient(
-            base_url=os.environ.get("RUNNER_BASE_URL", "http://127.0.0.1:9000"),
-            token=os.environ.get("RUNNER_TOKEN", ""),
-        ),
+        runner=active_runner,
         work_root=work_root,
         registry=default_registry(),
         methods_root=Path(os.environ.get("AGENTFORGE_METHODS_ROOT", str(DEFAULT_METHODS_ROOT))),
         planning_client=routing.planning_client,
         review_client=routing.review_client,
         coding_routing=routing.coding_routing,
+        factory_runtime=resolved_factory_runtime,
     )
 
     def handler(run_id: int) -> None:
