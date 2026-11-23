@@ -39,6 +39,11 @@ from agentforge_platform.factory_state import (
     FactoryPhase,
     FactoryStateStore,
 )
+from agentforge_platform.factory_tickets import (
+    MAX_DEFECT_LOG_BYTES,
+    DefectTicket,
+    sanitize_defect_log,
+)
 from agentforge_platform.model_gateway import Route, lookup_price, resolve_route
 from agentforge_platform.models import Run
 from agentforge_platform.production_routing import build_client_for_role
@@ -221,6 +226,29 @@ def _build_backend_blueprint_prompt(
         ]
     )
     return "\n".join(lines)
+
+
+def _sanitize_failure_report(report: dict[str, Any]) -> dict[str, Any]:
+    """对总验收失败报告做脱敏与长度控制，防止密钥或超长日志直接进入总管上下文。"""
+    sanitized: dict[str, Any] = {}
+    for key, val in report.items():
+        if isinstance(val, str):
+            sanitized[key] = sanitize_defect_log(val, max_bytes=MAX_DEFECT_LOG_BYTES)
+        elif isinstance(val, list):
+            cleaned_list: list[Any] = []
+            for item in val[:20]:
+                if isinstance(item, dict):
+                    cleaned_list.append(_sanitize_failure_report(item))
+                elif isinstance(item, str):
+                    cleaned_list.append(sanitize_defect_log(item, max_bytes=1024))
+                else:
+                    cleaned_list.append(item)
+            sanitized[key] = cleaned_list
+        elif isinstance(val, dict):
+            sanitized[key] = _sanitize_failure_report(val)
+        else:
+            sanitized[key] = val
+    return sanitized
 
 
 class ChiefArchitect:
@@ -474,11 +502,134 @@ class ChiefArchitect:
         blueprint: ArchitectureBlueprint,
         failure_report: dict[str, Any],
         integration_round: int = 1,
-    ) -> list[dict[str, Any]]:
-        """FP06 占位接口：总验收失败后的根因归因并产出责任部门缺陷单（将在 FP06 实现）。"""
-        raise NotImplementedError(
-            "ChiefArchitect.triage_integration_failures 将在 FP06（后端总装与归因大循环）中实现"
+    ) -> list[DefectTicket]:
+        """FP06：总验收失败后的根因归因——将编译/迁移/HTTP 失败精确映射到责任部门并落库缺陷单。"""
+        resolved_phase = FactoryPhase(phase)
+        project_id = self._resolve_run_project_id(run_id)
+        self._state_store.raise_if_cancelled(
+            run_id,
+            boundary=f"chief_triage_{resolved_phase.value}_r{integration_round}",
         )
+
+        route, client = self._resolve_route_and_client()
+        valid_dept_ids = {m.module_id for m in blueprint.modules}
+
+        sanitized_report = _sanitize_failure_report(failure_report)
+        dept_catalog = [
+            {
+                "dept_id": m.module_id,
+                "name": m.name,
+                "owned_paths": m.owned_paths,
+                "migration_range": m.migration_range,
+                "depends_on_modules": m.depends_on_modules,
+                "readable_contract_refs": m.readable_contract_refs,
+            }
+            for m in blueprint.modules
+        ]
+        prompt = "\n".join(
+            [
+                "你是 AgentForge 异步工厂流水线的【项目总管 ChiefArchitect（总验收根因归因角色）】。",
+                "你不直接编写业务源码，只负责将总装/Docker Runner 总验收失败堆栈精确归因到一个或多个责任部门 dept_id。",
+                "严禁把未出错的部门拉入返工；必须输出严格 JSON：{\"defects\": [{\"dept_id\": \"...\", \"error_class\": \"...\", \"summary\": \"...\", \"affected_paths\": [...], \"failing_tests\": [...], \"log_excerpt\": \"...\"}]}。",
+                f"- phase: {resolved_phase.value}",
+                f"- integration_round: {integration_round}",
+                f"- valid_dept_ids: {json.dumps(sorted(valid_dept_ids), ensure_ascii=False)}",
+                f"- departments: {json.dumps(dept_catalog, ensure_ascii=False)}",
+                f"- failure_report: {json.dumps(sanitized_report, ensure_ascii=False)}",
+            ]
+        )
+
+        raw_content = self._invoke_billed_model(
+            project_id=project_id,
+            run_id=run_id,
+            route=route,
+            client=client,
+            prompt=prompt,
+            phase=resolved_phase,
+            round_num=integration_round,
+        )
+
+        try:
+            payload = _extract_json_object(raw_content)
+        except (ValueError, TypeError) as exc:
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                f"总管归因 JSON 解析失败：{exc}",
+                status_code=422,
+            ) from exc
+
+        raw_defects = payload.get("defects")
+        if not isinstance(raw_defects, list) or not raw_defects:
+            raise AppException(
+                ErrorCode.VALIDATION_ERROR,
+                "总管归因结果缺少非空的 defects 列表",
+                status_code=422,
+            )
+
+        tickets: list[DefectTicket] = []
+        for idx, item in enumerate(raw_defects):
+            if not isinstance(item, dict):
+                raise AppException(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"总管归因 defects[{idx}] 必须为对象",
+                    status_code=422,
+                )
+            dept_id = str(item.get("dept_id") or "").strip()
+            if dept_id not in valid_dept_ids:
+                raise AppException(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"总管归因引用了未知部门 dept_id：{dept_id!r}（合法：{sorted(valid_dept_ids)}）",
+                    status_code=422,
+                )
+            error_class = str(item.get("error_class") or "INTEGRATION_FAILURE").strip()[:64]
+            summary = str(item.get("summary") or "总验收集成失败").strip()
+            affected_paths = [
+                str(p).strip() for p in (item.get("affected_paths") or []) if str(p).strip()
+            ]
+            failing_tests = [
+                str(t).strip() for t in (item.get("failing_tests") or []) if str(t).strip()
+            ]
+            log_excerpt = sanitize_defect_log(
+                str(item.get("log_excerpt") or summary),
+                max_bytes=MAX_DEFECT_LOG_BYTES,
+            )
+
+            ticket = DefectTicket(
+                ticket_id=f"integ-{run_id}-{resolved_phase.value}-{dept_id}-r{integration_round}-{idx + 1}",
+                run_id=run_id,
+                phase=resolved_phase.value,
+                dept_id=dept_id,
+                scope="integration",
+                round=integration_round,
+                error_class=error_class,
+                summary=summary,
+                failing_tests=failing_tests,
+                affected_paths=affected_paths,
+                log_excerpt=log_excerpt,
+                verifier_kind="docker_runner",
+            )
+            row = self._state_store.open_defect_ticket(
+                run_id,
+                resolved_phase,
+                dept_id,
+                scope="integration",
+                round_num=integration_round,
+                error_class=ticket.error_class,
+                payload=ticket.model_dump(mode="json"),
+            )
+            tickets.append(ticket.model_copy(update={"ticket_id": str(row.id)}))
+
+        self._state_store.record_event(
+            run_id,
+            "factory_triage",
+            {
+                "phase": resolved_phase.value,
+                "integration_round": integration_round,
+                "blamed_depts": sorted({t.dept_id for t in tickets}),
+                "ticket_count": len(tickets),
+            },
+        )
+        return tickets
 
 
 __all__ = [

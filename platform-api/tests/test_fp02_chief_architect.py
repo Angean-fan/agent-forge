@@ -677,22 +677,20 @@ def test_triage_placeholder_and_cancel_preflight(
         scripted = _ScriptedClient([bp.model_dump_json()])
         chief = ChiefArchitect(session_factory=factory, client=scripted, base_package=BASE_PKG)
 
-        # 占位接口明确报 NotImplementedError（留待 FP06 实现）
-        with pytest.raises(NotImplementedError):
-            chief.triage_integration_failures(
-                run_id=run_id,
-                phase=FactoryPhase.BACKEND,
-                blueprint=bp,
-                failure_report={"checks": []},
-            )
-
-        # 取消信号已置位 → 不发起任何模型调用
+        # 取消信号已置位 → plan_backend_blueprint 与 triage_integration_failures 均不发起任何模型调用
         with session_scope(factory) as db:
             run = db.get(Run, run_id)
             assert run is not None
             request_cancel(db, run)
         with pytest.raises(FactoryCancelledError):
             chief.plan_backend_blueprint(spec, spec.technical_profile, run_id)
+        with pytest.raises(FactoryCancelledError):
+            chief.triage_integration_failures(
+                run_id=run_id,
+                phase=FactoryPhase.BACKEND,
+                blueprint=bp,
+                failure_report={"checks": []},
+            )
         assert len(scripted.prompts) == 0
     finally:
         engine.dispose()
