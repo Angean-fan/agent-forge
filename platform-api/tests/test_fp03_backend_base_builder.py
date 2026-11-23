@@ -284,6 +284,7 @@ def _make_5_dept_blueprint(spec: SoftwareSpecification) -> ArchitectureBlueprint
 
 
 def _seed_sqlite_materializer(tmp_path: Path) -> tuple[object, AssetMaterializer, AssetLock]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     url = f"sqlite+pysqlite:///{tmp_path / 'fp03_assets.db'}"
     command.upgrade(_alembic_config(url), "head")
     engine = make_engine(url)

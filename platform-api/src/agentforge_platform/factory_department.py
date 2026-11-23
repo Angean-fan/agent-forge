@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import uuid
@@ -289,8 +290,16 @@ def _prepare_department_staging(
                 src_sub = resolved_base / child_name
                 if src_sub.is_dir():
                     dst_sub = dept_staging / child_name
-                    shutil.copytree(src_sub, dst_sub)
+                    shutil.copytree(
+                        src_sub,
+                        dst_sub,
+                        ignore=shutil.ignore_patterns("node_modules"),
+                    )
                     make_writable_tree(dst_sub)
+                    src_nm = src_sub / "node_modules"
+                    dst_nm = dst_sub / "node_modules"
+                    if child_name == "frontend" and src_nm.exists() and not dst_nm.exists():
+                        os.symlink(src_nm.resolve(), dst_nm, target_is_directory=True)
     else:
         dept_staging.mkdir(parents=True, exist_ok=True)
 
@@ -336,10 +345,17 @@ def _derive_test_selector(
             return ",".join(class_names), test_files
         return f"{blueprint.base_package}.modules.{module.module_id}.*Test", test_files
 
-    # frontend
-    if test_files:
-        return test_files[0], test_files
-    return module.test_paths[0].rstrip("/"), test_files
+    # frontend：vitest 在 frontend/ 子目录运行，选择器需去除前导 frontend/
+    if len(test_files) == 1:
+        raw_sel = test_files[0]
+    elif module.test_paths:
+        raw_sel = module.test_paths[0].rstrip("/")
+    elif test_files:
+        raw_sel = test_files[0]
+    else:
+        raw_sel = f"test/{module.module_id}"
+    raw_sel = raw_sel.removeprefix("frontend/")
+    return raw_sel, test_files
 
 
 def _load_api_fragment(dept_staging: Path) -> tuple[str | None, dict[str, Any]]:
