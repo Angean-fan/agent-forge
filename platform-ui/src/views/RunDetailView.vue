@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { runsApi } from '@/api/client';
-import type { RunDetail, RunEvent } from '@/api/types';
+import type { FactoryDepartmentLane, FactoryRunView, RunDetail, RunEvent } from '@/api/types';
+import SafeText from '@/components/SafeText.vue';
 import { clearSession } from '@/stores/auth';
 import { describeError } from '@/utils/errors';
 import { formatDateTime, formatMicroYuan } from '@/utils/format';
@@ -72,9 +73,77 @@ function readinessTagType(readiness: string): 'success' | 'danger' | 'warning' |
   return 'info';
 }
 
+const DEPT_STATUS_LABELS: Record<string, string> = {
+  QUEUED: '排队中',
+  PLANNING: '规划中',
+  CODING: '编码中',
+  TESTING: '测试中',
+  REWORK: '返工中',
+  PASSED: '已通过',
+  FAILED: '失败',
+  CANCELLED: '已取消',
+};
+
+const FACTORY_PHASE_LABELS: Record<string, string> = {
+  backend: '后端并行阶段',
+  frontend: '前端并行阶段',
+  idle: '等待调度',
+};
+
+const DEPT_PIPELINE_STEPS = [
+  { key: 'PLANNING', label: '规划' },
+  { key: 'CODING', label: '编码' },
+  { key: 'TESTING', label: '测试' },
+  { key: 'RESULT', label: '通过/返工' },
+] as const;
+
+function deptStatusTagType(status: string): 'success' | 'danger' | 'warning' | 'info' | 'primary' {
+  switch (status) {
+    case 'PASSED':
+      return 'success';
+    case 'FAILED':
+      return 'danger';
+    case 'REWORK':
+      return 'warning';
+    case 'QUEUED':
+    case 'CANCELLED':
+      return 'info';
+    default:
+      return 'primary';
+  }
+}
+
+function deptStepState(lane: FactoryDepartmentLane, stepKey: string): 'done' | 'active' | 'warn' | 'idle' {
+  const order = ['PLANNING', 'CODING', 'TESTING'];
+  if (stepKey === 'RESULT') {
+    if (lane.status === 'PASSED') return 'done';
+    if (lane.status === 'REWORK' || lane.status === 'FAILED') return 'warn';
+    return 'idle';
+  }
+  const currentIdx = order.indexOf(lane.status);
+  const stepIdx = order.indexOf(stepKey);
+  if (lane.status === 'PASSED') return 'done';
+  if (lane.status === 'REWORK') return stepIdx === 0 ? 'warn' : 'idle';
+  if (currentIdx === -1) return 'idle';
+  if (stepIdx < currentIdx) return 'done';
+  if (stepIdx === currentIdx) return 'active';
+  return 'idle';
+}
+
+function formatDurationMs(ms: number | null): string {
+  if (ms === null || ms < 0) {
+    return '—';
+  }
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
 const runId = computed(() => Number(props.id));
 
 const run = ref<RunDetail | null>(null);
+const factoryData = ref<FactoryRunView | null>(null);
 const events = ref<RunEvent[]>([]);
 const lastSequence = ref(0);
 const loading = ref(true);
@@ -182,6 +251,13 @@ async function poll(): Promise<void> {
       events.value.push(...data.items);
       lastSequence.value = data.items[data.items.length - 1].sequence;
     }
+    if (typeof runsApi.factory === 'function') {
+      try {
+        factoryData.value = await runsApi.factory(runId.value);
+      } catch {
+        // 标准装配运行或暂未启用工厂接口时不阻塞主详情轮询
+      }
+    }
     errorMessage.value = '';
     errorsInARow.value = 0;
     loading.value = false;
@@ -220,6 +296,7 @@ function restart(): void {
   events.value = [];
   lastSequence.value = 0;
   run.value = null;
+  factoryData.value = null;
   loading.value = true;
   errorMessage.value = '';
   errorsInARow.value = 0;
@@ -351,6 +428,185 @@ watch(() => props.id, restart);
         <p v-if="run.cost.unknown_calls > 0" class="unknown-note">
           有 {{ run.cost.unknown_calls }} 次调用缺少核定价目，成本记为 UNKNOWN（保留预留）。
         </p>
+      </el-card>
+
+      <el-card
+        v-if="factoryData && factoryData.factory_active"
+        class="block-gap"
+        data-testid="factory-swimlanes"
+      >
+        <div class="factory-head">
+          <div>
+            <h2 class="section-title">异步工厂多部门泳道视图</h2>
+            <p class="factory-sub">
+              当前阶段：
+              <el-tag size="small" type="primary" disable-transitions data-testid="factory-phase">
+                {{ FACTORY_PHASE_LABELS[factoryData.current_phase] ?? factoryData.current_phase }}
+              </el-tag>
+              <span class="factory-meta-item">
+                后端总装大循环：第 {{ factoryData.integration_rounds.backend ?? 0 }} 轮
+              </span>
+              <span class="factory-meta-item">
+                前端总装大循环：第 {{ factoryData.integration_rounds.frontend ?? 0 }} 轮
+              </span>
+            </p>
+          </div>
+          <div v-if="factoryData.blueprints.length" class="blueprint-pills">
+            <el-tag
+              v-for="bp in factoryData.blueprints"
+              :key="`${bp.phase}-v${bp.version}`"
+              size="small"
+              :type="bp.status === 'APPROVED_FOR_BUILD' ? 'success' : 'info'"
+              disable-transitions
+            >
+              {{ bp.phase === 'frontend' ? '前端蓝图' : '后端蓝图' }} v{{ bp.version }}（{{ bp.module_count }} 部门 · {{ bp.blueprint_hash.slice(0, 8) }}）
+            </el-tag>
+          </div>
+        </div>
+
+        <div v-if="factoryData.backend_departments.length" class="lane-section" data-testid="backend-swimlanes">
+          <h3 class="lane-title">后端并行部门泳道（{{ factoryData.backend_departments.length }}）</h3>
+          <div class="lane-grid">
+            <div
+              v-for="lane in factoryData.backend_departments"
+              :key="`be-${lane.dept_id}`"
+              class="dept-card"
+              :data-testid="`dept-lane-backend-${lane.dept_id}`"
+            >
+              <div class="dept-card-head">
+                <span class="dept-name">{{ lane.dept_id }}</span>
+                <el-tag :type="deptStatusTagType(lane.status)" size="small" disable-transitions>
+                  {{ DEPT_STATUS_LABELS[lane.status] ?? lane.status }}
+                </el-tag>
+              </div>
+              <div class="step-track">
+                <span
+                  v-for="step in DEPT_PIPELINE_STEPS"
+                  :key="step.key"
+                  class="step-pill"
+                  :class="`step-${deptStepState(lane, step.key)}`"
+                >
+                  {{ step.label }}
+                </span>
+              </div>
+              <div class="dept-metrics">
+                <span>轮次：{{ lane.current_round }} / {{ lane.max_rounds }}</span>
+                <span>耗时：{{ formatDurationMs(lane.duration_ms) }}</span>
+                <span>
+                  测试：{{ lane.test_status ?? '未运行' }}
+                  <template v-if="lane.test_exit_code !== null">（exit {{ lane.test_exit_code }}）</template>
+                </span>
+                <span>费用：{{ formatMicroYuan(lane.cost_micro) }}（{{ lane.input_tokens }}/{{ lane.output_tokens }} tok）</span>
+              </div>
+              <p v-if="lane.error_code" class="dept-error">{{ lane.error_code }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="factoryData.frontend_departments.length" class="lane-section" data-testid="frontend-swimlanes">
+          <h3 class="lane-title">前端并行部门泳道（{{ factoryData.frontend_departments.length }}）</h3>
+          <div class="lane-grid">
+            <div
+              v-for="lane in factoryData.frontend_departments"
+              :key="`fe-${lane.dept_id}`"
+              class="dept-card"
+              :data-testid="`dept-lane-frontend-${lane.dept_id}`"
+            >
+              <div class="dept-card-head">
+                <span class="dept-name">{{ lane.dept_id }}</span>
+                <el-tag :type="deptStatusTagType(lane.status)" size="small" disable-transitions>
+                  {{ DEPT_STATUS_LABELS[lane.status] ?? lane.status }}
+                </el-tag>
+              </div>
+              <div class="step-track">
+                <span
+                  v-for="step in DEPT_PIPELINE_STEPS"
+                  :key="step.key"
+                  class="step-pill"
+                  :class="`step-${deptStepState(lane, step.key)}`"
+                >
+                  {{ step.label }}
+                </span>
+              </div>
+              <div class="dept-metrics">
+                <span>轮次：{{ lane.current_round }} / {{ lane.max_rounds }}</span>
+                <span>耗时：{{ formatDurationMs(lane.duration_ms) }}</span>
+                <span>
+                  测试：{{ lane.test_status ?? '未运行' }}
+                  <template v-if="lane.test_exit_code !== null">（exit {{ lane.test_exit_code }}）</template>
+                </span>
+                <span>费用：{{ formatMicroYuan(lane.cost_micro) }}（{{ lane.input_tokens }}/{{ lane.output_tokens }} tok）</span>
+              </div>
+              <p v-if="lane.error_code" class="dept-error">{{ lane.error_code }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="factoryData.open_defects.length || factoryData.resolved_defects.length"
+          class="lane-section"
+          data-testid="factory-defects"
+        >
+          <h3 class="lane-title">
+            缺陷单追踪（未解决 {{ factoryData.open_defects.length }} / 已解决 {{ factoryData.resolved_defects.length }}）
+          </h3>
+          <div v-if="factoryData.open_defects.length" class="defect-list" data-testid="open-defects">
+            <div
+              v-for="defect in factoryData.open_defects"
+              :key="`open-${defect.id}`"
+              class="defect-item defect-open"
+            >
+              <div class="defect-head">
+                <el-tag type="danger" size="small" disable-transitions>未解决</el-tag>
+                <span class="defect-meta">
+                  [{{ defect.phase }} / {{ defect.dept_id }} / 第 {{ defect.round }} 轮 / {{ defect.scope }}]
+                  {{ defect.error_class }}
+                </span>
+              </div>
+              <SafeText :text="defect.summary" />
+              <SafeText v-if="defect.log_excerpt" :text="defect.log_excerpt" class="defect-log" />
+            </div>
+          </div>
+          <div v-if="factoryData.resolved_defects.length" class="defect-list" data-testid="resolved-defects">
+            <div
+              v-for="defect in factoryData.resolved_defects"
+              :key="`res-${defect.id}`"
+              class="defect-item defect-resolved"
+            >
+              <div class="defect-head">
+                <el-tag type="success" size="small" disable-transitions>已解决</el-tag>
+                <span class="defect-meta">
+                  [{{ defect.phase }} / {{ defect.dept_id }} / 第 {{ defect.round }} 轮 / {{ defect.scope }}]
+                  {{ defect.error_class }}
+                </span>
+              </div>
+              <SafeText :text="defect.summary" />
+              <SafeText v-if="defect.log_excerpt" :text="defect.log_excerpt" class="defect-log" />
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="factoryData.model_routing_snapshot.length"
+          class="lane-section"
+          data-testid="factory-routing-snapshot"
+        >
+          <h3 class="lane-title">自定义模型路由脱敏快照</h3>
+          <el-table :data="factoryData.model_routing_snapshot" size="small" border>
+            <el-table-column prop="role" label="角色" width="140" />
+            <el-table-column prop="provider" label="提供方" width="140" />
+            <el-table-column prop="model" label="模型" />
+            <el-table-column prop="base_url_host" label="接口域名" />
+            <el-table-column prop="api_key_env" label="密钥环境变量名" width="170" />
+            <el-table-column label="凭据状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.api_key_present ? 'success' : 'info'" size="small" disable-transitions>
+                  {{ row.api_key_present ? '已注入' : '未注入' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </el-card>
 
       <el-card class="block-gap" data-testid="external-readiness">
@@ -575,5 +831,140 @@ watch(() => props.id, restart);
 .event-time {
   color: #c0c4cc;
   white-space: nowrap;
+}
+.factory-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.factory-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #606266;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.factory-meta-item {
+  color: #606266;
+}
+.blueprint-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lane-section {
+  margin-top: 16px;
+}
+.lane-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.lane-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.dept-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #fafafa;
+}
+.dept-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dept-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+}
+.step-track {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.step-pill {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid #dcdfe6;
+  color: #909399;
+  background: #fff;
+}
+.step-done {
+  border-color: #b3e19d;
+  color: #67c23a;
+  background: #f0f9eb;
+}
+.step-active {
+  border-color: #a0cfff;
+  color: #409eff;
+  background: #ecf5ff;
+}
+.step-warn {
+  border-color: #f3d19e;
+  color: #e6a23c;
+  background: #fdf6ec;
+}
+.dept-metrics {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #606266;
+}
+.dept-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #f56c6c;
+}
+.defect-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.defect-item {
+  border-radius: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  font-size: 13px;
+}
+.defect-open {
+  background: #fef0f0;
+  border-color: #fde2e2;
+}
+.defect-resolved {
+  background: #f0f9eb;
+  border-color: #e1f3d8;
+}
+.defect-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.defect-meta {
+  font-weight: 600;
+  font-size: 12px;
+  color: #303133;
+}
+.defect-log {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #606266;
 }
 </style>

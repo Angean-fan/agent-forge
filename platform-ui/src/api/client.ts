@@ -1,5 +1,6 @@
 import type {
   AccountInfo,
+  FactoryRunView,
   InterviewAnswer,
   InterviewView,
   ProfileExplanation,
@@ -8,6 +9,7 @@ import type {
   ProjectSummary,
   RunDetail,
   RunEventsData,
+  RunMode,
   RunView,
   SoftwareSpecification,
   SpecConfirmView,
@@ -206,15 +208,25 @@ export function newIdempotencyKey(): string {
 }
 
 export const runsApi = {
-  start(projectId: number, specId: number, idempotencyKey: string): Promise<RunView> {
+  start(
+    projectId: number,
+    specId: number,
+    idempotencyKey: string,
+    mode?: RunMode,
+  ): Promise<RunView> {
+    const body = mode === 'factory' ? { spec_id: specId, mode } : { spec_id: specId };
     return apiRequest(`/projects/${projectId}/runs`, {
       method: 'POST',
-      body: { spec_id: specId },
+      body,
       headers: { 'Idempotency-Key': idempotencyKey },
     });
   },
   get(runId: number): Promise<RunDetail> {
     return apiRequest(`/runs/${runId}`);
+  },
+  /** FP10：读取异步工厂多部门泳道进度、蓝图摘要、缺陷单与按部门成本（脱敏只读）。 */
+  factory(runId: number): Promise<FactoryRunView> {
+    return apiRequest(`/runs/${runId}/factory`);
   },
   /** R22：幂等取消运行；取消不撤回已处理调用，成本如实保留。 */
   cancel(runId: number): Promise<RunView> {

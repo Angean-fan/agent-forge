@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { ApiError, newIdempotencyKey, projectsApi, runsApi } from '@/api/client';
-import type { ProjectDetail, SoftwareSpecification, SpecView } from '@/api/types';
+import type { ProjectDetail, RunMode, SoftwareSpecification, SpecView } from '@/api/types';
 import ConfirmToggle from '@/components/ConfirmToggle.vue';
 import SafeText from '@/components/SafeText.vue';
 import StringListEditor from '@/components/StringListEditor.vue';
@@ -222,6 +222,8 @@ async function onConfirm(): Promise<void> {
   }
 }
 
+const runMode = ref<RunMode>('standard');
+
 async function onGenerate(): Promise<void> {
   if (!spec.value || !project.value) {
     return;
@@ -233,7 +235,10 @@ async function onGenerate(): Promise<void> {
     idempotencyKey.value = newIdempotencyKey();
   }
   try {
-    const run = await runsApi.start(projectId.value, spec.value.spec_id, idempotencyKey.value);
+    const run =
+      runMode.value === 'factory'
+        ? await runsApi.start(projectId.value, spec.value.spec_id, idempotencyKey.value, 'factory')
+        : await runsApi.start(projectId.value, spec.value.spec_id, idempotencyKey.value);
     idempotencyKey.value = null;
     ElMessage.success('已提交生成运行');
     await router.push({ name: 'run-detail', params: { id: String(run.id) } });
@@ -525,6 +530,24 @@ watch(() => props.id, loadAll, { immediate: true });
           模板 {{ spec.spec.technical_profile.template_version }}
         </p>
 
+        <div class="run-mode-box" data-testid="run-mode-selector">
+          <div class="run-mode-header">
+            <span class="run-mode-label">运行模式</span>
+            <el-radio-group v-model="runMode" size="small">
+              <el-radio-button value="standard" data-testid="mode-standard">标准装配模式</el-radio-button>
+              <el-radio-button value="factory" data-testid="mode-factory">异步工厂模式</el-radio-button>
+            </el-radio-group>
+          </div>
+          <p class="run-mode-hint" data-testid="run-mode-hint">
+            <template v-if="runMode === 'factory'">
+              异步工厂模式：由总管拆分并调度多部门并发开发与自动化返工修复；建议模块数 ≤ 8、业务实体 ≤ 25（超过软上限将提示拆分；支付等第三方能力运行于本地沙箱模拟模式）。
+            </template>
+            <template v-else>
+              标准装配模式：适用于 1–3 个业务实体的快速确定性装配与构建验收（默认模式）。
+            </template>
+          </p>
+        </div>
+
         <div class="action-bar">
           <div class="action-hint">
             <template v-if="spec.confirmed">
@@ -671,6 +694,30 @@ watch(() => props.id, loadAll, { immediate: true });
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.run-mode-box {
+  margin-top: 20px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+}
+.run-mode-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.run-mode-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+.run-mode-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #606266;
+  line-height: 1.5;
 }
 .action-bar {
   margin-top: 24px;

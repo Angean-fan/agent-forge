@@ -248,3 +248,76 @@ export interface ProfileExplanation {
   thinking_mode: string;
   reasoning_effort: string | null;
 }
+
+/** FP10：运行模式选择（标准装配模式 / 异步工厂模式）。 */
+export type RunMode = 'standard' | 'factory';
+
+export interface FactoryBlueprintSummary {
+  phase: string;
+  version: number;
+  status: string;
+  blueprint_hash: string;
+  module_count: number;
+  module_ids: string[];
+  sandbox_integrations: Array<Record<string, unknown>>;
+}
+
+export interface FactoryDepartmentLane {
+  phase: string;
+  dept_id: string;
+  status: string;
+  current_round: number;
+  max_rounds: number;
+  duration_ms: number | null;
+  test_status: string | null;
+  test_executed: boolean;
+  test_exit_code: number | null;
+  verifier_kind: string | null;
+  error_code: string | null;
+  cost_micro: number;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface FactoryDefectSummary {
+  id: number;
+  phase: string;
+  dept_id: string;
+  scope: string;
+  round: number;
+  error_class: string;
+  summary: string;
+  log_excerpt: string;
+  affected_paths: string[];
+  resolved: boolean;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface FactoryRoutingRole {
+  role: string;
+  provider: string;
+  model: string;
+  base_url_host: string;
+  api_key_env: string;
+  api_key_present: boolean;
+  enabled: boolean;
+  supports_tools: boolean;
+}
+
+export interface FactoryRunView {
+  run_id: number;
+  project_id: number;
+  run_status: string;
+  factory_active: boolean;
+  current_phase: string;
+  integration_rounds: Record<string, number>;
+  blueprints: FactoryBlueprintSummary[];
+  backend_departments: FactoryDepartmentLane[];
+  frontend_departments: FactoryDepartmentLane[];
+  open_defects: FactoryDefectSummary[];
+  resolved_defects: FactoryDefectSummary[];
+  cost_by_department: Record<string, unknown>;
+  model_routing_snapshot: FactoryRoutingRole[];
+}

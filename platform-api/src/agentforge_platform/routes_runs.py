@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse
@@ -15,12 +18,29 @@ from sqlalchemy.orm import Session
 from agentforge_platform.accounts import Account
 from agentforge_platform.auth import get_current_account, require_csrf, require_project_owner
 from agentforge_platform.budget import effective_budget_micro, record_adjustment
+from agentforge_platform.budget_pg import cost_by_department
 from agentforge_platform.db import get_db
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.factory_tickets import sanitize_defect_log
 from agentforge_platform.iteration import artifact_eligibility, load_artifact, plan_iteration
 from agentforge_platform.live_validation import parse_live_services
 from agentforge_platform.middleware import get_request_id
-from agentforge_platform.models import Artifact, Project, Run, RunEvent, SpecVersion, Worker
+from agentforge_platform.model_gateway import (
+    FACTORY_ROLES,
+    _find_route_candidate,
+    load_custom_routes,
+)
+from agentforge_platform.models import (
+    Artifact,
+    DefectTicketRow,
+    DepartmentRun,
+    FactoryBlueprint,
+    Project,
+    Run,
+    RunEvent,
+    SpecVersion,
+    Worker,
+)
 from agentforge_platform.packaging import build_cost_report
 from agentforge_platform.preview import (
     ACCESS_OK,
@@ -85,6 +105,97 @@ class RunCreateRequest(BaseModel):
     model_config = _STRICT
 
     spec_id: int | None = None
+    mode: Literal["standard", "factory"] | None = None
+
+
+class FactoryBlueprintSummaryView(BaseModel):
+    """FP10：工厂阶段冻结蓝图脱敏摘要。"""
+
+    model_config = _STRICT
+
+    phase: str
+    version: int
+    status: str
+    blueprint_hash: str
+    module_count: int
+    module_ids: list[str]
+    sandbox_integrations: list[dict]
+
+
+class FactoryDepartmentLaneView(BaseModel):
+    """FP10：单个部门泳道状态、轮次、耗时、测试结果与成本明细。"""
+
+    model_config = _STRICT
+
+    phase: str
+    dept_id: str
+    status: str
+    current_round: int
+    max_rounds: int
+    duration_ms: int | None = None
+    test_status: str | None = None
+    test_executed: bool = False
+    test_exit_code: int | None = None
+    verifier_kind: str | None = None
+    error_code: str | None = None
+    cost_micro: int = 0
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+class FactoryDefectSummaryView(BaseModel):
+    """FP10：脱敏缺陷单摘要（绝不外泄密钥或超过 1 KB 的原始堆栈）。"""
+
+    model_config = _STRICT
+
+    id: int
+    phase: str
+    dept_id: str
+    scope: str
+    round: int
+    error_class: str
+    summary: str
+    log_excerpt: str
+    affected_paths: list[str]
+    resolved: bool
+    created_at: datetime
+    resolved_at: datetime | None = None
+
+
+class FactoryRoutingRoleView(BaseModel):
+    """FP10：自定义模型路由脱敏快照（仅暴露域名与环境变量名，绝不暴露 API Key 或凭据）。"""
+
+    model_config = _STRICT
+
+    role: str
+    provider: str
+    model: str
+    base_url_host: str
+    api_key_env: str
+    api_key_present: bool
+    enabled: bool
+    supports_tools: bool
+
+
+class FactoryRunView(BaseModel):
+    """FP10：GET /api/runs/{run_id}/factory 只读工厂流水线泳道视图。"""
+
+    model_config = _STRICT
+
+    run_id: int
+    project_id: int
+    run_status: str
+    factory_active: bool
+    current_phase: str
+    integration_rounds: dict[str, int]
+    blueprints: list[FactoryBlueprintSummaryView]
+    backend_departments: list[FactoryDepartmentLaneView]
+    frontend_departments: list[FactoryDepartmentLaneView]
+    open_defects: list[FactoryDefectSummaryView]
+    resolved_defects: list[FactoryDefectSummaryView]
+    cost_by_department: dict
+    model_routing_snapshot: list[FactoryRoutingRoleView]
 
 
 class RunResumeRequest(BaseModel):
@@ -527,7 +638,12 @@ def start_run(
     run = create_run(
         db, project, active_spec_id, idempotency_key=idempotency_key, spec_hash=spec_hash
     )
-    append_event(db, run, "queued", "{}")
+    queued_payload = (
+        json.dumps({"mode": payload.mode})
+        if payload is not None and payload.mode is not None
+        else "{}"
+    )
+    append_event(db, run, "queued", queued_payload)
     return ApiResponse(request_id=get_request_id(request), data=_run_view(db, run))
 
 
@@ -543,6 +659,265 @@ def list_runs(
         data=RunHistoryData(
             project_id=project.id, items=[_run_view(db, run) for run in list_project_runs(db, project.id)]
         ),
+    )
+
+
+def _sanitized_routing_snapshot() -> list[FactoryRoutingRoleView]:
+    """构建自定义模型路由脱敏快照：仅暴露 provider/model/主机名/环境变量名与就绪布尔值，绝不输出密钥。"""
+    custom_routes: dict = {}
+    try:
+        custom_routes = load_custom_routes()
+    except AppException:
+        custom_routes = {}
+
+    snapshot: list[FactoryRoutingRoleView] = []
+    for role in sorted(FACTORY_ROLES):
+        route = custom_routes.get(role) or _find_route_candidate(role)
+        if route is None:
+            continue
+        parsed_url = urlparse(route.base_url or "")
+        host = parsed_url.hostname or ""
+        env_name = str(route.api_key_env or "")
+        key_present = bool(env_name) and bool(os.environ.get(env_name, "").strip())
+        snapshot.append(
+            FactoryRoutingRoleView(
+                role=role,
+                provider=str(route.provider),
+                model=str(route.model),
+                base_url_host=host,
+                api_key_env=env_name,
+                api_key_present=key_present,
+                enabled=bool(route.enabled),
+                supports_tools=bool(route.supports_tools),
+            )
+        )
+    return snapshot
+
+
+def _build_factory_run_view(db: Session, run: Run) -> FactoryRunView:
+    bp_rows = list(
+        db.scalars(
+            select(FactoryBlueprint)
+            .where(FactoryBlueprint.run_id == run.id)
+            .order_by(FactoryBlueprint.phase.asc(), FactoryBlueprint.version.asc())
+        ).all()
+    )
+    dept_rows = list(
+        db.scalars(
+            select(DepartmentRun)
+            .where(DepartmentRun.run_id == run.id)
+            .order_by(DepartmentRun.phase.asc(), DepartmentRun.dept_id.asc())
+        ).all()
+    )
+    ticket_rows = list(
+        db.scalars(
+            select(DefectTicketRow)
+            .where(DefectTicketRow.run_id == run.id)
+            .order_by(DefectTicketRow.id.asc())
+        ).all()
+    )
+    event_rows = list(
+        db.scalars(
+            select(RunEvent)
+            .where(RunEvent.run_id == run.id)
+            .order_by(RunEvent.sequence.asc())
+        ).all()
+    )
+
+    cost_breakdown = cost_by_department(db, run.id)
+    by_phase_cost = cost_breakdown.get("by_phase") or {}
+
+    blueprints: list[FactoryBlueprintSummaryView] = []
+    for row in bp_rows:
+        module_ids: list[str] = []
+        sandbox_items: list[dict] = []
+        try:
+            parsed_bp = json.loads(row.blueprint_json)
+            if isinstance(parsed_bp, dict):
+                mods = parsed_bp.get("modules") or []
+                if isinstance(mods, list):
+                    module_ids = [
+                        str(m.get("module_id"))
+                        for m in mods
+                        if isinstance(m, dict) and m.get("module_id")
+                    ]
+                sb = parsed_bp.get("sandbox_integrations") or []
+                if isinstance(sb, list):
+                    sandbox_items = [
+                        {
+                            "id": str(item.get("id") or ""),
+                            "kind": str(item.get("kind") or ""),
+                            "mode": str(item.get("mode") or "sandbox_mock"),
+                            "sandbox_only": bool(item.get("sandbox_only", True)),
+                        }
+                        for item in sb
+                        if isinstance(item, dict)
+                    ]
+        except ValueError:
+            pass
+        blueprints.append(
+            FactoryBlueprintSummaryView(
+                phase=row.phase,
+                version=int(row.version),
+                status=row.status,
+                blueprint_hash=row.blueprint_hash,
+                module_count=len(module_ids),
+                module_ids=module_ids,
+                sandbox_integrations=sandbox_items,
+            )
+        )
+
+    backend_lanes: list[FactoryDepartmentLaneView] = []
+    frontend_lanes: list[FactoryDepartmentLaneView] = []
+    for row in dept_rows:
+        duration_ms: int | None = None
+        if row.started_at is not None and row.finished_at is not None:
+            duration_ms = max(0, int((row.finished_at - row.started_at).total_seconds() * 1000))
+        test_status: str | None = None
+        test_executed = False
+        test_exit_code: int | None = None
+        verifier_kind: str | None = None
+        if row.evidence_json:
+            try:
+                ev = json.loads(row.evidence_json)
+                if isinstance(ev, dict):
+                    test_status = str(ev.get("status")) if ev.get("status") is not None else None
+                    test_executed = bool(ev.get("executed", False))
+                    if ev.get("exit_code") is not None:
+                        test_exit_code = int(ev["exit_code"])
+                    if ev.get("verifier_kind") is not None:
+                        verifier_kind = str(ev["verifier_kind"])
+                    if duration_ms is None and ev.get("duration_ms") is not None:
+                        duration_ms = max(0, int(ev["duration_ms"]))
+            except (ValueError, TypeError):
+                pass
+
+        phase_depts = (by_phase_cost.get(row.phase) or {}).get("departments") or {}
+        dept_cost = phase_depts.get(row.dept_id) or {}
+        lane = FactoryDepartmentLaneView(
+            phase=row.phase,
+            dept_id=row.dept_id,
+            status=row.status,
+            current_round=int(row.current_round or 0),
+            max_rounds=int(row.max_rounds or 3),
+            duration_ms=duration_ms,
+            test_status=test_status,
+            test_executed=test_executed,
+            test_exit_code=test_exit_code,
+            verifier_kind=verifier_kind,
+            error_code=row.error_code,
+            cost_micro=int(dept_cost.get("cost_micro") or 0),
+            calls=int(dept_cost.get("calls") or 0),
+            input_tokens=int(dept_cost.get("input_tokens") or 0),
+            output_tokens=int(dept_cost.get("output_tokens") or 0),
+        )
+        if row.phase == "frontend":
+            frontend_lanes.append(lane)
+        else:
+            backend_lanes.append(lane)
+
+    open_defects: list[FactoryDefectSummaryView] = []
+    resolved_defects: list[FactoryDefectSummaryView] = []
+    integration_rounds: dict[str, int] = {"backend": 0, "frontend": 0}
+
+    for t in ticket_rows:
+        summary_text = ""
+        log_text = ""
+        affected_paths: list[str] = []
+        try:
+            payload = json.loads(t.payload_json)
+            if isinstance(payload, dict):
+                summary_text = str(payload.get("summary") or "")
+                log_text = str(payload.get("log_excerpt") or "")
+                raw_paths = payload.get("affected_paths") or []
+                if isinstance(raw_paths, list):
+                    affected_paths = [str(p) for p in raw_paths[:20]]
+        except ValueError:
+            pass
+        if t.scope == "integration" and t.phase in integration_rounds:
+            integration_rounds[t.phase] = max(integration_rounds[t.phase], int(t.round or 1))
+        view = FactoryDefectSummaryView(
+            id=int(t.id),
+            phase=t.phase,
+            dept_id=t.dept_id,
+            scope=t.scope,
+            round=int(t.round or 1),
+            error_class=t.error_class,
+            summary=sanitize_defect_log(summary_text, max_bytes=1024),
+            log_excerpt=sanitize_defect_log(log_text, max_bytes=1024),
+            affected_paths=affected_paths,
+            resolved=bool(t.resolved),
+            created_at=t.created_at,
+            resolved_at=t.resolved_at,
+        )
+        if t.resolved:
+            resolved_defects.append(view)
+        else:
+            open_defects.append(view)
+
+    factory_event_seen = False
+    for ev_row in event_rows:
+        if ev_row.type.startswith("factory_"):
+            factory_event_seen = True
+        try:
+            ev_payload = json.loads(ev_row.payload)
+        except ValueError:
+            ev_payload = {}
+        if not isinstance(ev_payload, dict):
+            continue
+        if ev_payload.get("mode") == "factory":
+            factory_event_seen = True
+        ev_phase = str(ev_payload.get("phase") or "")
+        ev_round = ev_payload.get("integration_round")
+        if ev_phase in integration_rounds and isinstance(ev_round, int):
+            integration_rounds[ev_phase] = max(integration_rounds[ev_phase], ev_round)
+
+    factory_active = bool(bp_rows or dept_rows or ticket_rows or factory_event_seen)
+    has_frontend = bool(frontend_lanes or any(b.phase == "frontend" for b in blueprints))
+    has_backend = bool(backend_lanes or any(b.phase == "backend" for b in blueprints))
+    if has_frontend:
+        active_phase = "frontend"
+    elif has_backend:
+        active_phase = "backend"
+    else:
+        active_phase = "idle"
+
+    if has_backend and integration_rounds["backend"] == 0 and any(
+        lane.status == "PASSED" for lane in backend_lanes
+    ):
+        integration_rounds["backend"] = 1
+    if has_frontend and integration_rounds["frontend"] == 0 and any(
+        lane.status == "PASSED" for lane in frontend_lanes
+    ):
+        integration_rounds["frontend"] = 1
+
+    return FactoryRunView(
+        run_id=int(run.id),
+        project_id=int(run.project_id),
+        run_status=str(run.status),
+        factory_active=factory_active,
+        current_phase=active_phase,
+        integration_rounds=integration_rounds,
+        blueprints=blueprints,
+        backend_departments=backend_lanes,
+        frontend_departments=frontend_lanes,
+        open_defects=open_defects,
+        resolved_defects=resolved_defects,
+        cost_by_department=cost_breakdown,
+        model_routing_snapshot=_sanitized_routing_snapshot(),
+    )
+
+
+@router.get("/runs/{run_id}/factory", response_model=ApiResponse[FactoryRunView])
+def get_run_factory(
+    request: Request,
+    run: Run = Depends(require_run_owner),
+    db: Session = Depends(get_db),
+) -> ApiResponse[FactoryRunView]:
+    """FP10：异步工厂流水线只读泳道进度、蓝图摘要、缺陷单与按部门成本接口（强制项目归属与脱敏）。"""
+    return ApiResponse(
+        request_id=get_request_id(request),
+        data=_build_factory_run_view(db, run),
     )
 
 
