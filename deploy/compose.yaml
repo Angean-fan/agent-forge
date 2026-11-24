@@ -56,6 +56,7 @@ services:
       <<: *platform-env
     volumes:
       - platform-db:/db
+      - ../platform-api/config:/config:ro
       - ./var/runs:/runs
     depends_on:
       api:
@@ -75,6 +76,7 @@ services:
       <<: *platform-env
     volumes:
       - platform-db:/db
+      - ../platform-api/config:/config:ro
       - ./var/runs:/runs
     depends_on:
       api:

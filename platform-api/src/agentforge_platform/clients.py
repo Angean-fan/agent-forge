@@ -114,7 +114,11 @@ class OpenAICompatibleClient:
             "stream": False,
         }
         if thinking_mode:
-            payload["thinking"] = {"type": thinking_mode}
+            is_deepseek = (
+                "deepseek" in self._provider.lower() or "deepseek" in self._base_url.lower()
+            )
+            if is_deepseek or thinking_mode == "enabled":
+                payload["thinking"] = {"type": thinking_mode}
         # 思考强度独立于 thinking.type 传递；仅在思考模式下有效（调用方/网关负责组合校验）。
         if reasoning_effort is not None:
             if thinking_mode != "enabled":

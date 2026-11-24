@@ -172,6 +172,28 @@ def heartbeat(db: Session, worker_id: str, hostname: str) -> Worker:
     return worker
 
 
+def renew_run_lease(
+    db: Session,
+    run_id: int,
+    worker_id: str,
+    *,
+    lease_seconds: int = 60,
+) -> bool:
+    """续期在途 run 的租约（仅当仍归属当前 worker 且未进终态时生效，防长耗时工厂任务被误判过期重领）。"""
+    terminal_values = [status.value for status in TERMINAL_STATUSES]
+    result = db.execute(
+        update(Run)
+        .where(
+            Run.id == run_id,
+            Run.lease_owner == worker_id,
+            Run.status.notin_(terminal_values),
+        )
+        .values(lease_until=_now() + timedelta(seconds=lease_seconds))
+    )
+    db.flush()
+    return result.rowcount == 1
+
+
 def worker_heartbeat_timeout() -> int:
     return int(
         os.environ.get(

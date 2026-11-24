@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 import { ApiError, newIdempotencyKey, projectsApi, runsApi } from '@/api/client';
-import type { ProjectDetail, RunMode, SoftwareSpecification, SpecView } from '@/api/types';
+import type { ProjectDetail, RunMode, RunView, SoftwareSpecification, SpecView } from '@/api/types';
 import ConfirmToggle from '@/components/ConfirmToggle.vue';
 import SafeText from '@/components/SafeText.vue';
 import StringListEditor from '@/components/StringListEditor.vue';
@@ -52,6 +52,7 @@ function blankSpec(): SoftwareSpecification {
 
 const project = ref<ProjectDetail | null>(null);
 const spec = ref<SpecView | null>(null);
+const runs = ref<RunView[]>([]);
 const draft = reactive<SoftwareSpecification>(blankSpec());
 const loadedJson = ref('');
 
@@ -131,10 +132,23 @@ async function loadSpec(): Promise<void> {
   }
 }
 
+async function loadRuns(): Promise<void> {
+  if (typeof runsApi.listByProject !== 'function') {
+    runs.value = [];
+    return;
+  }
+  try {
+    const res = await runsApi.listByProject(projectId.value);
+    runs.value = res.items ?? [];
+  } catch (error) {
+    await handleAuthError(error);
+  }
+}
+
 async function loadAll(): Promise<void> {
   loading.value = true;
   specMessage.value = '';
-  await Promise.all([loadProject(), loadSpec()]);
+  await Promise.all([loadProject(), loadSpec(), loadRuns()]);
   loading.value = false;
 }
 
@@ -252,6 +266,39 @@ async function onGenerate(): Promise<void> {
   } finally {
     generating.value = false;
   }
+}
+
+function addEntity(): void {
+  draft.entities.push({
+    name: `Entity${draft.entities.length + 1}`,
+    source: 'user_explicit',
+    fields: [{ name: 'id', type: 'long', required: true }],
+  });
+}
+
+function removeEntity(entityIndex: number): void {
+  draft.entities.splice(entityIndex, 1);
+}
+
+function addPage(): void {
+  const firstEntity = draft.entities[0]?.name ?? 'Task';
+  draft.pages.push({
+    name: `Page${draft.pages.length + 1}`,
+    entity: firstEntity,
+    path: `/page-${draft.pages.length + 1}`,
+  });
+}
+
+function removePage(pageIndex: number): void {
+  draft.pages.splice(pageIndex, 1);
+}
+
+function runStatusTagType(status: string): 'success' | 'danger' | 'warning' | 'info' | 'primary' {
+  if (status === 'SUCCEEDED') return 'success';
+  if (status === 'FAILED') return 'danger';
+  if (status === 'PAUSED_BUDGET') return 'warning';
+  if (status === 'CANCELLED') return 'info';
+  return 'primary';
 }
 
 function addField(entityIndex: number): void {
@@ -448,11 +495,20 @@ watch(() => props.id, loadAll, { immediate: true });
         <StringListEditor v-model="draft.actors" :readonly="readOnly" placeholder="例如 MEMBER / ADMIN" />
 
         <h3 class="section-title">业务实体</h3>
-        <el-empty v-if="!draft.entities.length" description="MVP 需要一个 Task 业务实体" :image-size="60" />
+        <el-empty v-if="!draft.entities.length" description="至少添加一个业务实体（工厂模式支持多实体）" :image-size="60" />
         <div v-for="(entity, entityIndex) in draft.entities" :key="entityIndex" class="entity-block">
           <div class="entity-head">
-            <el-input v-model="entity.name" :disabled="readOnly" class="entity-name" />
+            <el-input v-model="entity.name" :disabled="readOnly" class="entity-name" placeholder="实体名（PascalCase）" />
             <ConfirmToggle v-model="entity.source" :readonly="readOnly" />
+            <el-button
+              v-if="!readOnly"
+              text
+              type="danger"
+              :data-testid="`remove-entity-${entityIndex}`"
+              @click="removeEntity(entityIndex)"
+            >
+              删除实体
+            </el-button>
           </div>
           <el-table :data="entity.fields" size="small" border>
             <el-table-column label="字段">
@@ -482,10 +538,36 @@ watch(() => props.id, loadAll, { immediate: true });
             添加字段
           </el-button>
         </div>
+        <el-button
+          v-if="!readOnly"
+          size="small"
+          type="primary"
+          plain
+          data-testid="add-entity-btn"
+          @click="addEntity"
+        >
+          添加业务实体
+        </el-button>
+
+        <h3 class="section-title">业务页面</h3>
+        <div v-for="(page, pageIndex) in draft.pages" :key="pageIndex" class="perm-row">
+          <el-input v-model="page.name" :disabled="readOnly" size="small" class="entity-name" placeholder="页面名" />
+          <el-input v-model="page.entity" :disabled="readOnly" size="small" class="perm-role" placeholder="关联实体" />
+          <el-input v-model="page.path" :disabled="readOnly" size="small" class="perm-role" placeholder="/path" />
+          <el-button v-if="!readOnly" text type="danger" @click="removePage(pageIndex)">删除</el-button>
+        </div>
+        <el-button v-if="!readOnly" size="small" data-testid="add-page-btn" @click="addPage">添加业务页面</el-button>
 
         <h3 class="section-title">角色权限</h3>
         <div v-for="(permission, index) in draft.permissions" :key="index" class="perm-row">
-          <el-select v-model="permission.role" :disabled="readOnly" class="perm-role">
+          <el-select
+            v-model="permission.role"
+            :disabled="readOnly"
+            filterable
+            allow-create
+            default-first-option
+            class="perm-role"
+          >
             <el-option v-for="role in ROLE_OPTIONS" :key="role" :label="role" :value="role" />
           </el-select>
           <el-checkbox-group v-model="permission.actions" :disabled="readOnly">
@@ -607,6 +689,40 @@ watch(() => props.id, loadAll, { immediate: true });
           </div>
         </div>
       </template>
+    </el-card>
+
+    <el-card v-if="runs.length" class="block-gap" data-testid="project-runs-history">
+      <h2 class="section-title">历史运行记录</h2>
+      <el-table :data="runs" size="small" border>
+        <el-table-column label="运行 ID" width="90">
+          <template #default="{ row }">#{{ row.id }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="140">
+          <template #default="{ row }">
+            <el-tag :type="runStatusTagType(row.status)" size="small" disable-transitions>
+              {{ row.status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="error_code" label="错误码">
+          <template #default="{ row }">{{ row.error_code ?? '—' }}</template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="180">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="110">
+          <template #default="{ row }">
+            <el-button
+              text
+              type="primary"
+              :data-testid="`open-run-${row.id}`"
+              @click="router.push({ name: 'run-detail', params: { id: String(row.id) } })"
+            >
+              查看详情
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-card>
   </section>
 </template>

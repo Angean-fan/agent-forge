@@ -196,6 +196,11 @@ const readinessLabel = computed(() =>
   run.value ? (READINESS_LABELS[run.value.external_readiness] ?? run.value.external_readiness) : '',
 );
 const canceling = ref(false);
+const resuming = ref(false);
+const resumeTopupYuan = ref(5);
+const canResumeBudget = computed(
+  () => run.value?.status === 'PAUSED_BUDGET' && typeof runsApi.resume === 'function',
+);
 
 async function cancelRun(): Promise<void> {
   if (!run.value || canceling.value) {
@@ -209,6 +214,27 @@ async function cancelRun(): Promise<void> {
     errorMessage.value = describeError(error).message;
   } finally {
     canceling.value = false;
+  }
+}
+
+async function resumeBudgetRun(): Promise<void> {
+  if (!run.value || resuming.value || typeof runsApi.resume !== 'function') {
+    return;
+  }
+  const addMicro = Math.max(1, Math.round(Number(resumeTopupYuan.value || 0) * 1_000_000));
+  resuming.value = true;
+  errorMessage.value = '';
+  try {
+    const updated = await runsApi.resume(runId.value, addMicro, 'ui_budget_topup');
+    run.value = { ...run.value, status: updated.status };
+    if (stopped) {
+      stopped = false;
+      void poll();
+    }
+  } catch (error) {
+    errorMessage.value = describeError(error).message;
+  } finally {
+    resuming.value = false;
   }
 }
 
@@ -384,6 +410,37 @@ watch(() => props.id, restart);
           {{ run.status === 'CANCELLED' ? '运行已取消' : '已请求取消（在途工作将尽快停止）' }}
         </template>
         <div v-if="cancelNotice">{{ cancelNotice }}</div>
+      </el-alert>
+
+      <el-alert
+        v-if="run.status === 'PAUSED_BUDGET'"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="block-gap"
+        data-testid="budget-paused-alert"
+      >
+        <template #title>预算不足已暂停（已完成的部门/阶段检查点已保留，加预算后可断点续跑）</template>
+        <div v-if="canResumeBudget" class="resume-bar">
+          <span>追加预算（元）：</span>
+          <el-input-number
+            v-model="resumeTopupYuan"
+            :min="1"
+            :max="500"
+            :step="1"
+            size="small"
+            data-testid="resume-topup-input"
+          />
+          <el-button
+            type="primary"
+            size="small"
+            :loading="resuming"
+            data-testid="resume-run"
+            @click="resumeBudgetRun"
+          >
+            增加预算并恢复运行
+          </el-button>
+        </div>
       </el-alert>
 
       <el-alert
@@ -782,6 +839,13 @@ watch(() => props.id, restart);
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+}
+.resume-bar {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
 }
 .download-row {

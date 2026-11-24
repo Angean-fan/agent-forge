@@ -19,11 +19,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from agentforge_platform.clients import DeepSeekClient, ModelClient
+from agentforge_platform.clients import ModelClient
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.interview import AFFECT_KEYS, MAX_QUESTIONS_PER_ROUND, Question
 from agentforge_platform.model_gateway import invoke
 from agentforge_platform.models import Project, SpecVersion
+from agentforge_platform.production_routing import default_user_interaction_client
 
 _MAX_OUTPUT_TOKENS = 2048
 _MAX_INPUT_TOKENS = 6000
@@ -152,7 +153,7 @@ def generate_questions(
     conflicts = detect_conflicts(decisions)
     thinking_mode, reasoning_effort = select_thinking_mode(conflicts)
     answered = sorted({d.affects for d in decisions if d.affects not in set(conflicts)})
-    provider = client or DeepSeekClient()
+    provider = default_user_interaction_client(client)
 
     for attempt in range(2):
         prompt = _prompt(missing_fields, answered, conflicts, correction=attempt == 1)

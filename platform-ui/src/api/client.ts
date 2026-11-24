@@ -224,6 +224,10 @@ export const runsApi = {
   get(runId: number): Promise<RunDetail> {
     return apiRequest(`/runs/${runId}`);
   },
+  /** R25：查询项目历史运行记录列表。 */
+  listByProject(projectId: number): Promise<{ items: RunView[] }> {
+    return apiRequest(`/projects/${projectId}/runs`);
+  },
   /** FP10：读取异步工厂多部门泳道进度、蓝图摘要、缺陷单与按部门成本（脱敏只读）。 */
   factory(runId: number): Promise<FactoryRunView> {
     return apiRequest(`/runs/${runId}/factory`);
@@ -231,6 +235,16 @@ export const runsApi = {
   /** R22：幂等取消运行；取消不撤回已处理调用，成本如实保留。 */
   cancel(runId: number): Promise<RunView> {
     return apiRequest(`/runs/${runId}/cancel`, { method: 'POST' });
+  },
+  /** R24：经确认的预算暂停恢复（追加预算微元后重新入队续跑）。 */
+  resume(runId: number, additionalBudgetMicro: number, reason?: string): Promise<RunView> {
+    return apiRequest(`/runs/${runId}/resume`, {
+      method: 'POST',
+      body: {
+        additional_budget_micro: additionalBudgetMicro,
+        ...(reason ? { reason } : {}),
+      },
+    });
   },
   events(runId: number, afterSequence: number): Promise<RunEventsData> {
     const query = new URLSearchParams({ after_sequence: String(afterSequence) });

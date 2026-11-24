@@ -17,10 +17,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from agentforge_platform.clients import DeepSeekClient, ModelClient
+from agentforge_platform.clients import ModelClient
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.model_gateway import invoke
 from agentforge_platform.models import Project
+from agentforge_platform.production_routing import default_user_interaction_client
 
 _MAX_OUTPUT_TOKENS = 1024
 _MAX_INPUT_TOKENS = 2000
@@ -82,7 +83,7 @@ def explain_profile(
     db: Session, project: Project, option: dict, *, client: ModelClient | None = None
 ) -> tuple[str, str, str | None]:
     """生成选型通俗解释；返回 ``(explanation, thinking_mode, reasoning_effort)``。"""
-    provider = client or DeepSeekClient()
+    provider = default_user_interaction_client(client)
     thinking_mode: str | None = "disabled"
     for attempt in range(2):
         prompt = _prompt(option, correction=attempt == 1)

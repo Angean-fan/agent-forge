@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,10 +84,32 @@ def thread_config(project_id: int, draft_id: int) -> dict:
 
 
 def _sqlite_path(database_url: str) -> str:
+    """解析访谈检查点 SQLite 文件路径。
+
+    - SQLite 平台库：直接复用平台 SQLite 文件（保持 R04 零变更）；
+    - PostgreSQL 等非 SQLite 平台库：落到独立本地检查点 SQLite 文件（可由
+      ``AGENTFORGE_INTERVIEW_CHECKPOINT_DB`` 指定，默认按连接目标哈希隔离存放在 ``var/`` 下），
+      确保切换 PG 后动态访谈 interrupt/resume 仍完整可用。
+    """
     url = make_url(database_url)
-    if url.get_backend_name() != "sqlite" or not url.database:
-        raise InterviewError("SPEC_NOT_FOUND", "访谈检查点需要 SQLite 平台库")
-    return str(Path(url.database))
+    if url.get_backend_name() == "sqlite":
+        if not url.database:
+            raise InterviewError("SPEC_NOT_FOUND", "访谈检查点需要有效的 SQLite 路径")
+        return str(Path(url.database))
+
+    override = os.environ.get("AGENTFORGE_INTERVIEW_CHECKPOINT_DB", "").strip()
+    if override:
+        target = Path(override)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return str(target)
+
+    # 非 SQLite（如 PostgreSQL）：按库目标与 schema 哈希生成独立检查点文件，避免不同库/测试 schema 串扰
+    scope_key = f"{url.host or ''}:{url.port or ''}/{url.database or ''}?{sorted(url.query.items())}"
+    digest = hashlib.sha256(scope_key.encode("utf-8")).hexdigest()[:12]
+    base_dir = Path(os.environ.get("RUNNER_WORK_ROOT", "./var/runs")).resolve().parent
+    target = base_dir / f"interview-checkpoints-{digest}.sqlite"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return str(target)
 
 
 class _Checkpointer:

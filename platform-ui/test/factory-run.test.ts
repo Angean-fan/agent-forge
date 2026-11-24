@@ -35,9 +35,11 @@ vi.mock('@/api/client', async (importOriginal) => {
     runsApi: {
       start: vi.fn(),
       get: vi.fn(),
+      listByProject: vi.fn(),
       factory: vi.fn(),
       events: vi.fn(),
       cancel: vi.fn(),
+      resume: vi.fn(),
       artifactUrl: actual.runsApi.artifactUrl,
     },
   };
@@ -443,5 +445,132 @@ describe('FP10 ProjectDetailView run mode selector', () => {
 
     expect(runsApi.start).toHaveBeenCalledTimes(2);
     expect(vi.mocked(runsApi.start).mock.calls[1][3]).toBe('standard');
+  });
+
+  it('supports adding/removing entities & pages and displays project run history', async () => {
+    const project: ProjectDetail = {
+      id: 9,
+      name: '多实体项目',
+      active_spec_id: null,
+      created_at: '2026-11-23T14:00:00',
+      requirement: '商品与订单管理',
+    };
+    const draftSpec: SoftwareSpecification = {
+      schema_version: '0.1',
+      project_type: 'crud_web',
+      goal: '电商',
+      actors: ['ADMIN'],
+      entities: [{ name: 'Product', source: 'user_confirmed', fields: [{ name: 'id', type: 'long', required: true }] }],
+      relations: [],
+      pages: [],
+      permissions: [{ role: 'ADMIN', actions: ['create', 'read'], source: 'user_confirmed' }],
+      business_rules: [{ id: 'BR01', text: '规则', source: 'user_confirmed' }],
+      acceptance_cases: [{ id: 'AC01', scenario: '场景', expected: '预期', source: 'user_confirmed' }],
+      technical_profile: { profile_id: 'demo-ts-mp', profile_version: '0.3', template_version: 'demo-0.2' },
+      constraints: [],
+      exclusions: [],
+      capability_requests: [],
+      recipe_requests: [],
+      integrations: [],
+      external_requirements: [],
+    };
+    vi.mocked(projectsApi.get).mockResolvedValue(project);
+    vi.mocked(projectsApi.getSpec).mockResolvedValue({
+      spec_id: 3,
+      version: 1,
+      draft_revision: 1,
+      confirmed: false,
+      confirmed_at: null,
+      hash: 'd'.repeat(64),
+      spec: draftSpec,
+      pending: [],
+      issues: [],
+      summary: null,
+      missing_fields: [],
+      questions: [],
+    });
+    vi.mocked(runsApi.listByProject).mockResolvedValue({
+      items: [
+        {
+          id: 77,
+          project_id: 9,
+          spec_id: 3,
+          status: 'SUCCEEDED',
+          error_code: null,
+          cancel_requested: false,
+          lease_owner: null,
+          created_at: '2026-11-23T15:00:00',
+          updated_at: '2026-11-23T15:05:00',
+        },
+      ],
+    });
+
+    const router = makeTestRouter();
+    await router.push('/projects/9');
+    await router.isReady();
+    const wrapper = mount(ProjectDetailView, {
+      props: { id: '9' },
+      global: { plugins: [ElementPlus, router] },
+    });
+    await flushPromises();
+    await nextTick();
+
+    // 添加第二个实体与一个业务页面
+    await wrapper.get('[data-testid="add-entity-btn"]').trigger('click');
+    await wrapper.get('[data-testid="add-page-btn"]').trigger('click');
+    await nextTick();
+    expect(wrapper.findAll('.entity-block')).toHaveLength(2);
+
+    // 历史运行记录卡片展示并可跳转
+    const history = wrapper.get('[data-testid="project-runs-history"]');
+    expect(history.text()).toContain('#77');
+    expect(history.text()).toContain('SUCCEEDED');
+    await wrapper.get('[data-testid="open-run-77"]').trigger('click');
+    await flushPromises();
+    expect(router.currentRoute.value.name).toBe('run-detail');
+    expect(router.currentRoute.value.params.id).toBe('77');
+  });
+});
+
+describe('RunDetailView budget-paused resume', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.mocked(runsApi.get).mockReset();
+    vi.mocked(runsApi.factory).mockReset();
+    vi.mocked(runsApi.events).mockReset();
+    vi.mocked(runsApi.resume).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('allows topping up budget and resuming a PAUSED_BUDGET run', async () => {
+    vi.mocked(runsApi.get).mockResolvedValue(makeRunDetail({ status: 'PAUSED_BUDGET' }));
+    vi.mocked(runsApi.factory).mockResolvedValue(makeFactoryView({ factory_active: false }));
+    vi.mocked(runsApi.events).mockResolvedValue({ run_id: 10, items: [], latest_sequence: 0 });
+    vi.mocked(runsApi.resume).mockResolvedValue({
+      id: 10,
+      project_id: 9,
+      spec_id: 3,
+      status: 'QUEUED',
+      error_code: null,
+      cancel_requested: false,
+      lease_owner: null,
+      created_at: '2026-11-23T14:00:00',
+      updated_at: '2026-11-23T14:05:00',
+    });
+
+    const wrapper = mount(RunDetailView, {
+      props: { id: '10' },
+      global: { plugins: [ElementPlus, makeTestRouter()] },
+    });
+    await settle();
+
+    expect(wrapper.get('[data-testid="budget-paused-alert"]').text()).toContain('预算不足已暂停');
+    await wrapper.get('[data-testid="resume-run"]').trigger('click');
+    await settle();
+
+    expect(runsApi.resume).toHaveBeenCalledWith(10, 5_000_000, 'ui_budget_topup');
   });
 });

@@ -20,10 +20,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 
-from agentforge_platform.clients import DeepSeekClient, ModelClient
+from agentforge_platform.clients import ModelClient
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.model_gateway import invoke, verified_reasoning_efforts
 from agentforge_platform.models import Project, SpecVersion
+from agentforge_platform.production_routing import default_user_interaction_client
 from agentforge_platform.spec import SoftwareSpecification
 from agentforge_platform.spec_service import load_spec
 
@@ -130,7 +131,7 @@ def generate_final_summary(
     """生成最终摘要；返回 ``(summary, thinking_mode, reasoning_effort)``（实际使用值）。"""
     spec = load_spec(row)
     thinking_mode, reasoning_effort = select_summary_thinking(spec)
-    provider = client or DeepSeekClient()
+    provider = default_user_interaction_client(client)
 
     for attempt in range(2):
         prompt = _prompt(spec, correction=attempt == 1)

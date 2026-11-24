@@ -6,12 +6,16 @@ worker **不与 API 进程绑定**：任务持久化于 SQLite，worker 以独�
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import Self
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,9 +26,62 @@ from agentforge_platform.generation_graph import GenerationContext, run_generati
 from agentforge_platform.method_index import DEFAULT_METHODS_ROOT
 from agentforge_platform.production_routing import build_production_routing
 from agentforge_platform.runner_client import HttpRunnerClient, RunnerClient
-from agentforge_platform.runs import claim_run, heartbeat
+from agentforge_platform.runs import claim_run, heartbeat, renew_run_lease
 
 Handler = Callable[[int], None]
+_logger = logging.getLogger(__name__)
+
+
+class _LeaseKeeper(AbstractContextManager["_LeaseKeeper"]):
+    """长耗时运行期间的后台续租与心跳守护线程（防工厂模式多部门运行期间心跳超时或租约过期被重复领取）。"""
+
+    def __init__(
+        self,
+        *,
+        session_factory: sessionmaker[Session],
+        run_id: int,
+        worker_id: str,
+        hostname: str,
+        lease_seconds: int,
+        heartbeat_interval: float,
+    ) -> None:
+        self._session_factory = session_factory
+        self._run_id = run_id
+        self._worker_id = worker_id
+        self._hostname = hostname
+        self._lease_seconds = max(1, int(lease_seconds))
+        self._interval = max(0.05, min(float(heartbeat_interval), self._lease_seconds / 3.0))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                with session_scope(self._session_factory) as db:
+                    heartbeat(db, self._worker_id, self._hostname)
+                    renew_run_lease(
+                        db,
+                        self._run_id,
+                        self._worker_id,
+                        lease_seconds=self._lease_seconds,
+                    )
+            except Exception:  # 续租偶发异常不得拖垮主处理线程
+                _logger.debug("worker lease renewal failed for run %s", self._run_id, exc_info=True)
+
+    def __enter__(self) -> Self:
+        self._thread = threading.Thread(
+            target=self._loop,
+            name=f"lease-keeper-{self._run_id}",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
 
 
 def build_generation_handler(
@@ -99,7 +156,15 @@ def run_worker(
             claimed_id = run.id if run is not None else None
 
         if claimed_id is not None:
-            active_handler(claimed_id)
+            with _LeaseKeeper(
+                session_factory=factory,
+                run_id=claimed_id,
+                worker_id=assigned_id,
+                hostname=hostname,
+                lease_seconds=lease_seconds,
+                heartbeat_interval=heartbeat_interval,
+            ):
+                active_handler(claimed_id)
 
         count += 1
         if iterations is None or count < iterations:

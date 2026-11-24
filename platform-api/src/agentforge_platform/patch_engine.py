@@ -499,7 +499,7 @@ def build_patch_engine(
     )
     tool_names = frozenset(assert_restricted_tools(agent, allow_asset_tools=allow_asset_tools))
     return PatchEngine(
-        model=model, backend=staging_backend, agent=agent, tool_names=tool_names
+        model=resolved, backend=staging_backend, agent=agent, tool_names=tool_names
     )
 
 

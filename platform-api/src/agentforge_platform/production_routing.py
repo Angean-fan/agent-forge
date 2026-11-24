@@ -26,7 +26,12 @@ from typing import Any
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentforge_platform.agent_files import FileBackend
-from agentforge_platform.clients import DashScopeClient, ModelClient, OpenAICompatibleClient
+from agentforge_platform.clients import (
+    DashScopeClient,
+    DeepSeekClient,
+    ModelClient,
+    OpenAICompatibleClient,
+)
 from agentforge_platform.errors import AppException, ErrorCode
 from agentforge_platform.model_gateway import (
     DEFAULT_DEEPSEEK_BASE_URL,
@@ -137,6 +142,15 @@ def build_client_for_role(role: str) -> OpenAICompatibleClient:
         default_max_output_tokens=route.max_output_tokens,
         supports_tools=route.supports_tools,
     )
+
+
+def default_user_interaction_client(client: ModelClient | None = None) -> ModelClient:
+    """解析 ``user_interaction`` 客户端：优先显式注入，其次按 A04 ``AGENTFORGE_MODELS_CONFIG``，最后回退 ``DeepSeekClient``。"""
+    if client is not None:
+        return client
+    if os.environ.get("AGENTFORGE_MODELS_CONFIG", "").strip():
+        return build_client_for_role("user_interaction")
+    return DeepSeekClient()
 
 
 def build_ledger_model(role: str, binding: LedgerBinding) -> LedgerChatModel:
@@ -347,6 +361,7 @@ __all__ = [
     "build_ledger_model",
     "build_production_routing",
     "dashscope_key_present",
+    "default_user_interaction_client",
     "resolved_model_name",
     "role_status",
 ]
