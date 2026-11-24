@@ -12,14 +12,15 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import shutil
 import signal
 import subprocess
 import time
-from collections.abc import Mapping
-from pathlib import Path
+from collections.abc import Mapping, Sequence
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, NoReturn, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
@@ -225,12 +226,53 @@ class ModuleVerifier(Protocol):
     ) -> ModuleVerificationResult: ...
 
 
+def to_runner_artifact_dir(
+    artifact_dir: str | Path,
+    work_root: str | Path | None = None,
+) -> str:
+    """将工件目录规范化为 Runner 接受的相对路径（位于 ``work_root`` 之内，不以 ``/`` 开头）。
+
+    Runner ``security.resolve_artifact_dir`` 严禁绝对路径与路径穿越；当调用方传入 ``work_root`` 时，
+    若 ``artifact_dir`` 为绝对路径则自动转为相对 POSIX 路径，越界直接拒绝（403 ``FORBIDDEN``）。
+    """
+    raw = str(artifact_dir).strip()
+    if not raw or "\x00" in raw:
+        raise AppException(ErrorCode.BAD_REQUEST, "artifact_dir 不能为空", status_code=422)
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        if "\\" in raw or any(part in ("", ".", "..") for part in PurePosixPath(raw).parts):
+            raise AppException(
+                ErrorCode.FORBIDDEN,
+                f"artifact_dir 含非法字符或路径穿越：{artifact_dir!r}",
+                status_code=403,
+            )
+        return PurePosixPath(raw).as_posix()
+
+    if work_root is None:
+        return raw
+
+    root = Path(work_root).resolve()
+    resolved = candidate.resolve()
+    if resolved == root or root not in resolved.parents:
+        raise AppException(
+            ErrorCode.FORBIDDEN,
+            f"artifact_dir 越界（不在受控 work_root 内）：{artifact_dir!r}",
+            status_code=403,
+        )
+    return resolved.relative_to(root).as_posix()
+
+
 class DockerRunnerModuleVerifier:
     """通过受控 Docker Runner ``POST /verify-module`` 执行单模块快检。"""
 
     verifier_kind: Literal["docker_runner", "local_process"] = "docker_runner"
 
-    def __init__(self, runner_client: HttpRunnerClient | Any) -> None:
+    def __init__(
+        self,
+        runner_client: HttpRunnerClient | Any,
+        *,
+        work_root: str | Path | None = None,
+    ) -> None:
         if isinstance(runner_client, LocalProcessModuleVerifier):
             raise AppException(
                 ErrorCode.FORBIDDEN,
@@ -238,6 +280,7 @@ class DockerRunnerModuleVerifier:
                 status_code=403,
             )
         self._client = runner_client
+        self._work_root = Path(work_root).resolve() if work_root is not None else None
 
     def verify_module(
         self,
@@ -250,8 +293,9 @@ class DockerRunnerModuleVerifier:
     ) -> ModuleVerificationResult:
         clean_mod = validate_module_id(module_id)
         clean_sel = validate_test_selector(stack, test_selector)
+        runner_dir = to_runner_artifact_dir(artifact_dir, self._work_root)
         raw = self._client.verify_module(
-            artifact_dir=str(artifact_dir),
+            artifact_dir=runner_dir,
             module_id=clean_mod,
             stack=stack,
             test_selector=clean_sel,
@@ -525,9 +569,26 @@ def require_docker_runner_for_final_acceptance(runner_client: Any) -> RunnerClie
     return runner_client
 
 
-def run_final_acceptance_verify(runner_client: HttpRunnerClient | RunnerClient, artifact_dir: str) -> dict:
+def _verify_accepts_checks(verify_fn: Any) -> bool:
+    try:
+        sig = inspect.signature(verify_fn)
+    except (TypeError, ValueError):
+        return False
+    if "checks" in sig.parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+
+def run_final_acceptance_verify(
+    runner_client: HttpRunnerClient | RunnerClient,
+    artifact_dir: str,
+    *,
+    checks: Sequence[str] | None = None,
+) -> dict:
     """后端总装 / 全栈最终验证入口（硬编码强制 Docker Runner）。"""
     client = require_docker_runner_for_final_acceptance(runner_client)
+    if checks is not None and _verify_accepts_checks(client.verify):
+        return client.verify(artifact_dir, checks=list(checks))  # type: ignore[call-arg]
     return client.verify(artifact_dir)
 
 
@@ -557,7 +618,7 @@ def build_module_verifier(
             "默认 DockerRunnerModuleVerifier 需要提供 HttpRunnerClient",
             status_code=422,
         )
-    return DockerRunnerModuleVerifier(runner_client)
+    return DockerRunnerModuleVerifier(runner_client, work_root=work_root)
 
 
 __all__ = [
@@ -579,6 +640,7 @@ __all__ = [
     "require_docker_runner_for_final_acceptance",
     "run_final_acceptance_accept",
     "run_final_acceptance_verify",
+    "to_runner_artifact_dir",
     "validate_module_id",
     "validate_test_selector",
 ]

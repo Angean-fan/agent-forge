@@ -260,11 +260,14 @@ def run_acceptance(artifact_dir: Path, config: RunnerConfig) -> AcceptanceResult
         )
         _sh(["docker", "exec", mysql_name, "mysql", f"-u{_DB_USER}", f"-p{_DB_PASSWORD}", _DB_NAME, "-e", seed])
 
-        # R12：按生成项目形态分流——含校园活动实体（/api/activities）跑校园主线固定场景，否则跑原 Task 场景。
+        # R12：按生成项目形态分流——含校园活动实体（/api/activities）跑校园主线固定场景，
+        # 含工厂权威 openapi.json / factory-blueprint.json 跑工厂 OpenAPI 契约验收，否则跑原 Task 场景。
         if _is_lending_contract(artifact_dir):
             _run_lending_cases(base["url"], case)
         elif _is_campus_project(base["url"]):
             _run_campus_cases(base["url"], case)
+        elif _is_factory_openapi_project(artifact_dir):
+            _run_factory_openapi_cases(base["url"], artifact_dir, case)
         else:
             _run_http_cases(base["url"], artifact_dir, case)
     finally:
@@ -468,6 +471,98 @@ def _run_campus_cases(base: str, case) -> None:
             "POST", f"{base}/api/enrollments", member_token,
             {"member_name": "m2", "status": "ACTIVE", "activity_id": closed_id},
         )[0] == 409)
+
+
+def _read_factory_openapi(artifact_dir: Path) -> dict | None:
+    oa_path = artifact_dir / "backend" / "openapi.json"
+    if not oa_path.is_file():
+        return None
+    try:
+        parsed = json.loads(oa_path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_factory_openapi_project(artifact_dir: Path) -> bool:
+    """识别异步工厂流水线产物（含权威 ``backend/openapi.json`` 或 ``factory-blueprint.json``）。"""
+    return (artifact_dir / "backend" / "openapi.json").is_file() or (
+        artifact_dir / "factory-blueprint.json"
+    ).is_file()
+
+
+def _slug_path(path: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", path.strip("/")).strip("_").lower()
+    return cleaned or "root"
+
+
+def _run_factory_openapi_cases(base: str, artifact_dir: Path, case) -> None:
+    """工厂模式多领域（如电商沙箱）通用 HTTP 契约验收：健康检查 + 鉴权守卫 + OpenAPI 端点可达性 + 沙箱支付路由。"""
+    health_status, _ = _http("GET", f"{base}/api/health")
+    case("factory_health", health_status == 200, f"status={health_status}")
+
+    oa_doc = _read_factory_openapi(artifact_dir)
+    paths = oa_doc.get("paths") if isinstance(oa_doc, dict) else None
+    has_paths = isinstance(paths, dict) and len(paths) > 0
+    case("factory_openapi_valid", has_paths, f"paths={len(paths) if isinstance(paths, dict) else 0}")
+    if not has_paths or not isinstance(paths, dict):
+        return
+
+    admin_token = _login(base, *_ADMIN)
+    member_token = _login(base, *_MEMBER)
+    case("login_admin", admin_token is not None)
+    case("login_member", member_token is not None)
+    probe_token = member_token or admin_token
+
+    probed_get = 0
+    probed_sandbox_pay = False
+    for raw_path in sorted(paths):
+        path_item = paths.get(raw_path)
+        if not isinstance(path_item, dict):
+            continue
+        if not isinstance(raw_path, str) or not raw_path.startswith("/") or "{" in raw_path:
+            continue
+
+        get_op = path_item.get("get")
+        if isinstance(get_op, dict) and raw_path != "/api/health" and probed_get < 16:
+            probed_get += 1
+            slug = _slug_path(raw_path)
+            sec = get_op.get("security")
+            requires_auth = isinstance(sec, list) and len(sec) > 0
+            if requires_auth:
+                unauth_status, _ = _http("GET", f"{base}{raw_path}")
+                case(
+                    f"factory_auth_guard_{slug}",
+                    unauth_status in (401, 403),
+                    f"unauth_status={unauth_status}",
+                )
+            status, _ = _http("GET", f"{base}{raw_path}", probe_token if requires_auth else None)
+            case(
+                f"factory_get_{slug}",
+                status not in (0, 404) and status < 500,
+                f"status={status}",
+            )
+
+        post_op = path_item.get("post")
+        if (
+            not probed_sandbox_pay
+            and isinstance(post_op, dict)
+            and ("sandbox-pay" in raw_path or "payment" in raw_path)
+        ):
+            probed_sandbox_pay = True
+            sec = post_op.get("security")
+            requires_auth = isinstance(sec, list) and len(sec) > 0
+            status, _ = _http(
+                "POST",
+                f"{base}{raw_path}",
+                probe_token if requires_auth else None,
+                body={},
+            )
+            case(
+                "factory_sandbox_payment_routed",
+                status not in (0, 404) and status < 500,
+                f"path={raw_path} status={status}",
+            )
 
 
 def _result(artifact_dir, reference, digest, reconciled, cases) -> AcceptanceResult:

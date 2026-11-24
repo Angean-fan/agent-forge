@@ -235,10 +235,12 @@ async function onGenerate(): Promise<void> {
     idempotencyKey.value = newIdempotencyKey();
   }
   try {
-    const run =
-      runMode.value === 'factory'
-        ? await runsApi.start(projectId.value, spec.value.spec_id, idempotencyKey.value, 'factory')
-        : await runsApi.start(projectId.value, spec.value.spec_id, idempotencyKey.value);
+    const run = await runsApi.start(
+      projectId.value,
+      spec.value.spec_id,
+      idempotencyKey.value,
+      runMode.value,
+    );
     idempotencyKey.value = null;
     ElMessage.success('已提交生成运行');
     await router.push({ name: 'run-detail', params: { id: String(run.id) } });

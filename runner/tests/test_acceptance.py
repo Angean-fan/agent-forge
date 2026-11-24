@@ -8,9 +8,11 @@ from pathlib import Path
 from agentforge_runner.acceptance import (
     _contract_limited_role,
     _is_campus_project,
+    _is_factory_openapi_project,
     _is_lending_contract,
     _role_allowed,
     _run_campus_cases,
+    _run_factory_openapi_cases,
     _run_lending_cases,
     compose_mysql_image,
     lock_mysql_image,
@@ -212,3 +214,110 @@ def test_run_campus_cases_all_pass_against_fake_backend(monkeypatch) -> None:
         "campus_cross_user_denied", "campus_persists", "campus_closed_rejected",
     }
     assert all(passed for _, passed in cases), [c for c in cases if not c[1]]
+
+
+def test_is_factory_openapi_project_detects_factory_markers(tmp_path: Path) -> None:
+    assert _is_factory_openapi_project(tmp_path) is False
+    oa = tmp_path / "backend" / "openapi.json"
+    oa.parent.mkdir(parents=True)
+    oa.write_text('{"openapi": "3.0.3", "paths": {}}', encoding="utf-8")
+    assert _is_factory_openapi_project(tmp_path) is True
+
+
+def test_run_factory_openapi_cases_passes_for_ecommerce_sandbox(tmp_path: Path, monkeypatch) -> None:
+    from agentforge_runner import acceptance
+
+    oa = tmp_path / "backend" / "openapi.json"
+    oa.parent.mkdir(parents=True)
+    oa.write_text(
+        json.dumps(
+            {
+                "openapi": "3.0.3",
+                "paths": {
+                    "/api/products": {"get": {"summary": "商品列表"}},
+                    "/api/orders": {
+                        "get": {"summary": "订单列表", "security": [{"bearerAuth": []}]},
+                    },
+                    "/api/payments/sandbox-pay": {
+                        "post": {"summary": "本地沙箱支付", "security": [{"bearerAuth": []}]},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_login(base, username, password):
+        return {"admin": "admin-tok", "member": "member-tok"}.get(username)
+
+    def fake_http(method, url, token=None, body=None):
+        path = url.split("http://x", 1)[1]
+        if method == "GET" and path == "/api/health":
+            return 200, {"status": "UP"}
+        if method == "GET" and path == "/api/products":
+            return 200, {"items": []}
+        if method == "GET" and path == "/api/orders":
+            return (200, {"items": []}) if token else (401, {"error": "unauthorized"})
+        if method == "POST" and path == "/api/payments/sandbox-pay":
+            return (400, {"error": "orderId required"}) if token else (401, None)
+        return 404, None
+
+    monkeypatch.setattr(acceptance, "_login", fake_login)
+    monkeypatch.setattr(acceptance, "_http", fake_http)
+    cases: list[tuple[str, bool, str | None]] = []
+    _run_factory_openapi_cases(
+        "http://x",
+        tmp_path,
+        lambda name, passed, detail=None: cases.append((name, passed, detail)),
+    )
+
+    names = {name for name, _, _ in cases}
+    assert {
+        "factory_health",
+        "factory_openapi_valid",
+        "login_admin",
+        "login_member",
+        "factory_get_api_products",
+        "factory_auth_guard_api_orders",
+        "factory_get_api_orders",
+        "factory_sandbox_payment_routed",
+    } <= names
+    assert all(passed for _, passed, _ in cases), [c for c in cases if not c[1]]
+
+
+def test_run_factory_openapi_cases_flags_missing_auth_guard_or_500(tmp_path: Path, monkeypatch) -> None:
+    from agentforge_runner import acceptance
+
+    oa = tmp_path / "backend" / "openapi.json"
+    oa.parent.mkdir(parents=True)
+    oa.write_text(
+        json.dumps(
+            {
+                "openapi": "3.0.3",
+                "paths": {
+                    "/api/orders": {
+                        "get": {"summary": "订单列表", "security": [{"bearerAuth": []}]},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(acceptance, "_login", lambda *a: "tok")
+
+    def broken_http(method, url, token=None, body=None):
+        if url.endswith("/api/health"):
+            return 200, {"status": "UP"}
+        # 鉴权泄露（无 token 返 200）且带 token 报 500
+        return (500, None) if token else (200, {"leaked": True})
+
+    monkeypatch.setattr(acceptance, "_http", broken_http)
+    results: dict[str, bool] = {}
+    _run_factory_openapi_cases(
+        "http://x",
+        tmp_path,
+        lambda name, passed, detail=None: results.__setitem__(name, passed),
+    )
+    assert results["factory_auth_guard_api_orders"] is False
+    assert results["factory_get_api_orders"] is False

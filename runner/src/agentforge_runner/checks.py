@@ -27,6 +27,9 @@ STATIC_REQUIRED = [
     "compose.yaml",
     "asset-lock.json",
 ]
+BACKEND_STATIC_REQUIRED = [
+    "backend/pom.xml",
+]
 STATIC_GLOBS = ["backend/src/main/resources/db/migration/*.sql"]
 CONTAINER_CHECKS = ["backend_test", "backend_build", "frontend_build"]
 ALL_CHECKS = ["static_manifest", *CONTAINER_CHECKS]
@@ -112,6 +115,20 @@ def run_static_check(artifact_dir: Path) -> CheckResult:
     return CheckResult(name="static_manifest", status="PASS")
 
 
+def run_backend_static_check(artifact_dir: Path) -> CheckResult:
+    """工厂后端总装阶段专用静态清单校验（不强求尚未生成的前端文件）。"""
+    missing = [name for name in BACKEND_STATIC_REQUIRED if not (artifact_dir / name).is_file()]
+    missing += [glob for glob in STATIC_GLOBS if not list(artifact_dir.glob(glob))]
+    if missing:
+        return CheckResult(
+            name="backend_static_manifest",
+            status="FAIL",
+            error_code="MISSING_FILES",
+            detail="缺失：" + "、".join(missing),
+        )
+    return CheckResult(name="backend_static_manifest", status="PASS")
+
+
 def run_container_check(name: str, host_dir: Path, config: RunnerConfig) -> CheckResult:
     task = get_task(name)
     if task is None:
@@ -143,6 +160,8 @@ def run_verification(artifact_dir: Path, config: RunnerConfig, names: list[str])
     for name in names:
         if name == "static_manifest":
             results.append(run_static_check(artifact_dir))
+        elif name == "backend_static_manifest":
+            results.append(run_backend_static_check(artifact_dir))
         elif name in CONTAINER_CHECKS:
             results.append(run_container_check(name, artifact_dir, config))
         else:

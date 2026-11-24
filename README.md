@@ -17,20 +17,22 @@ AI 全栈软件工程生成平台。目标：将中文自然语言需求经结�
     - `A07`：并发安全事务预算账本（PG `SELECT ... FOR UPDATE` 行锁防双扣 + 部门/阶段维度 `cost_by_department`，迁移 `0017`）
     - `A08`：Runner 单模块定向快检端点（`POST /verify-module`）与分层验证器（部门小循环可选受限子进程，总验收硬编码强制独立 Docker Runner）
     - `A09`：Docker 镜像只读资产打包修复、开源仓库隐私卫生审计与文档同步
+  - **异步工厂流水线阶段 `FP01—FP10`（代码与自动化闭环已完成）**：见 `docs/FP01_*.md` — `docs/FP10_*.md` 及 [docs/FACTORY_PIPELINE_ACCEPTANCE.md](docs/FACTORY_PIPELINE_ACCEPTANCE.md)
+    - 持久化多部门状态机（迁移 `0018`）→ 项目总管蓝图规划与冻结 → 只读后端底座 + Java `Facade Stub` → 三角色最小职责部门引擎 → `asyncio` 双信号量异步并发池 → 后端总装/归因大循环与权威 `openapi.json` 冻结 → 前端总管/TS 契约底座/并发流水线与声明式路由聚合 → 全栈总装/强制 Docker Runner 验收/工厂 ZIP 打包 → 平台 UI 多部门泳道进度页与模式切换
 - **核心设计文档导航**：
-  1. [AgentForge_01_现状盘点与开发约束.md](AgentForge_01_现状盘点与开发约束.md)：底座模块清单、真实接口签名与工程红线
+  1. [AgentForge_01_已实现能力与接口基线.md](AgentForge_01_已实现能力与接口基线.md)（原 `AgentForge_01_现状盘点与开发约束.md`）：底座模块清单、真实接口签名与基线复核流程
   2. [AgentForge_02_现有底座改造与适配_分步开发Prompt.md](AgentForge_02_现有底座改造与适配_分步开发Prompt.md)：底座升级 `A01—A09`（已完成）
-  3. [AgentForge_03_异步工厂流水线与开源交付_分步开发Prompt.md](AgentForge_03_异步工厂流水线与开源交付_分步开发Prompt.md)：下一阶段异步多部门工厂流水线（待启动）
+  3. [AgentForge_03_异步工厂流水线与开源交付_分步开发Prompt.md](AgentForge_03_异步工厂流水线与开源交付_分步开发Prompt.md)：异步多部门工厂流水线 `FP01—FP10`（代码与确定性验收已完成；真实商业 LLM + 实机 Docker Runner 待有环境时补跑）
 
-> **真实状态说明**：Demo P0 端到端评估见 `docs/DEMO_P0_ACCEPTANCE.md`（无真实 Docker Runner 时如实记为 `NOT_RUN`）；实时 PostgreSQL 集成测试在未配置或本地 PG/隧道不可达时自动跳过并如实标为 `NOT_RUN`，绝不伪造 `PASS`。
+> **真实状态说明**：Demo P0 端到端评估见 [docs/DEMO_P0_ACCEPTANCE.md](docs/DEMO_P0_ACCEPTANCE.md)，异步工厂流水线标杆验收见 [docs/FACTORY_PIPELINE_ACCEPTANCE.md](docs/FACTORY_PIPELINE_ACCEPTANCE.md)；无真实 Docker Runner 或无商业大模型 API Key 时一律如实标为 `NOT_RUN`，绝不伪造 `PASS`。
 
 ## 目录结构
 
 | 路径 | 说明 |
 |---|---|
-| `platform-api/` | 平台后端（Python 3.12 / FastAPI / SQLAlchemy / Alembic `0001..0017`） |
-| `runner/` | 独立受控 Runner（`X-Runner-Token` 鉴权、`/verify`、`/verify-module`、`/accept`、受限容器契约） |
-| `platform-ui/` | 平台前端（Vue 3 + TypeScript + Vite + Element Plus） |
+| `platform-api/` | 平台后端（Python 3.12 / FastAPI / SQLAlchemy / Alembic `0001..0018`） |
+| `runner/` | 独立受控 Runner（`X-Runner-Token` 鉴权、`/verify`、`/verify-module`、`/accept`、受限容器契约与工厂 OpenAPI 验收） |
+| `platform-ui/` | 平台前端（Vue 3 + TypeScript + Vite + Element Plus，含多部门泳道进度页与模式切换） |
 | `profiles/` | 锁定的 Platform Profile 与认证矩阵（`certified.json`、`demo-ts-mp-0.3` 等） |
 | `templates/` | 生成项目基础模板（只读版本化资产，如 `demo-0.1/`、`demo-0.2/`） |
 | `capability-packs/` | 可参数化业务能力包（4 族 17 个只读版本） |
@@ -39,7 +41,7 @@ AI 全栈软件工程生成平台。目标：将中文自然语言需求经结�
 | `schemas/` | 规格、契约与 7 份历史 `asset-lock.*.sample.json` 回归样例 |
 | `scripts/` | 单一口径回归门禁（`ci_gate.sh`）与备份/恢复脚本（`backup.py` / `restore.py`） |
 | `deploy/` | 平台部署编排（`compose.yaml`、`compose.local-pg.yaml`、`api.Dockerfile`、`ui.Dockerfile`） |
-| `docs/` | 分步实施记录（`M01..M28`、`R01..R27`、`A01..A09`）与运维手册（`MVP_DEPLOY.md`） |
+| `docs/` | 分步实施记录（`M01..M28`、`R01..R27`、`A01..A09`、`FP01..FP10`）、标杆验收报告与运维手册（`MVP_DEPLOY.md`） |
 
 ## 环境要求
 
@@ -107,13 +109,17 @@ cd platform-api && uv run --locked python -m agentforge_platform.passwords
 set -a; source .env; set +a
 uv run --locked uvicorn agentforge_platform.main:app --reload
 
-# 3) 新终端启动平台前端（默认 http://localhost:5173，/api 代理到 8000）
+# 3) 启动独立 worker（如需开启异步工厂模式，同时在 API 与 worker 环境变量中设置 AGENTFORGE_FACTORY_PIPELINE_ENABLED=1）
+uv run --locked python -m agentforge_platform.worker
+
+# 4) 新终端启动平台前端（默认 http://localhost:5173，/api 代理到 8000）
 cd platform-ui && npm ci && npm run dev
 ```
 
-### 5. 分层测试与受控 Runner
+### 5. 开启异步工厂模式与分层测试
 
-- **总验收（后端总装验收 / 全栈最终验收）**：硬编码强制走独立 Docker Runner（`POST /verify`、`POST /accept`），严禁降级为本地子进程。
+- **默认安全开关**：`AGENTFORGE_FACTORY_PIPELINE_ENABLED` 默认为 `false`（关闭时保持原有标准装配流水线零变更）；设为 `1` 后可在项目详情页切换「标准装配模式 / 异步工厂模式」，并在运行详情页实时查看多部门泳道进度（`GET /api/runs/{run_id}/factory`）。
+- **总验收（后端总装验收 / 全栈最终验收）**：硬编码强制走独立 Docker Runner（`POST /verify`、`POST /accept`），严禁降级为本地子进程；后端总装自动下发 `backend_static_manifest / backend_test / backend_build`，`/accept` 对含权威 `backend/openapi.json` 的工厂产物自动走通用 OpenAPI + 沙箱路由验收。
 - **单模块定向快检**：Runner 提供 `POST /verify-module`（`java` 定向 `mvn -B test -Dtest=...`，`frontend` 定向 `vue-tsc` + `vitest`）。仅在本地开发显式设置 `AGENTFORGE_LOCAL_DEPT_TEST_RUNNER=1` 时，允许部门小循环使用受限本地子进程快检（强制目录隔离、命令白名单 `mvn/npm/npx`、敏感环境变量清除、超时强杀进程树与日志脱敏）。
 
 ### 6. Docker Compose 部署

@@ -323,9 +323,11 @@ def confirmation_issues(spec: SoftwareSpecification) -> list[str]:
         issues.append("存在不支持的权限操作")
     # relations 为 R10 多实体所需，允许保留；其余扩展能力仍不在 Demo 范围内。
     # C03：仅当集成包接入开关开启时放行 `integrations`/`external_requirements`，否则行为不变。
+    # 工厂模式允许沙箱第三方集成声明（如本地沙箱支付），由 scope_policy 硬约束为 sandbox_only。
+    from agentforge_platform.factory_pipeline import factory_pipeline_enabled
     from agentforge_platform.integration_generation import integration_generation_enabled
 
-    external_allowed = integration_generation_enabled()
+    external_allowed = integration_generation_enabled() or factory_pipeline_enabled()
     if any((spec.capability_requests, spec.recipe_requests)) or (
         any((spec.integrations, spec.external_requirements)) and not external_allowed
     ):

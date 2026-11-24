@@ -39,8 +39,11 @@ class HttpRunnerClient:
         except (urllib.error.URLError, OSError) as error:
             raise RuntimeError(f"Runner 连接失败：{type(error).__name__}") from None
 
-    def verify(self, artifact_dir: str) -> dict:
-        return self._post("/verify", {"artifact_dir": artifact_dir})
+    def verify(self, artifact_dir: str, *, checks: list[str] | None = None) -> dict:
+        payload: dict[str, object] = {"artifact_dir": artifact_dir}
+        if checks is not None:
+            payload["checks"] = list(checks)
+        return self._post("/verify", payload)
 
     def verify_module(
         self,

@@ -59,7 +59,12 @@ from agentforge_platform.factory_state import (
     FactoryStateStore,
 )
 from agentforge_platform.factory_tickets import DefectTicket, DepartmentDeliverable
-from agentforge_platform.module_verifier import ModuleVerificationResult, ModuleVerifier
+from agentforge_platform.module_verifier import (
+    ModuleVerificationResult,
+    ModuleVerifier,
+    run_final_acceptance_verify,
+    to_runner_artifact_dir,
+)
 from agentforge_platform.runner_client import RunnerClient
 from agentforge_platform.spec import SoftwareSpecification
 
@@ -927,10 +932,16 @@ def _run_assembled_frontend_verification(
     assembled_dir: Path,
     runner_client: RunnerClient | None,
     module_verifier: ModuleVerifier | None,
+    work_root: str | Path | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """执行前端总装后的全量构建/类型检查/单测验证（杜绝未真跑即放行）。"""
     if runner_client is not None:
-        report = runner_client.verify(str(assembled_dir))
+        runner_dir = to_runner_artifact_dir(assembled_dir, work_root)
+        report = run_final_acceptance_verify(
+            runner_client,
+            runner_dir,
+            checks=["frontend_build"],
+        )
         if _is_infrastructure_report(report):
             raise _FrontendInfraStopError("Runner 前端总装验证报 INFRASTRUCTURE")
         checks = {
@@ -946,8 +957,13 @@ def _run_assembled_frontend_verification(
         return passed, report
 
     if module_verifier is not None:
+        verifier_dir: str | Path = (
+            to_runner_artifact_dir(assembled_dir, work_root)
+            if module_verifier.verifier_kind == "docker_runner"
+            else assembled_dir
+        )
         res: ModuleVerificationResult = module_verifier.verify_module(
-            artifact_dir=assembled_dir,
+            artifact_dir=verifier_dir,
             module_id="frontend-all",
             stack="frontend",
             test_selector="test",
@@ -1010,6 +1026,7 @@ async def run_frontend_factory_stage(
     deliverables: Mapping[str, DepartmentDeliverable] | None = None,
     openapi_sha256: str | None = None,
     max_integration_rounds: int | None = None,
+    work_root: str | Path | None = None,
 ) -> FrontendStageResult:
     """FP08 主入口：执行前端多部门异步并行开发、声明式路由聚合与全量构建契约核对大循环。"""
     if blueprint.phase != FactoryPhase.FRONTEND.value:
@@ -1184,6 +1201,7 @@ async def run_frontend_factory_stage(
                     assembled_dir=assembled_dir,
                     runner_client=runner_client,
                     module_verifier=module_verifier,
+                    work_root=work_root,
                 )
             except (_FrontendInfraStopError, RuntimeError, OSError, TimeoutError) as infra_exc:
                 last_verify = last_verify or {

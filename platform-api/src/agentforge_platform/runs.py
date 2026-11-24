@@ -372,6 +372,26 @@ def current_phase(db: Session, run_id: int) -> str | None:
     return stage if isinstance(stage, str) else None
 
 
+def requested_run_mode(db: Session, run_id: int) -> str | None:
+    """读取 run 入队时声明的运行模式（``"standard"`` / ``"factory"``）；未显式指定时返回 ``None``。"""
+    event = db.scalars(
+        select(RunEvent)
+        .where(RunEvent.run_id == run_id, RunEvent.type == "queued")
+        .order_by(RunEvent.sequence.asc())
+        .limit(1)
+    ).first()
+    if event is None:
+        return None
+    try:
+        payload = json.loads(event.payload)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    mode = payload.get("mode")
+    return mode if mode in ("standard", "factory") else None
+
+
 def events_after(db: Session, run_id: int, after_sequence: int, limit: int) -> list[RunEvent]:
     return list(
         db.scalars(

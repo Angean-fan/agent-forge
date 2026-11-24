@@ -214,7 +214,7 @@ export const runsApi = {
     idempotencyKey: string,
     mode?: RunMode,
   ): Promise<RunView> {
-    const body = mode === 'factory' ? { spec_id: specId, mode } : { spec_id: specId };
+    const body = mode ? { spec_id: specId, mode } : { spec_id: specId };
     return apiRequest(`/projects/${projectId}/runs`, {
       method: 'POST',
       body,

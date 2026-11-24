@@ -607,15 +607,24 @@ def start_run(
 
     # R06：运行只接收**未被篡改**的冻结规格；其冻结 hash 记入 run 并随生成校验。
     # R10：多实体生成能力已就绪，门禁解除；仅保留通用业务范围校验。
+    requested_mode = payload.mode if payload is not None else None
+    from agentforge_platform.factory_pipeline import factory_pipeline_enabled
+    from agentforge_platform.scope_policy import MODE_FACTORY, validate_scope_for_mode
+
+    if requested_mode == "factory" and not factory_pipeline_enabled():
+        raise AppException(
+            ErrorCode.VALIDATION_ERROR,
+            "异步工厂模式未开启，请先配置 AGENTFORGE_FACTORY_PIPELINE_ENABLED=1。",
+            status_code=422,
+        )
+
+    use_factory_scope = factory_pipeline_enabled() and requested_mode != "standard"
     spec_hash: str | None = None
     spec_row = db.get(SpecVersion, active_spec_id)
     if spec_row is not None:
         spec = require_frozen_spec(spec_row)
         spec_hash = spec_row.hash
-        from agentforge_platform.factory_pipeline import factory_pipeline_enabled
-        from agentforge_platform.scope_policy import MODE_FACTORY, validate_scope_for_mode
-
-        if factory_pipeline_enabled():
+        if use_factory_scope:
             factory_scope = validate_scope_for_mode(spec.model_copy(deep=True), mode=MODE_FACTORY)
             if not factory_scope.ok:
                 raise AppException(
@@ -638,11 +647,7 @@ def start_run(
     run = create_run(
         db, project, active_spec_id, idempotency_key=idempotency_key, spec_hash=spec_hash
     )
-    queued_payload = (
-        json.dumps({"mode": payload.mode})
-        if payload is not None and payload.mode is not None
-        else "{}"
-    )
+    queued_payload = json.dumps({"mode": requested_mode}) if requested_mode is not None else "{}"
     append_event(db, run, "queued", queued_payload)
     return ApiResponse(request_id=get_request_id(request), data=_run_view(db, run))
 

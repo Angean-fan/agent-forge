@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Literal
 
@@ -39,8 +40,10 @@ from agentforge_platform.module_verifier import (
     require_docker_runner_for_final_acceptance,
     run_final_acceptance_accept,
     run_final_acceptance_verify,
+    to_runner_artifact_dir,
 )
 from agentforge_platform.packaging import VERIFY_REQUIRED, verification_passed
+from agentforge_platform.resolver import AssetLock
 from agentforge_platform.runner_client import RunnerClient
 from agentforge_platform.spec import SoftwareSpecification
 
@@ -48,7 +51,8 @@ _STRICT = ConfigDict(extra="forbid")
 
 MAX_INTEGRATION_ROUNDS_ENV = "AGENTFORGE_FACTORY_MAX_INTEGRATION_ROUNDS"
 DEFAULT_MAX_INTEGRATION_ROUNDS = 2
-BACKEND_VERIFY_REQUIRED = ("static_manifest", "backend_test", "backend_build")
+BACKEND_VERIFY_REQUIRED = ("backend_static_manifest", "static_manifest", "backend_test", "backend_build")
+BACKEND_RUNNER_CHECKS = ("backend_static_manifest", "backend_test", "backend_build")
 BACKEND_ASSEMBLED_DIRNAME = "backend_assembled"
 BACKEND_INTEGRATION_REPORT_NAME = "backend-integration-report.json"
 
@@ -109,7 +113,7 @@ def _is_infrastructure_report(report: dict[str, Any] | None) -> bool:
     err = str(report.get("error_code") or report.get("category") or "").strip().upper()
     if overall == "INFRASTRUCTURE" or err == "INFRASTRUCTURE":
         return True
-    for key in ("checks", "scenarios"):
+    for key in ("checks", "scenarios", "cases"):
         items = report.get(key)
         if not isinstance(items, list):
             continue
@@ -149,9 +153,10 @@ def _backend_acceptance_passed(
     for c in verify_report.get("checks", []):
         if isinstance(c, dict) and c.get("status") != "PASS":
             return False
-    for s in accept_report.get("scenarios", []):
-        if isinstance(s, dict) and s.get("status") != "PASS":
-            return False
+    for key in ("scenarios", "cases"):
+        for s in accept_report.get(key, []):
+            if isinstance(s, dict) and s.get("status") != "PASS":
+                return False
     return bool(checks)
 
 
@@ -181,6 +186,9 @@ async def run_backend_factory_stage(
     state_store: FactoryStateStore,
     deliverables: dict[str, DepartmentDeliverable] | None = None,
     max_integration_rounds: int | None = None,
+    work_root: str | Path | None = None,
+    template_dir: str | Path | None = None,
+    lock: AssetLock | None = None,
 ) -> BackendStageResult:
     """执行后端工厂总装、强制 Docker Runner 总验收与归因打回大循环。"""
     # 硬守卫：后端总验收必须强制走独立 Docker Runner（严禁 LocalProcessModuleVerifier）
@@ -326,13 +334,32 @@ async def run_backend_factory_stage(
                     )
                 continue
 
-            # 强制独立 Docker Runner 总验收（verify + accept）
+            # 若有模板 compose.yaml 与资产锁，补齐到 backend_assembled 供独立 Docker Runner 对账与启动 MySQL
+            if template_dir is not None:
+                compose_src = Path(template_dir).resolve() / "compose.yaml"
+                if compose_src.is_file() and not compose_src.is_symlink():
+                    compose_dst = assembled_dir / "compose.yaml"
+                    shutil.copy2(compose_src, compose_dst)
+                    compose_dst.chmod(0o644)
+            if lock is not None:
+                (assembled_dir / "asset-lock.json").write_text(
+                    lock.model_dump_json(indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+            runner_artifact_dir = to_runner_artifact_dir(assembled_dir, work_root)
+
+            # 强制独立 Docker Runner 总验收（verify + accept；传入相对 work_root 的安全路径与后端检查清单）
             try:
-                last_verify = run_final_acceptance_verify(runner_client, str(assembled_dir))
+                last_verify = run_final_acceptance_verify(
+                    runner_client,
+                    runner_artifact_dir,
+                    checks=BACKEND_RUNNER_CHECKS,
+                )
                 if _is_infrastructure_report(last_verify):
                     raise _InfraStopError("Docker Runner verify 报 INFRASTRUCTURE")
                 if last_verify.get("overall") == "PASS":
-                    last_accept = run_final_acceptance_accept(runner_client, str(assembled_dir))
+                    last_accept = run_final_acceptance_accept(runner_client, runner_artifact_dir)
                     if _is_infrastructure_report(last_accept):
                         raise _InfraStopError("Docker Runner accept 报 INFRASTRUCTURE")
                 else:

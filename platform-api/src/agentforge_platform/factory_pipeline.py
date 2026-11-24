@@ -438,6 +438,9 @@ def _run_full_factory_pipeline(
             runner_client=context.runner,
             state_store=store,
             max_integration_rounds=runtime.max_integration_rounds,
+            work_root=context.work_root,
+            template_dir=template_dir,
+            lock=lock,
         )
     )
     if not be_stage.ok or not be_stage.frozen_openapi_doc:
@@ -498,6 +501,7 @@ def _run_full_factory_pipeline(
             runner_client=context.runner if runtime.frontend_module_verifier is None else None,
             module_verifier=runtime.frontend_module_verifier,
             max_integration_rounds=runtime.max_integration_rounds,
+            work_root=context.work_root,
         )
     )
     if not fe_stage.ok:
@@ -527,6 +531,16 @@ def _run_full_factory_pipeline(
         template_dir=template_dir,
         authoritative_openapi_doc=frozen_openapi_doc,
         factory_blueprint_payload=blueprint_bundle,
+    )
+    # 在调用独立 Docker Runner /verify & /accept 前先落盘 asset-lock.json 与 spec.json，
+    # 确保 Runner static_manifest 与 MySQL digest 对账（digest_reconciled）可正常通过。
+    (run_dir / "asset-lock.json").write_text(
+        lock.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (run_dir / "spec.json").write_text(
+        spec.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
     )
 
     with session_scope(context.session_factory) as db:

@@ -168,15 +168,30 @@ def confirm_draft(
     issues = confirmation_issues(spec)
     if not issues:
         # 确认前先验证契约与能力包能接收它（R10 起对每个业务实体逐一验证）。
+        # 工厂模式支持 4..25 个业务实体（超出旧 Demo 3 实体契约编译器上限），此时仅校验实体与字段基础合法性，
+        # 完整契约交由 ChiefArchitect 蓝图硬校验与权威 OpenAPI 承载；≤3 实体保持原契约编译校验不变。
         from agentforge_platform.capability_packs import build_params
         from agentforge_platform.contract import compile_from_spec
+        from agentforge_platform.spec import MAX_BUSINESS_ENTITIES
 
-        try:
-            contract = compile_from_spec(spec)
-            for matrix in contract.permissions:
-                build_params(contract, matrix.entity)
-        except AppException as exc:
-            issues.append(exc.message)
+        if factory_pipeline_enabled() and len(spec.entities) > MAX_BUSINESS_ENTITIES:
+            seen_entities: set[str] = set()
+            for entity in spec.entities:
+                if entity.name in seen_entities:
+                    issues.append(f"业务实体名重复：{entity.name}")
+                seen_entities.add(entity.name)
+                field_names = [f.name for f in entity.fields]
+                if len(set(field_names)) != len(field_names):
+                    issues.append(f"实体 {entity.name} 存在重复字段名")
+                if "id" not in field_names:
+                    issues.append(f"实体 {entity.name} 缺少主键字段 'id'")
+        else:
+            try:
+                contract = compile_from_spec(spec)
+                for matrix in contract.permissions:
+                    build_params(contract, matrix.entity)
+            except AppException as exc:
+                issues.append(exc.message)
     if issues:
         raise AppException(
             ErrorCode.SPEC_NOT_READY, "规格尚未就绪：" + "；".join(issues), status_code=422

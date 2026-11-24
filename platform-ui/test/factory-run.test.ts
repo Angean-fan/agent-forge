@@ -433,5 +433,15 @@ describe('FP10 ProjectDetailView run mode selector', () => {
     expect(specIdArg).toBe(3);
     expect(typeof keyArg).toBe('string');
     expect(modeArg).toBe('factory');
+
+    // 切回标准装配模式并提交，显式携带 'standard'（确保工厂开关开启时仍可切回标准装配）
+    const standardRadio = wrapper.get('[data-testid="mode-standard"] input');
+    await standardRadio.setValue(true);
+    await nextTick();
+    await generateBtn!.trigger('click');
+    await flushPromises();
+
+    expect(runsApi.start).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runsApi.start).mock.calls[1][3]).toBe('standard');
   });
 });

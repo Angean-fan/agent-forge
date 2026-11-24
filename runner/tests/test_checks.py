@@ -10,9 +10,12 @@ from agentforge_runner.checks import (
     classify_failure,
     overall_of,
     redact,
+    run_backend_static_check,
     run_static_check,
+    run_verification,
     truncate,
 )
+from agentforge_runner.config import RunnerConfig
 
 
 def test_classify_build_failure() -> None:
@@ -74,3 +77,25 @@ def test_overall_rollup() -> None:
     assert overall_of(
         [CheckResult(name="a", status="PASS"), CheckResult(name="b", status="FAIL")]
     ) == "FAIL"
+
+
+def test_backend_static_manifest_passes_without_frontend(tmp_path: Path) -> None:
+    pom = tmp_path / "backend/pom.xml"
+    pom.parent.mkdir(parents=True, exist_ok=True)
+    pom.write_text("<project/>", encoding="utf-8")
+    mig = tmp_path / "backend/src/main/resources/db/migration/V100__auth.sql"
+    mig.parent.mkdir(parents=True, exist_ok=True)
+    mig.write_text("CREATE TABLE users(id BIGINT);", encoding="utf-8")
+
+    assert run_backend_static_check(tmp_path).status == "PASS"
+    cfg = RunnerConfig(token="t", work_root=tmp_path, executor_image="agentforge-executor:test")
+    results = run_verification(tmp_path, cfg, ["backend_static_manifest"])
+    assert len(results) == 1
+    assert results[0].name == "backend_static_manifest"
+    assert results[0].status == "PASS"
+
+
+def test_backend_static_manifest_fails_when_pom_or_sql_missing(tmp_path: Path) -> None:
+    res = run_backend_static_check(tmp_path)
+    assert res.status == "FAIL"
+    assert res.error_code == "MISSING_FILES"
