@@ -22,9 +22,23 @@ MAX_DEFECT_LOG_BYTES = 4096  # 硬上限：传递给 DeptLead 的缺陷日志脱
 
 
 def sanitize_defect_log(raw_log: str | None, *, max_bytes: int = MAX_DEFECT_LOG_BYTES) -> str:
-    """对失败日志先脱敏（清除密钥/Token/DB 密码）、再按 UTF-8 字节数硬截断至 ``<= max_bytes``。"""
+    """对失败日志先脱敏（清除密钥/Token/DB 密码与无害噪音）、优先保留 Surefire 精确断言与报错段并按 UTF-8 字节数硬截断至 ``<= max_bytes``。"""
     if not raw_log:
         return ""
+    if raw_log.lstrip().startswith("[surefire-failures]"):
+        # Surefire 失败摘要已高度凝练且核心断言在最前方，保留头部优先，避免二次截断把 expected/but was 切掉
+        redacted = redact_and_truncate_log(raw_log, limit=max_bytes)
+        encoded = redacted.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return redacted
+        marker = "\n...[truncated]"
+        budget = max(0, max_bytes - len(marker.encode("utf-8")))
+        head = encoded[:budget].decode("utf-8", errors="ignore").rstrip()
+        result = f"{head}{marker}"
+        while len(result.encode("utf-8")) > max_bytes and result:
+            result = result[:-1]
+        return result
+
     redacted = redact_and_truncate_log(raw_log, limit=max_bytes)
     encoded = redacted.encode("utf-8")
     if len(encoded) <= max_bytes:
@@ -32,7 +46,7 @@ def sanitize_defect_log(raw_log: str | None, *, max_bytes: int = MAX_DEFECT_LOG_
     marker = "\n...[truncated]...\n"
     marker_bytes = marker.encode("utf-8")
     budget = max(0, max_bytes - len(marker_bytes))
-    head_bytes = budget * 2 // 3
+    head_bytes = (budget * 4 // 5) if redacted.startswith("[error-focused excerpt]") else (budget * 2 // 3)
     tail_bytes = budget - head_bytes
     head = encoded[:head_bytes].decode("utf-8", errors="ignore")
     tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes > 0 else ""

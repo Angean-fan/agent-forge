@@ -1,8 +1,11 @@
 import type {
   AccountInfo,
+  CustomModelPresetCreatePayload,
   FactoryRunView,
   InterviewAnswer,
   InterviewView,
+  ModelConfigView,
+  ModelRoleUpdateItem,
   ProfileExplanation,
   ProfileOption,
   ProjectDetail,
@@ -147,6 +150,9 @@ export const projectsApi = {
   get(projectId: number): Promise<ProjectDetail> {
     return apiRequest(`/projects/${projectId}`);
   },
+  remove(projectId: number): Promise<{ deleted: boolean; project_id: number }> {
+    return apiRequest(`/projects/${projectId}`, { method: 'DELETE' });
+  },
   getSpec(projectId: number): Promise<SpecView> {
     return apiRequest(`/projects/${projectId}/spec`);
   },
@@ -184,6 +190,29 @@ export const profilesApi = {
     return apiRequest(`/projects/${projectId}/profile-explanation`, {
       method: 'POST',
       body: { profile_id: profileId },
+    });
+  },
+};
+
+export const modelsApi = {
+  getConfig(): Promise<ModelConfigView> {
+    return apiRequest('/models/config');
+  },
+  updateConfig(roles: ModelRoleUpdateItem[]): Promise<ModelConfigView> {
+    return apiRequest('/models/config', {
+      method: 'PUT',
+      body: { roles },
+    });
+  },
+  addPreset(preset: CustomModelPresetCreatePayload): Promise<ModelConfigView> {
+    return apiRequest('/models/presets', {
+      method: 'POST',
+      body: preset,
+    });
+  },
+  deletePreset(presetId: string): Promise<ModelConfigView> {
+    return apiRequest(`/models/presets/${encodeURIComponent(presetId)}`, {
+      method: 'DELETE',
     });
   },
 };

@@ -306,6 +306,70 @@ export interface FactoryRoutingRole {
   supports_tools: boolean;
 }
 
+/** 左侧「模型配置」面板：自定义模型库预设项（严禁明文密钥）。 */
+export interface CustomModelPreset {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  base_url: string;
+  base_url_host: string;
+  api_key_env: string;
+  api_key_present: boolean;
+  supports_tools: boolean;
+  max_output_tokens: number | null;
+  timeout_seconds: number | null;
+  removable: boolean;
+}
+
+export interface CustomModelPresetCreatePayload {
+  id?: string | null;
+  name: string;
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key_env: string;
+  supports_tools: boolean;
+  max_output_tokens?: number | null;
+  timeout_seconds?: number | null;
+}
+
+/** 左侧「模型配置」面板：全角色脱敏模型路由与受控更新结构。 */
+export interface ModelRoleConfig {
+  role: string;
+  label: string;
+  provider: string;
+  model: string;
+  base_url: string;
+  base_url_host: string;
+  api_key_env: string;
+  api_key_present: boolean;
+  enabled: boolean;
+  supports_tools: boolean;
+  max_output_tokens: number | null;
+  timeout_seconds: number | null;
+  source: string;
+}
+
+export interface ModelConfigView {
+  config_source: string;
+  writable: boolean;
+  roles: ModelRoleConfig[];
+  custom_models?: CustomModelPreset[];
+}
+
+export interface ModelRoleUpdateItem {
+  role: string;
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key_env: string;
+  enabled: boolean;
+  supports_tools: boolean;
+  max_output_tokens?: number | null;
+  timeout_seconds?: number | null;
+}
+
 export interface FactoryRunView {
   run_id: number;
   project_id: number;

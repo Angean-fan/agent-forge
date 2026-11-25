@@ -172,13 +172,164 @@ def build_sanitized_env(base_env: Mapping[str, str] | None = None) -> dict[str, 
     return sanitized
 
 
+_NOISE_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"libjansi\.so|jansi\.tmpdir|jansi-[0-9]", re.IGNORECASE),
+    re.compile(r"Sharing is only supported for boot loader classes"),
+    re.compile(r"Failed to load native library:jansi", re.IGNORECASE),
+    re.compile(r"^\[ERROR\]\s+To see the full debug logging", re.IGNORECASE),
+    re.compile(r"^\[ERROR\]\s+Re-run Maven using the -X", re.IGNORECASE),
+    re.compile(r"^\[ERROR\]\s+For more information about the errors and possible solutions", re.IGNORECASE),
+    re.compile(r"^\[ERROR\]\s+(?:->\s*)?\[Help \d+\]", re.IGNORECASE),
+    re.compile(r"^\[ERROR\]\s+After correcting the problems, you can resume", re.IGNORECASE),
+)
+_ERROR_LINE_PATTERN = re.compile(
+    r"(\[ERROR\]|<<<\s*(?:FAILURE|ERROR)!|COMPILATION ERROR|Failed tests:|Tests in error:|"
+    r"There are test failures|AssertionError|AssertionFailedError|Exception:|Error:|"
+    r"expected:|but was:|Expecting\s+|Wanted but not invoked|Actually, there were zero interactions|"
+    r"\bFAIL\s+\S|error TS\d+:|Caused by:|cannot find symbol|incompatible types)"
+)
+_SUREFIRE_FAILURE_MARKER_RE = re.compile(r"<<<\s*(?:FAILURE|ERROR)!")
+_STACK_FRAME_RE = re.compile(r"^\s+at\s+")
+_BUSINESS_FRAME_RE = re.compile(r"^\s+at\s+com\.agentforge\.")
+
+
+def _strip_noise_lines(text: str) -> str:
+    lines = text.splitlines()
+    filtered = [line for line in lines if not any(p.search(line) for p in _NOISE_LINE_PATTERNS)]
+    return "\n".join(filtered)
+
+
+def extract_surefire_failure_summary(artifact_dir: str | Path, *, max_chars: int = 2800) -> str:
+    """直接解析 ``backend/target/surefire-reports/*.txt`` 提取失败断言、期望/实际值与业务堆栈。"""
+    reports_dir = Path(artifact_dir) / "backend" / "target" / "surefire-reports"
+    if not reports_dir.is_dir():
+        return ""
+
+    blocks: list[str] = []
+    for report_file in sorted(reports_dir.glob("*.txt")):
+        if not report_file.is_file():
+            continue
+        try:
+            content = report_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not _SUREFIRE_FAILURE_MARKER_RE.search(content):
+            continue
+
+        lines = content.splitlines()
+        file_lines: list[str] = []
+        for header in lines[:6]:
+            stripped = header.strip()
+            if stripped.startswith(("Test set:", "Tests run:")):
+                file_lines.append(stripped)
+
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            if not _SUREFIRE_FAILURE_MARKER_RE.search(line):
+                idx += 1
+                continue
+            file_lines.append(line.strip())
+            idx += 1
+            msg_lines = 0
+            business_frames = 0
+            fallback_frames: list[str] = []
+            in_stack = False
+            while idx < len(lines):
+                cur = lines[idx]
+                if _SUREFIRE_FAILURE_MARKER_RE.search(cur):
+                    break
+                if cur.startswith("Caused by:"):
+                    in_stack = False
+                    file_lines.append(cur.rstrip())
+                    msg_lines += 1
+                    idx += 1
+                    continue
+                if _STACK_FRAME_RE.match(cur):
+                    in_stack = True
+                    if _BUSINESS_FRAME_RE.match(cur):
+                        if business_frames < 4:
+                            file_lines.append(cur.rstrip())
+                            business_frames += 1
+                    elif len(fallback_frames) < 2:
+                        fallback_frames.append(cur.rstrip())
+                    idx += 1
+                    continue
+                if not in_stack:
+                    if cur.strip() and msg_lines < 12:
+                        file_lines.append(cur.rstrip())
+                        msg_lines += 1
+                    idx += 1
+                    continue
+                if not cur.strip():
+                    idx += 1
+                    break
+                idx += 1
+            if business_frames == 0 and fallback_frames:
+                file_lines.extend(fallback_frames)
+        if file_lines:
+            blocks.append("\n".join(file_lines))
+
+    if not blocks:
+        return ""
+    header = "[surefire-failures]\n"
+    joined = header + "\n---\n".join(blocks)
+    if len(joined) <= max_chars:
+        return joined
+    marker = "\n...[more surefire failures truncated]"
+    budget = max(0, max_chars - len(marker))
+    clipped = joined[:budget].rsplit("\n", 1)[0]
+    return f"{clipped}{marker}"
+
+
+def _extract_error_focused_excerpt(text: str, limit: int) -> str | None:
+    lines = text.splitlines()
+    hit_indices = [idx for idx, line in enumerate(lines) if _ERROR_LINE_PATTERN.search(line)]
+    if not hit_indices:
+        return None
+    keep: set[int] = set()
+    for idx in hit_indices:
+        for pos in range(max(0, idx - 2), min(len(lines), idx + 5)):
+            keep.add(pos)
+    extracted_lines: list[str] = []
+    prev = -2
+    for idx in sorted(keep):
+        if prev >= 0 and idx > prev + 1:
+            extracted_lines.append("...")
+        extracted_lines.append(lines[idx])
+        prev = idx
+    extracted = "\n".join(extracted_lines)
+    if len(extracted) <= limit:
+        return (
+            f"[error-focused excerpt]\n...[truncated {max(0, len(text) - len(extracted))} chars]...\n"
+            f"{extracted}"
+        )
+    budget = max(0, limit - 64)
+    head = budget * 2 // 3
+    tail = budget - head
+    return (
+        f"[error-focused excerpt]\n{extracted[:head]}"
+        f"\n...[truncated {max(0, len(text) - limit)} chars]...\n"
+        f"{extracted[-tail:] if tail > 0 else ''}"
+    )
+
+
 def redact_and_truncate_log(text: str, limit: int = LOG_LIMIT) -> str:
-    """对验证日志先脱敏、再截断（保留头 2/3 与尾 1/3）。"""
+    """对验证日志先脱敏、过滤环境噪音、再优先保留 Surefire 精确断言或关键报错段截断。"""
     redacted = text
     for pattern, replacement in _SECRET_PATTERNS:
         redacted = pattern.sub(replacement, redacted)
+    redacted = _strip_noise_lines(redacted)
     if len(redacted) <= limit:
         return redacted
+    if redacted.lstrip().startswith("[surefire-failures]"):
+        marker = "\n...[truncated]"
+        budget = max(0, limit - len(marker))
+        clipped = redacted[:budget].rsplit("\n", 1)[0]
+        return f"{clipped}{marker}"
+    focused = _extract_error_focused_excerpt(redacted, limit)
+    if focused is not None:
+        return focused
     head = limit * 2 // 3
     tail = limit - head
     return f"{redacted[:head]}\n...[truncated {len(redacted) - limit} chars]...\n{redacted[-tail:]}"
@@ -502,6 +653,12 @@ class LocalProcessModuleVerifier:
                     "NOT_RUN" if err_code == "INFRASTRUCTURE" else "FAIL"
                 )
                 detail = "单模块本地快检超时并已强杀进程树" if code == TIMEOUT_EXIT_CODE else None
+                surefire = (
+                    extract_surefire_failure_summary(host_dir)
+                    if stack == "java" and err_code != "INFRASTRUCTURE"
+                    else ""
+                )
+                effective_log = f"{surefire}\n\n[maven-summary]\n{combined}" if surefire else combined
                 return ModuleVerificationResult(
                     artifact_dir=str(artifact_dir),
                     module_id=clean_mod,
@@ -514,7 +671,7 @@ class LocalProcessModuleVerifier:
                     duration_ms=int((time.monotonic() - started) * 1000),
                     command=last_cmd,
                     detail=detail,
-                    log_excerpt=redact_and_truncate_log(combined, limit=self._log_limit),
+                    log_excerpt=redact_and_truncate_log(effective_log, limit=self._log_limit),
                 )
 
         combined = "\n".join(logs)
@@ -635,6 +792,7 @@ __all__ = [
     "ModuleVerifier",
     "build_module_verifier",
     "build_sanitized_env",
+    "extract_surefire_failure_summary",
     "local_dept_test_runner_enabled",
     "redact_and_truncate_log",
     "require_docker_runner_for_final_acceptance",

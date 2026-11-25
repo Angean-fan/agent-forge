@@ -274,3 +274,51 @@ def test_existing_verify_and_accept_contracts_unchanged(runner, tmp_path: Path) 
     assert client.post("/verify", json={"artifact_dir": "r1"}).status_code == 401
     assert client.post("/accept", json={"artifact_dir": "r1"}).status_code == 401
     assert tmp_path.is_dir()
+
+
+def test_verify_module_java_failure_reads_surefire_reports_directly(
+    runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, work = runner
+    sf = work / "r1" / "backend" / "target" / "surefire-reports"
+    sf.mkdir(parents=True)
+    (sf / "PaymentControllerApiTest.txt").write_text(
+        "Test set: com.agentforge.template.modules.payment.PaymentControllerApiTest\n"
+        "Tests run: 2, Failures: 1, Errors: 0, Skipped: 0 <<< FAILURE!\n"
+        "com.agentforge.template.modules.payment.PaymentControllerApiTest.pay_denied -- Time elapsed: 0.04 s <<< FAILURE!\n"
+        "java.lang.AssertionError: Expecting code to raise a throwable.\n"
+        "\tat com.agentforge.template.modules.payment.PaymentControllerApiTest.pay_denied(PaymentControllerApiTest.java:144)\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module_checks, "container_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        module_checks,
+        "run_container",
+        lambda argv, *, timeout, container_name: (
+            1,
+            (
+                "[ERROR] Failed to execute goal surefire:test\n"
+                "[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+            ),
+        ),
+    )
+
+    resp = client.post(
+        "/verify-module",
+        json={
+            "artifact_dir": "r1",
+            "module_id": "payment",
+            "stack": "java",
+            "test_selector": "PaymentControllerApiTest",
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "FAIL"
+    excerpt = body["log_excerpt"] or ""
+    assert "[surefire-failures]" in excerpt
+    assert "Expecting code to raise a throwable." in excerpt
+    assert "PaymentControllerApiTest.java:144" in excerpt
+    assert "[Help 1]" not in excerpt

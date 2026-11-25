@@ -68,10 +68,13 @@ IN_FLIGHT_DEPT_STATUSES: frozenset[DeptStatus] = frozenset(
     {DeptStatus.PLANNING, DeptStatus.CODING, DeptStatus.TESTING}
 )
 
-# 部门常规状态迁移白名单（PASSED 不在常规允许集合中，仅允许总装归因显式打回 REWORK）。
+# 部门常规状态迁移白名单（PASSED 不在常规允许集合中，仅允许总装归因显式打回 REWORK；
+# PLANNING → TESTING 允许纯测试返工轮直接跳过 DeptCoder 进入 DeptTester 修复）。
 ALLOWED_DEPT_TRANSITIONS: dict[DeptStatus, frozenset[DeptStatus]] = {
     DeptStatus.QUEUED: frozenset({DeptStatus.PLANNING, DeptStatus.FAILED, DeptStatus.CANCELLED}),
-    DeptStatus.PLANNING: frozenset({DeptStatus.CODING, DeptStatus.FAILED, DeptStatus.CANCELLED}),
+    DeptStatus.PLANNING: frozenset(
+        {DeptStatus.CODING, DeptStatus.TESTING, DeptStatus.FAILED, DeptStatus.CANCELLED}
+    ),
     DeptStatus.CODING: frozenset({DeptStatus.TESTING, DeptStatus.FAILED, DeptStatus.CANCELLED}),
     DeptStatus.TESTING: frozenset(
         {DeptStatus.PASSED, DeptStatus.REWORK, DeptStatus.FAILED, DeptStatus.CANCELLED}

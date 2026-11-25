@@ -21,13 +21,9 @@ const submitting = ref(false);
 const errorMessage = ref('');
 
 async function onSubmit(): Promise<void> {
-  if (!formRef.value) {
-    return;
-  }
+  if (!formRef.value) return;
   const valid = await formRef.value.validate().catch(() => false);
-  if (!valid) {
-    return;
-  }
+  if (!valid) return;
   submitting.value = true;
   errorMessage.value = '';
   try {
@@ -45,9 +41,20 @@ async function onSubmit(): Promise<void> {
 
 <template>
   <div class="login-wrap">
-    <el-card class="login-card">
-      <h1 class="page-title">登录 AgentForge 平台</h1>
-      <p class="page-subtitle">使用维护者预置的内测账号登录，本平台不提供注册与找回密码。</p>
+    <div class="login-card">
+      <div class="login-brand">
+        <span class="login-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="12 2 2 7 12 12 22 7 12 2" />
+            <polyline points="2 17 12 22 22 17" />
+            <polyline points="2 12 12 17 22 12" />
+          </svg>
+        </span>
+        <div>
+          <h1 class="page-title">登录 AgentForge 平台</h1>
+          <p class="page-subtitle login-sub">使用维护者预置的内测账号登录，本平台不提供注册与找回密码。</p>
+        </div>
+      </div>
 
       <el-alert
         v-if="errorMessage"
@@ -82,24 +89,65 @@ async function onSubmit(): Promise<void> {
           登录
         </el-button>
       </el-form>
-    </el-card>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .login-wrap {
+  min-height: 100vh;
   display: flex;
+  align-items: center;
   justify-content: center;
-  padding-top: 8vh;
+  padding: 24px;
+  background-image: radial-gradient(var(--af-grid-dot) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
+
 .login-card {
   width: 100%;
-  max-width: 420px;
+  max-width: 400px;
+  border-radius: 14px;
+  border: 1px solid var(--af-border-strong);
+  background: var(--af-surface);
+  padding: 24px;
 }
+
+.login-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.login-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--af-accent-soft);
+  border: 1px solid var(--af-accent-border);
+  color: var(--af-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.login-logo svg {
+  width: 18px;
+  height: 18px;
+}
+
+.login-sub {
+  margin-bottom: 0;
+}
+
 .login-error {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
+
 .login-submit {
   width: 100%;
+  margin-top: 6px;
 }
 </style>

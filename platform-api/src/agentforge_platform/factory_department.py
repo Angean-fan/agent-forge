@@ -75,7 +75,11 @@ from agentforge_platform.limits import factory_agent_recursion_limit
 from agentforge_platform.model_gateway import Route, lookup_price, resolve_route, role_enabled
 from agentforge_platform.models import Run
 from agentforge_platform.module_registry import Module
-from agentforge_platform.module_verifier import ModuleVerificationResult, ModuleVerifier
+from agentforge_platform.module_verifier import (
+    ModuleVerificationResult,
+    ModuleVerifier,
+    extract_surefire_failure_summary,
+)
 from agentforge_platform.patch_engine import (
     FORBIDDEN_TOOL_NAMES,
     LedgerBinding,
@@ -97,19 +101,32 @@ _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```", re.DOTALL | re.IGN
 
 CODER_SYSTEM_PROMPT = (
     "你是 AgentForge 异步工厂的【部门编码子 Agent（DeptCoder）】。"
-    "你只允许在当前部门暂存区的 owned_paths 内编写业务代码与 api-fragment.json；"
+    "你只允许在当前部门暂存区的 owned_paths 内编写**本部门专属**业务代码与 api-fragment.json；"
     "你可以自主调用 search_assets / read_asset_file / apply_asset_to_staging 查 PG 资产库复用或直接编写。"
-    "严禁修改 test_paths、只读底座、跨模块 api/*Facade.java 或他部门目录；严禁执行 shell 命令；严禁硬编码真实密钥，前端严禁使用 v-html 或 innerHTML。"
-    "【效率要求】为避免触发工具循环步数上限：1) 提示词中已给出的底座路径、Facade 契约与生成类型无需重复 ls/glob 探测；"
-    "2) 请尽量在同一轮助手响应中**并行发出多个独立的 write_file / read_file 工具调用**（例如一次同时写入 3~6 个关联文件），写完并自查无遗漏后立即结束。"
+    "【严格边界红线】1) 只实现本部门负责的核心实体、表、服务与接口，**严禁**在本部门包下重复造出其他兄弟部门负责的实体、数据库表、Service、Controller 或支付/评价/订单等跨部门流程；"
+    "涉及其他部门数据时一律通过蓝图提供的只读 api/*Facade 接口交互。"
+    "2) 严禁修改 test_paths、只读底座、跨模块 api/*Facade.java 或他部门目录；严禁执行 shell 命令；严禁硬编码真实密钥，前端严禁使用 v-html 或 innerHTML。"
+    "【省 Token 与效率要求】1) 提示词中已给出的底座路径、Facade 契约与生成类型无需重复 ls/glob 探测；"
+    "2) 保持代码精简高内聚（单部门通常 6~10 个核心源文件即可），禁止拆分大量零碎空壳类；"
+    "3) 在同一轮助手响应中**并行发出 3~6 个独立的 write_file 调用**批量落盘，尽量在 3~6 轮调用内完成并立即结束。"
 )
 
 TESTER_SYSTEM_PROMPT = (
     "你是 AgentForge 异步工厂的【部门测试子 Agent（DeptTester）】。"
-    "你只允许在本部门 test_paths 内编写单元测试与跨模块 Facade 的 Mockito/Mock 契约测试。"
+    "你只允许在本部门 test_paths 内编写本部门单元测试与跨模块 Facade 的 Mockito/Mock 契约测试。"
     "严禁修改任何业务源码、只读底座、api/*Facade.java 或他部门测试文件；严禁执行 shell 命令。"
     "测试是否通过将由系统程序调用真实编译与单测工具判定。"
-    "【效率要求】请直接依据提示词中给出的变更文件与契约摘要定位被测类，在同一轮中尽量**并行读取或写入多个文件**，写完测试后立即结束。"
+    "【Java/Mockito 编译与断言避坑】1) Mock Spring Security 的 `Authentication.getAuthorities()` 时必须使用 "
+    "`doReturn(List.of(new SimpleGrantedAuthority(\"ROLE_ADMIN\"))).when(auth).getAuthorities()`，"
+    "严禁使用 `when(auth.getAuthorities()).thenReturn(...)`（泛型通配符会触发 javac 编译失败）；"
+    "2) Mock MyBatis-Plus 3.5.17 `BaseMapper.insert(...)` 时必须用显式类型 `any(XxxEntity.class)` 而非裸 `any()`（避免 `insert(T)` 与 `insert(Collection<T>)` 重载歧义）；"
+    "3) 使用 `ArgumentCaptor` 断言可变实体在某中间时刻的状态（如先 insert 为 PENDING、后续 updateById 改为 PAID）时，"
+    "Mockito 捕获的是同一对象引用而非快照，必须在 `doAnswer/thenAnswer` 回调中即时记录或断言当时状态；"
+    "4) 优先纯 JUnit 5 + `@ExtendWith(MockitoExtension.class)`。"
+    "【省 Token、防重复与返工铁律】1) 首轮聚焦核心业务规则、状态守卫、权限与 Facade 契约，**只编写 2~3 个高价值核心测试类**（如 ServiceTest + ControllerTest + FacadeImplTest），"
+    "严禁为简单 DTO/Enum/Getter/Setter 拆出大量零碎测试文件；"
+    "2) 被测核心源码与返工失败测试源码已内联在任务提示中，**禁止重复 read_file / ls / glob 探查已内联文件**；"
+    "3) **返工轮严禁新建重复测试类或在不同子包下另建同名/类似测试文件**！必须使用 `edit_file` 直接原地修复既有失败测试文件后立即结束。"
 )
 
 CoderModelFactory = Callable[[LedgerBinding, int], BaseChatModel]
@@ -330,6 +347,9 @@ def _discover_test_files(dept_staging: Path, test_paths: list[str]) -> list[str]
     return sorted(set(found))
 
 
+_MAX_SAFE_SELECTOR_LEN = 180
+
+
 def _derive_test_selector(
     *,
     dept_staging: Path,
@@ -344,13 +364,29 @@ def _derive_test_selector(
 
     if stack == "java":
         class_names: list[str] = []
+        package_wildcards: list[str] = []
         for rel in test_files:
             if rel.endswith(".java"):
                 stem = PurePosixPath(rel).stem
                 if stem.endswith(("Test", "Tests")) and stem not in class_names:
                     class_names.append(stem)
+                if stem.endswith(("Test", "Tests")) and "src/test/java/" in rel:
+                    after = rel.split("src/test/java/", 1)[1]
+                    pkg_dir = PurePosixPath(after).parent.as_posix()
+                    if pkg_dir and pkg_dir != ".":
+                        wildcard = f"{pkg_dir.replace('/', '.')}.*Test"
+                        if wildcard not in package_wildcards:
+                            package_wildcards.append(wildcard)
         if class_names:
-            return ",".join(class_names), test_files
+            joined = ",".join(class_names)
+            if len(joined) <= _MAX_SAFE_SELECTOR_LEN:
+                return joined, test_files
+            # 测试类名拼接超过 Runner 200 字符上限时，自动收敛为按子包通配符，防止 VALIDATION_ERROR
+            if package_wildcards:
+                pkg_joined = ",".join(package_wildcards)
+                if len(pkg_joined) <= _MAX_SAFE_SELECTOR_LEN:
+                    return pkg_joined, test_files
+            return f"{blueprint.base_package}.modules.{module.module_id}.**.*Test", test_files
         return f"{blueprint.base_package}.modules.{module.module_id}.*Test", test_files
 
     # frontend：vitest 在 frontend/ 子目录运行，选择器需去除前导 frontend/
@@ -377,8 +413,45 @@ def _load_api_fragment(dept_staging: Path) -> tuple[str | None, dict[str, Any]]:
     return API_FRAGMENT_FILENAME, parsed if isinstance(parsed, dict) else {}
 
 
-_MAX_CONTEXT_INLINE_BYTES = 8192
-_MAX_BASE_LISTING_FILES = 40
+_MAX_CONTEXT_INLINE_BYTES = 6144
+_MAX_BASE_LISTING_FILES = 16
+_KEY_BASE_FILENAMES = frozenset(
+    {
+        "pom.xml",
+        "ApiResponse.java",
+        "ApiException.java",
+        "ErrorCode.java",
+        "GlobalExceptionHandler.java",
+        "SecurityConfig.java",
+        "FactoryBaseConfig.java",
+        "AppUser.java",
+        "JwtService.java",
+        "application.yml",
+        "V1__create_app_user.sql",
+    }
+)
+_INLINE_BASE_FILENAMES = frozenset({"ApiResponse.java", "ApiException.java", "ErrorCode.java"})
+
+
+def _relevant_api_modules(module: Module, blueprint: ArchitectureBlueprint) -> set[str]:
+    """仅筛选本部门拥有或通过 readable_contract_refs 消费的跨模块 api 目录，避免无关 Facade 撑大上下文。"""
+    relevant: set[str] = {module.module_id}
+    ref_set = set(module.readable_contract_refs)
+    for contract in blueprint.frozen_contracts:
+        if contract.capability_id in ref_set:
+            relevant.add(contract.owner_module_id)
+        if contract.owner_module_id == module.module_id:
+            relevant.add(contract.owner_module_id)
+    return relevant
+
+
+def _api_file_module_id(relative: str) -> str | None:
+    parts = PurePosixPath(relative).parts
+    if "modules" in parts and "api" in parts and relative.endswith(".java"):
+        mod_idx = parts.index("modules")
+        if mod_idx + 2 < len(parts) and parts[mod_idx + 2] == "api":
+            return parts[mod_idx + 1]
+    return None
 
 
 def _collect_staging_context(
@@ -388,7 +461,7 @@ def _collect_staging_context(
     blueprint: ArchitectureBlueprint,
     phase: FactoryPhase,
 ) -> str:
-    """确定性采集本部门暂存区的关键只读底座与冻结契约摘要，减少子 Agent 盲目 ls/glob/read 步数。"""
+    """确定性采集本部门最小必要只读底座与相关冻结契约摘要，减少子 Agent 盲目 ls/glob/read 步数与上下文体积。"""
     lines: list[str] = []
     if phase is FactoryPhase.BACKEND:
         lines.append(f"- base_package: {blueprint.base_package}")
@@ -402,7 +475,9 @@ def _collect_staging_context(
             )
         backend_root = dept_staging / "backend"
         if backend_root.is_dir():
+            relevant_mods = _relevant_api_modules(module, blueprint)
             facade_files: list[Path] = []
+            inline_base_files: list[Path] = []
             base_files: list[str] = []
             for path in sorted(backend_root.rglob("*")):
                 if not path.is_file() or path.is_symlink():
@@ -410,15 +485,32 @@ def _collect_staging_context(
                 rel = path.relative_to(dept_staging).as_posix()
                 if "/target/" in rel or rel.startswith("backend/target/"):
                     continue
-                if _is_module_api_java(rel):
-                    facade_files.append(path)
-                elif len(base_files) < _MAX_BASE_LISTING_FILES:
-                    base_files.append(rel)
+                api_mod = _api_file_module_id(rel)
+                if api_mod is not None:
+                    if api_mod in relevant_mods:
+                        facade_files.append(path)
+                elif path.name in _KEY_BASE_FILENAMES:
+                    if len(base_files) < _MAX_BASE_LISTING_FILES:
+                        base_files.append(rel)
+                    if path.name in _INLINE_BASE_FILENAMES:
+                        inline_base_files.append(path)
             if base_files:
-                lines.append(f"- 只读底座参考文件（勿改）：{json.dumps(base_files, ensure_ascii=False)}")
+                lines.append(f"- 关键只读底座文件（勿改，无需再 ls/read 探查）：{json.dumps(base_files, ensure_ascii=False)}")
+            budget = _MAX_CONTEXT_INLINE_BYTES
+            if inline_base_files:
+                lines.append("- 核心底座通用类源码（直接 import 复用，无需再 read_file）：")
+                for fp in inline_base_files:
+                    rel = fp.relative_to(dept_staging).as_posix()
+                    try:
+                        text = fp.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    encoded_len = len(text.encode("utf-8"))
+                    if encoded_len <= budget:
+                        lines.append(f"  [FILE: /{rel}]\n{text.rstrip()}")
+                        budget -= encoded_len
             if facade_files:
-                lines.append("- 已生成的只读跨模块 Facade/DTO 骨架（严禁修改，直接 import 实现或调用）：")
-                budget = _MAX_CONTEXT_INLINE_BYTES
+                lines.append("- 与本部门相关的只读跨模块 Facade/DTO 骨架（严禁修改，直接 import 实现或调用）：")
                 for fp in facade_files:
                     rel = fp.relative_to(dept_staging).as_posix()
                     try:
@@ -436,7 +528,7 @@ def _collect_staging_context(
                 "- 【Spring Boot 锁定技术栈与依赖禁令（离线 Maven 编译，严禁引入 pom.xml 之外的依赖）】",
                 "  1) 仅可使用：Java 17、Spring Boot 3.5.16（Web / Security / Validation / Test）、MyBatis-Plus 3.5.17（BaseMapper / @TableName / @TableId(type = IdType.AUTO)）、Flyway、JJWT、H2（test）与 MySQL 8.0。",
                 "  2) 严禁使用 Lombok（禁止 @Data/@Builder/@RequiredArgsConstructor/@Slf4j 等）、严禁使用 Spring Data JPA/Hibernate（禁止 @Entity/JpaRepository）、严禁使用 Swagger/SpringDoc（禁止 @Tag/@Operation/@Schema）、严禁使用 MapStruct；DTO/VO 优先使用 Java 17 record 或显式构造器与 getter/setter，日志使用 org.slf4j.LoggerFactory。",
-                "  3) 所有本部门 MyBatis-Plus Mapper 接口必须标注 `@org.apache.ibatis.annotations.Mapper`（由只读底座 common/FactoryBaseConfig 自动扫描注册）；方法级权限控制可直接使用 `@PreAuthorize(...)`；底座 SecurityConfig 仅放行 /api/health 与 /api/auth/login，业务接口默认需要 JWT 鉴权。",
+                "  3) 所有本部门 MyBatis-Plus Mapper 接口必须标注 `@org.apache.ibatis.annotations.Mapper`（由只读底座 common/FactoryBaseConfig 自动扫描注册）；方法级权限控制可直接使用 `@PreAuthorize(\"hasRole('ADMIN')\")` / `hasAnyRole('ADMIN','MEMBER')`；底座 JwtAuthenticationFilter 注入的 `Authentication.getName()` 为当前用户名字符串（权限为 `ROLE_ADMIN` / `ROLE_MEMBER`），可通过注入只读底座 `UserService` 或 `AppUserMapper` 查询 `AppUser.getId()` 获取当前用户 ID；底座 SecurityConfig 仅放行 /api/health 与 /api/auth/login，业务接口默认需要 JWT 鉴权。不要再 read_file 探查 SecurityConfig/JwtAuthenticationFilter/pom.xml！",
                 "  4) Flyway SQL 隔离规范：严禁在单部门迁移脚本中写跨部门表的 `FOREIGN KEY ... REFERENCES <other_dept_table>`（单部门测试环境无他部门建表 SQL，只保留逻辑外键列，跨表外键由总装 V900__relations.sql 统一处理）；DDL 必须同时兼容 H2(MODE=MySQL) 与 MySQL 8.0。",
                 "  5) 单元测试隔离规范：DeptTester 优先编写纯 JUnit 5 + Mockito（`@ExtendWith(MockitoExtension.class)`）单元测试，速度快且不依赖外部部门 Bean；如必须使用 `@SpringBootTest`，必须对所有外部模块 `*Facade` 依赖加 `@MockitoBean`（Spring Boot 3.5+）。",
                 (
@@ -492,6 +584,11 @@ def _build_lead_plan_prompt(
         for c in blueprint.frozen_contracts
         if c.owner_module_id == module.module_id or c.capability_id in module.readable_contract_refs
     ]
+    sibling_modules = [
+        {"module_id": m.module_id, "name": m.name}
+        for m in blueprint.modules
+        if m.module_id != module.module_id
+    ]
     return "\n".join(
         [
             "[TASK_TYPE: DEPARTMENT_PLAN]",
@@ -503,8 +600,16 @@ def _build_lead_plan_prompt(
             f"- owned_paths: {json.dumps(module.owned_paths, ensure_ascii=False)}",
             f"- test_paths: {json.dumps(module.test_paths, ensure_ascii=False)}",
             f"- migration_range: {module.migration_range}",
-            f"- goal: {spec.goal}",
+            (
+                "- sibling_modules (由其他部门独立负责，严禁在本部门重复实现其表/实体/Service/Controller/测试): "
+                f"{json.dumps(sibling_modules, ensure_ascii=False)}"
+            ),
+            f"- system_goal_context: {spec.goal}",
             f"- related_contracts: {json.dumps(contracts, ensure_ascii=False)}",
+            (
+                "【范围与精简铁律】只规划本部门自己的核心文件（一般 6~10 个文件，test_focus 聚焦 2~4 个高价值核心测试类），"
+                "绝不越界实现 sibling_modules 负责的业务域；跨模块协作一律调用 related_contracts 中声明的只读 Facade。"
+            ),
             "请仅输出一个符合 DepartmentPlan Schema 的 JSON 对象。",
             department_plan_contract(),
         ]
@@ -531,6 +636,12 @@ def _build_lead_fix_prompt(
             f"- dept_id: {module.module_id}",
             f"- round: {round_num}",
             f"- owned_paths: {json.dumps(module.owned_paths, ensure_ascii=False)}",
+            f"- test_paths: {json.dumps(module.test_paths, ensure_ascii=False)}",
+            (
+                "【纯测试修复路由指引】若缺陷根因完全在单元测试代码自身的断言、Mock 设置或测试编译错误（业务源码无需修改），"
+                "请将 target_files 严格限定为 test_paths 下需要修改的既有失败测试文件（不要包含 owned_paths 业务文件），"
+                "并在 test_adjustments 中写明精确修改点；系统将自动跳过 DeptCoder，直接交由 DeptTester 原地修复，大幅节省 Token。"
+            ),
             f"- defect_ticket: {safe_ticket.model_dump_json()}",
             "请仅输出一个符合 FixDirective Schema 的 JSON 对象。",
             fix_directive_contract(),
@@ -541,11 +652,17 @@ def _build_lead_fix_prompt(
 def _build_coder_prompt(
     *,
     module: Module,
+    blueprint: ArchitectureBlueprint | None = None,
     plan: DepartmentPlan | None,
     directive: FixDirective | None,
     round_num: int,
     staging_context: str = "",
 ) -> str:
+    sibling_ids = (
+        [m.module_id for m in blueprint.modules if m.module_id != module.module_id]
+        if blueprint is not None
+        else []
+    )
     lines = [
         f"部门：{module.module_id}（第 {round_num} 轮）",
         f"允许写入的业务路径（owned_paths）：{json.dumps(module.owned_paths, ensure_ascii=False)}",
@@ -554,6 +671,10 @@ def _build_coder_prompt(
         "严禁修改 test_paths、底座文件、api/*Facade.java 或他部门目录。",
         "提示：单轮响应可同时发起多个 write_file 工具调用批量写入文件，写完即结束，无需重复探查已知路径。",
     ]
+    if sibling_ids:
+        lines.append(
+            f"兄弟部门（严禁在本部门内重复造它们的实体/表/Service/Controller）：{json.dumps(sibling_ids, ensure_ascii=False)}"
+        )
     if staging_context:
         lines.extend(["【工作区只读底座与契约上下文】", staging_context])
     if directive is not None:
@@ -561,6 +682,171 @@ def _build_coder_prompt(
     elif plan is not None:
         lines.append(f"【部门实施方案 DepartmentPlan】{plan.model_dump_json()}")
     return "\n".join(lines)
+
+
+_MAX_TESTER_INLINE_SOURCE_BYTES = 40_000
+_MAX_TESTER_INLINE_FAILING_TEST_BYTES = 24_000
+_TEST_FILE_REF_RE = re.compile(r"([A-Za-z0-9_$]+(?:Test|Tests)\.(?:java|ts|tsx|js|jsx))")
+
+
+def _tester_source_priority(rel: str) -> tuple[int, str]:
+    lower = rel.lower()
+    if "service" in lower or "facade" in lower:
+        return (0, rel)
+    if "controller" in lower or "web" in lower:
+        return (1, rel)
+    if "dto" in lower or "entity" in lower or "domain" in lower:
+        return (2, rel)
+    return (3, rel)
+
+
+def _discover_owned_source_files(dept_staging: Path, owned_paths: list[str]) -> list[str]:
+    found: list[str] = []
+    for raw in owned_paths:
+        rel = raw.strip().strip("/")
+        if not rel:
+            continue
+        target = dept_staging / rel
+        if target.is_file():
+            found.append(target.relative_to(dept_staging).as_posix())
+        elif target.is_dir():
+            for path in sorted(target.rglob("*")):
+                if path.is_file() and path.suffix in {".java", ".ts", ".vue", ".js"}:
+                    found.append(path.relative_to(dept_staging).as_posix())
+    return sorted(set(found))
+
+
+def _is_test_only_directive(
+    directive: FixDirective | None,
+    module: Module,
+    ticket: DefectTicket | None = None,
+) -> bool:
+    """判断本轮返工是否属于纯测试修复（无需修改业务源码，可直接跳过 DeptCoder）。"""
+    if directive is None or not module.test_paths:
+        return False
+    normalized_targets = [
+        p.strip().lstrip("/") for p in directive.target_files if p and p.strip().lstrip("/")
+    ]
+    if normalized_targets:
+        return all(
+            _within_allowed(path, module.test_paths)
+            and not _within_allowed(path, module.owned_paths)
+            for path in normalized_targets
+        )
+    return bool(
+        directive.test_adjustments
+        and (ticket is None or ticket.error_class == "UNIT_TEST_FAILURE")
+    )
+
+
+def _collect_department_source_for_tester(
+    dept_staging: Path | None,
+    changed_paths: list[str],
+    *,
+    budget_bytes: int = _MAX_TESTER_INLINE_SOURCE_BYTES,
+) -> str:
+    """将 DeptCoder 本轮编写的本部门核心业务源码按优先级（Service/Facade > Controller > Entity/DTO）直接内联给 DeptTester，避免重复 read_file。"""
+    if dept_staging is None or not changed_paths:
+        return ""
+    blocks: list[str] = []
+    remaining = budget_bytes
+    for rel in sorted(changed_paths, key=_tester_source_priority):
+        if not rel.endswith((".java", ".ts", ".vue", ".js")):
+            continue
+        fp = dept_staging / rel
+        if not fp.is_file():
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        encoded = len(text.encode("utf-8"))
+        if encoded <= remaining:
+            blocks.append(f"[SOURCE: /{rel}]\n{text.rstrip()}")
+            remaining -= encoded
+        else:
+            blocks.append(f"[SOURCE: /{rel}]（较长，按需 read_file）")
+    return "\n\n".join(blocks)
+
+
+def _extract_failing_test_stems(
+    ticket: DefectTicket | None,
+    directive: FixDirective | None,
+) -> set[str]:
+    stems: set[str] = set()
+    if ticket is not None:
+        for item in ticket.failing_tests:
+            cleaned = item.strip()
+            if "(" in cleaned and ")" in cleaned:
+                cleaned = cleaned.split("(", 1)[1].split(")", 1)[0]
+            parts = cleaned.split(".")
+            for part in parts:
+                if part.endswith(("Test", "Tests")):
+                    stems.add(part)
+        for match in _TEST_FILE_REF_RE.finditer(ticket.log_excerpt):
+            stems.add(PurePosixPath(match.group(1)).stem)
+    if directive is not None:
+        for raw in directive.target_files:
+            stem = PurePosixPath(raw.strip().lstrip("/")).stem
+            if stem:
+                stems.add(stem)
+    return stems
+
+
+def _collect_failing_tests_for_tester(
+    dept_staging: Path | None,
+    *,
+    module: Module,
+    ticket: DefectTicket | None,
+    directive: FixDirective | None,
+    budget_bytes: int = _MAX_TESTER_INLINE_FAILING_TEST_BYTES,
+) -> tuple[list[str], str]:
+    """返工轮采集既有测试文件清单，并优先内联失败测试源码，防止 DeptTester 盲目新建重复测试文件。"""
+    if dept_staging is None:
+        return [], ""
+    existing_tests = _discover_test_files(dept_staging, module.test_paths)
+    if not existing_tests:
+        return [], ""
+
+    explicit_targets: set[str] = set()
+    if directive is not None:
+        for raw in directive.target_files:
+            norm = raw.strip().lstrip("/")
+            if norm:
+                explicit_targets.add(norm)
+    failing_stems = _extract_failing_test_stems(ticket, directive)
+
+    def _priority(rel: str) -> tuple[int, str]:
+        if rel in explicit_targets:
+            return (0, rel)
+        if PurePosixPath(rel).stem in failing_stems:
+            return (1, rel)
+        if ticket is not None and rel in ticket.affected_paths:
+            return (2, rel)
+        return (3, rel)
+
+    ordered = sorted(existing_tests, key=_priority)
+    blocks: list[str] = []
+    remaining = budget_bytes
+    for rel in ordered:
+        prio = _priority(rel)[0]
+        # 若已有明确的失败测试命中，只内联失败测试与目标测试，不浪费 token 内联完全无关的已通过测试
+        if failing_stems and prio > 1:
+            continue
+        fp = dept_staging / rel
+        if not fp.is_file():
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        encoded = len(text.encode("utf-8"))
+        if encoded <= remaining:
+            blocks.append(f"[EXISTING FAILING TEST: /{rel}]\n{text.rstrip()}")
+            remaining -= encoded
+        else:
+            blocks.append(f"[EXISTING FAILING TEST: /{rel}]（较长，请先 read_file 再 edit_file 原地修复）")
+    return existing_tests, "\n\n".join(blocks)
 
 
 def _build_tester_prompt(
@@ -571,19 +857,77 @@ def _build_tester_prompt(
     coder_changes: FileChangeSet,
     round_num: int,
     staging_context: str = "",
+    dept_staging: Path | None = None,
+    ticket: DefectTicket | None = None,
 ) -> str:
+    is_rework = directive is not None or ticket is not None
+    changed_paths = [c.path for c in coder_changes.changes if c.action != "delete"]
+    source_paths = list(changed_paths)
+    if not source_paths and is_rework and dept_staging is not None:
+        source_paths = _discover_owned_source_files(dept_staging, module.owned_paths)
+    inlined_sources = _collect_department_source_for_tester(dept_staging, source_paths)
+    existing_tests, inlined_failing_tests = (
+        _collect_failing_tests_for_tester(
+            dept_staging,
+            module=module,
+            ticket=ticket,
+            directive=directive,
+        )
+        if is_rework
+        else ([], "")
+    )
     lines = [
         f"部门：{module.module_id}（第 {round_num} 轮测试任务）",
         f"唯一允许写入的测试路径（test_paths）：{json.dumps(module.test_paths, ensure_ascii=False)}",
-        "请针对本部门业务实现编写单元测试，并对跨模块依赖 Facade 使用 Mockito/Mock 按冻结契约隔离。",
         "严禁修改任何业务源码与底座文件。",
-        f"本轮编码变更：{json.dumps(coder_changes.to_dict(), ensure_ascii=False)}",
     ]
+    if is_rework:
+        lines.append(
+            "【返工修复红线（严禁新建重复测试文件）】你正处于返工轮！严禁新建重复测试类或在子包下另建测试文件；"
+            "必须直接对照下方失败缺陷单与既有失败测试源码，使用 `edit_file` 原地修复失败断言/Mock 后立即结束。"
+        )
+        if existing_tests:
+            lines.append(
+                f"当前已存在的测试文件（仅允许 edit_file 原地修改，严禁重复新建）："
+                f"{json.dumps(existing_tests, ensure_ascii=False)}"
+            )
+        if ticket is not None:
+            safe_excerpt = sanitize_defect_log(ticket.log_excerpt, max_bytes=MAX_DEFECT_LOG_BYTES)
+            lines.extend(
+                [
+                    "【上轮验证失败缺陷单 DefectTicket】",
+                    f"- error_class: {ticket.error_class}",
+                    f"- summary: {ticket.summary}",
+                    f"- failing_tests: {json.dumps(ticket.failing_tests, ensure_ascii=False)}",
+                    f"- failure_log:\n{safe_excerpt}",
+                ]
+            )
+        if directive is not None:
+            lines.append(f"【返工根因与定位 FixDirective.root_cause】{directive.root_cause}")
+            lines.append(
+                f"【返工目标文件与测试调整（仅局部修正失败测试，勿重写已通过测试）】"
+                f"target_files={json.dumps(directive.target_files, ensure_ascii=False)}; "
+                f"instructions={json.dumps(directive.instructions, ensure_ascii=False)}; "
+                f"test_adjustments={json.dumps(directive.test_adjustments, ensure_ascii=False)}"
+            )
+        if inlined_failing_tests:
+            lines.extend(
+                [
+                    "【当前失败测试文件源码（已内联，直接用 edit_file 原地修复，勿重复 read_file，严禁新建重复文件）】",
+                    inlined_failing_tests,
+                ]
+            )
+    else:
+        lines.append(
+            "【最小职责要求】只针对本部门核心 Service / Controller / FacadeImpl 编写 2~3 个高价值单元测试类（使用 JUnit 5 + Mockito 隔离跨模块 Facade），"
+            "严禁为简单 Entity/DTO/Enum/Mapper 拆写大量零碎测试文件；下方已内联本轮被测源码，**禁止重复 ls/glob/read_file 探查已给出源码**，直接写完测试文件立即结束。"
+        )
+    lines.append(f"本轮编码变更文件路径：{json.dumps(changed_paths, ensure_ascii=False)}")
+    if inlined_sources:
+        lines.extend(["【被测业务源码（已内联，勿重复 read_file）】", inlined_sources])
     if staging_context:
         lines.extend(["【工作区只读底座与契约上下文】", staging_context])
-    if directive is not None:
-        lines.append(f"【返工测试关注点】{json.dumps(directive.test_adjustments, ensure_ascii=False)}")
-    elif plan is not None:
+    if not is_rework and plan is not None:
         lines.append(f"【规划测试关注点】{json.dumps(plan.test_focus, ensure_ascii=False)}")
     return "\n".join(lines)
 
@@ -600,6 +944,34 @@ def _audit_engine_tools(engine: PatchEngine, *, allow_asset_tools: bool) -> froz
         )
     assert_restricted_tools(engine.agent, allow_asset_tools=allow_asset_tools)
     return frozenset(names)
+
+
+_SUREFIRE_TEST_FAILURE_RE = re.compile(
+    r"(?:<<<\s*(?:FAILURE|ERROR)!|There are test failures|Failed tests:|Tests in error:|"
+    r"Tests run:\s*\d+,\s*Failures:\s*[1-9]|Tests run:\s*\d+,\s*Failures:\s*\d+,\s*Errors:\s*[1-9]|"
+    r"\bFAIL\s+\S+\.(?:spec|test)\.[tj]sx?)"
+)
+_COMPILATION_ERROR_RE = re.compile(r"(COMPILATION ERROR|error TS\d+:|cannot find symbol)")
+_FAILING_TEST_LINE_RE = re.compile(
+    r"(?:([A-Za-z0-9_$.]+(?:Test|Tests)(?:\.[A-Za-z0-9_$]+)?)|"
+    r"([A-Za-z0-9_$]+\([A-Za-z0-9_$.]+(?:Test|Tests)\)))"
+    r"\s*(?:--\s*)?(?:Time elapsed:.*)?<<<\s*(?:FAILURE|ERROR)!"
+)
+
+
+def _extract_failing_tests(log_text: str) -> list[str]:
+    found: list[str] = []
+    for match in _FAILING_TEST_LINE_RE.finditer(log_text):
+        name = (match.group(1) or match.group(2) or "").strip()
+        if name and name not in found:
+            found.append(name)
+    return found[:20]
+
+
+def _is_unit_test_failure(log_text: str) -> bool:
+    if not log_text or _COMPILATION_ERROR_RE.search(log_text):
+        return False
+    return _SUREFIRE_TEST_FAILURE_RE.search(log_text) is not None
 
 
 class DepartmentRunner:
@@ -650,7 +1022,11 @@ class DepartmentRunner:
         dept_id: str,
         round_num: int,
         prompt: str,
+        abort_check: Callable[[], None] | None = None,
     ) -> str:
+        if abort_check is not None:
+            abort_check()
+        self._state_store.raise_if_cancelled(run_id, boundary=f"dept:{dept_id}:lead:r{round_num}")
         route: Route = resolve_route(self._lead_role)
         client = (
             self._lead_client
@@ -716,6 +1092,7 @@ class DepartmentRunner:
         dept_id: str,
         round_num: int,
         coder_fb: CoderFileBackend,
+        abort_check: Callable[[], None] | None = None,
     ) -> PatchEngine:
         active_role = self._coder_role
         if (
@@ -733,6 +1110,7 @@ class DepartmentRunner:
             dept_id=dept_id,
             phase=phase.value,
             round_num=round_num,
+            abort_check=abort_check,
         )
         model = (
             self._coder_model_factory(binding, round_num)
@@ -763,6 +1141,7 @@ class DepartmentRunner:
         dept_id: str,
         round_num: int,
         tester_fb: TesterFileBackend,
+        abort_check: Callable[[], None] | None = None,
     ) -> PatchEngine:
         binding = LedgerBinding(
             session_factory=self._session_factory,
@@ -773,6 +1152,7 @@ class DepartmentRunner:
             dept_id=dept_id,
             phase=phase.value,
             round_num=round_num,
+            abort_check=abort_check,
         )
         model = (
             self._tester_model_factory(binding, round_num)
@@ -801,6 +1181,7 @@ class DepartmentRunner:
         test_selector: str,
         test_files: list[str],
         verification: ModuleVerificationResult | None,
+        dept_staging: Path | None = None,
     ) -> tuple[TestEvidence, DefectTicket | None]:
         if verification is None:
             evidence = TestEvidence(
@@ -834,6 +1215,18 @@ class DepartmentRunner:
             return evidence, ticket
 
         executed = verification.status != "NOT_RUN" and verification.exit_code is not None
+        raw_log = verification.log_excerpt or verification.detail or ""
+        passed_check = bool(executed and verification.status == "PASS" and verification.exit_code == 0)
+        if (
+            not passed_check
+            and stack == "java"
+            and dept_staging is not None
+            and "[surefire-failures]" not in raw_log
+        ):
+            surefire = extract_surefire_failure_summary(dept_staging)
+            if surefire:
+                raw_log = f"{surefire}\n\n[maven-summary]\n{raw_log}" if raw_log else surefire
+
         evidence = TestEvidence(
             dept_id=dept_id,
             phase=phase.value,
@@ -848,17 +1241,25 @@ class DepartmentRunner:
             command=list(verification.command),
             test_files=test_files,
             error_code=verification.error_code,
-            log_excerpt=verification.log_excerpt or verification.detail or "",
+            log_excerpt=raw_log,
         )
         if evidence.passed:
             return evidence, None
 
-        error_class = verification.error_code or (
-            "TEST_NOT_EXECUTED" if not executed else "UNIT_TEST_FAILURE"
-        )
+        extracted_failures = _extract_failing_tests(raw_log)
+        if not executed:
+            error_class = verification.error_code or "TEST_NOT_EXECUTED"
+        elif _is_unit_test_failure(raw_log):
+            error_class = "UNIT_TEST_FAILURE"
+        else:
+            error_class = verification.error_code or "UNIT_TEST_FAILURE"
         summary = (
             verification.detail
-            or f"单模块验证未通过（status={verification.status}, exit_code={verification.exit_code}）"
+            or (
+                f"单模块单测失败（{', '.join(extracted_failures[:3])}）"
+                if extracted_failures
+                else f"单模块验证未通过（status={verification.status}, exit_code={verification.exit_code}）"
+            )
         )
         ticket = DefectTicket(
             ticket_id=f"ticket-{run_id}-{dept_id}-r{round_num}",
@@ -869,9 +1270,9 @@ class DepartmentRunner:
             round=round_num,
             error_class=error_class,
             summary=summary,
-            failing_tests=[test_selector] if test_selector else [],
+            failing_tests=extracted_failures or ([test_selector] if test_selector else []),
             affected_paths=list(test_files),
-            log_excerpt=verification.log_excerpt or summary,
+            log_excerpt=raw_log or summary,
             verifier_kind=verification.verifier_kind,
             exit_code=verification.exit_code,
         )
@@ -890,6 +1291,7 @@ class DepartmentRunner:
         max_rounds: int = DEFAULT_DEPT_MAX_ROUNDS,
         initial_ticket: DefectTicket | None = None,
         test_selector: str | None = None,
+        abort_check: Callable[[], None] | None = None,
     ) -> DepartmentDeliverable:
         """执行单个部门的完整最小职责小循环（最多 ``max_rounds`` 轮）。"""
         resolved_phase = FactoryPhase(phase)
@@ -937,6 +1339,8 @@ class DepartmentRunner:
         try:
             for round_num in range(1, max_rounds + 1):
                 rounds_used = round_num
+                if abort_check is not None:
+                    abort_check()
                 self._state_store.raise_if_cancelled(
                     run_id, boundary=f"dept:{dept_id}:round_{round_num}:start"
                 )
@@ -966,6 +1370,7 @@ class DepartmentRunner:
                         dept_id=dept_id,
                         round_num=round_num,
                         prompt=lead_prompt,
+                        abort_check=abort_check,
                     )
                     try:
                         payload = _extract_json_object(lead_raw)
@@ -993,6 +1398,7 @@ class DepartmentRunner:
                         dept_id=dept_id,
                         round_num=round_num,
                         prompt=lead_prompt,
+                        abort_check=abort_check,
                     )
                     try:
                         payload = _extract_json_object(lead_raw)
@@ -1009,50 +1415,63 @@ class DepartmentRunner:
                             status_code=422,
                         ) from exc
 
-                # 2. CODING：DeptCoder 仅写 owned_paths 与 api-fragment.json（启动前强制审计工具表）
-                self._state_store.transition_department(
-                    run_id,
-                    resolved_phase,
-                    dept_id,
-                    DeptStatus.CODING,
-                    current_round=round_num,
-                )
                 staging_context = _collect_staging_context(
                     dept_staging,
                     module=module,
                     blueprint=blueprint,
                     phase=resolved_phase,
                 )
-                dept_recursion_limit = factory_agent_recursion_limit()
-                coder_engine = self._build_coder_engine(
-                    project_id=project_id,
-                    run_id=run_id,
-                    phase=resolved_phase,
-                    dept_id=dept_id,
-                    round_num=round_num,
-                    coder_fb=coder_fb,
-                )
-                coder_prompt = _build_coder_prompt(
-                    module=module,
-                    plan=plan,
-                    directive=current_directive,
-                    round_num=round_num,
-                    staging_context=staging_context,
-                )
-                coder_engine.run(coder_prompt, recursion_limit=dept_recursion_limit)
-                coder_cs = coder_fb.commit()
-                all_coder_changes.extend(coder_cs.to_dict()["changes"])
+                coder_recursion_limit = factory_agent_recursion_limit("coder")
+                tester_recursion_limit = factory_agent_recursion_limit("tester")
 
-                if base_manifest is not None:
-                    assert_base_integrity(dept_staging, base_manifest)
+                # 2. CODING：仅当需要修改业务源码时启动 DeptCoder；若返工仅涉及 test_paths 则跳过直达 TESTING
+                skip_coder = _is_test_only_directive(current_directive, module, pending_ticket)
+                if skip_coder:
+                    coder_cs = FileChangeSet(changes=())
+                else:
+                    if abort_check is not None:
+                        abort_check()
+                    self._state_store.transition_department(
+                        run_id,
+                        resolved_phase,
+                        dept_id,
+                        DeptStatus.CODING,
+                        current_round=round_num,
+                    )
+                    coder_engine = self._build_coder_engine(
+                        project_id=project_id,
+                        run_id=run_id,
+                        phase=resolved_phase,
+                        dept_id=dept_id,
+                        round_num=round_num,
+                        coder_fb=coder_fb,
+                        abort_check=abort_check,
+                    )
+                    coder_prompt = _build_coder_prompt(
+                        module=module,
+                        blueprint=blueprint,
+                        plan=plan,
+                        directive=current_directive,
+                        round_num=round_num,
+                        staging_context=staging_context,
+                    )
+                    coder_engine.run(coder_prompt, recursion_limit=coder_recursion_limit)
+                    coder_cs = coder_fb.commit()
+                    all_coder_changes.extend(coder_cs.to_dict()["changes"])
+
+                    if base_manifest is not None:
+                        assert_base_integrity(dept_staging, base_manifest)
 
                 # 3. TESTING：DeptTester 仅写 test_paths + 真跑 ModuleVerifier
+                if abort_check is not None:
+                    abort_check()
                 self._state_store.transition_department(
                     run_id,
                     resolved_phase,
                     dept_id,
                     DeptStatus.TESTING,
                     current_round=round_num,
+                    reason="test_only_rework_skip_coder" if skip_coder else None,
                 )
                 tester_engine = self._build_tester_engine(
                     project_id=project_id,
@@ -1061,6 +1480,7 @@ class DepartmentRunner:
                     dept_id=dept_id,
                     round_num=round_num,
                     tester_fb=tester_fb,
+                    abort_check=abort_check,
                 )
                 tester_prompt = _build_tester_prompt(
                     module=module,
@@ -1069,8 +1489,10 @@ class DepartmentRunner:
                     coder_changes=coder_cs,
                     round_num=round_num,
                     staging_context=staging_context,
+                    dept_staging=dept_staging,
+                    ticket=pending_ticket,
                 )
-                tester_engine.run(tester_prompt, recursion_limit=dept_recursion_limit)
+                tester_engine.run(tester_prompt, recursion_limit=tester_recursion_limit)
                 tester_cs = tester_fb.commit()
                 all_tester_changes.extend(tester_cs.to_dict()["changes"])
 
@@ -1099,6 +1521,7 @@ class DepartmentRunner:
                     test_selector=selector,
                     test_files=test_files,
                     verification=verification,
+                    dept_staging=dept_staging,
                 )
                 last_evidence = evidence
 

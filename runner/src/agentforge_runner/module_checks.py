@@ -18,7 +18,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agentforge_runner.checks import classify_failure, redact, truncate
+from agentforge_runner.checks import (
+    classify_failure,
+    format_java_failure_excerpt,
+    redact,
+    truncate,
+)
 from agentforge_runner.config import RunnerConfig
 from agentforge_runner.container import (
     TIMEOUT_EXIT_CODE,
@@ -139,6 +144,8 @@ def build_module_tasks(
                     "mvn",
                     "-B",
                     "-o",
+                    "-Dstyle.color=never",
+                    "-Djansi.mode=strip",
                     "-Dmaven.repo.local=/opt/agentforge/maven-cache",
                     "test",
                     f"-Dtest={clean_selector}",
@@ -213,6 +220,11 @@ def run_module_verification(
                 "NOT_RUN" if error_code == "INFRASTRUCTURE" else "FAIL"
             )
             detail = "单模块快检超时并已清理容器" if exit_code == TIMEOUT_EXIT_CODE else None
+            log_excerpt = (
+                format_java_failure_excerpt(host_dir, combined)
+                if request.stack == "java" and error_code != "INFRASTRUCTURE"
+                else truncate(redact(combined))
+            )
             return ModuleVerificationResult(
                 artifact_dir=request.artifact_dir,
                 module_id=request.module_id,
@@ -224,7 +236,7 @@ def run_module_verification(
                 duration_ms=int((time.monotonic() - started) * 1000),
                 command=executed_cmd,
                 detail=detail,
-                log_excerpt=truncate(redact(combined)),
+                log_excerpt=log_excerpt,
             )
 
     combined = "\n".join(logs)

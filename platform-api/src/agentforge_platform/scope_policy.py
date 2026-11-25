@@ -71,11 +71,39 @@ _HIGH_RISK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
+_PROD_PAYMENT_PHRASE_RE = re.compile(
+    r"(真实扣款|真实资金扣款|生产商户私钥|真实微信商户密钥|真实支付宝私钥)",
+    re.IGNORECASE,
+)
+
+_PROD_PAYMENT_SECRET_RE = re.compile(
+    r"(sk_live_[A-Za-z0-9]{8,}|rk_live_[A-Za-z0-9]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)",
+    re.IGNORECASE,
+)
+
 _PROD_PAYMENT_FORBIDDEN_RE = re.compile(
     r"(真实扣款|真实资金扣款|生产商户私钥|真实微信商户密钥|真实支付宝私钥|"
     r"sk_live_[A-Za-z0-9]{8,}|rk_live_[A-Za-z0-9]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)",
     re.IGNORECASE,
 )
+
+_NEGATION_PREFIX_RE = re.compile(
+    r"(?:严禁|禁止|不得|不允许|不支持|不做|不要|不接入|无需|避免|切勿|杜绝|不进行|非|无)[^，。；;\n!！]{0,16}$"
+)
+
+
+def _find_unnegated_prod_payment_match(corpus: str) -> re.Match[str] | None:
+    """检测真实生产支付要求或私钥片段；对合规否定声明（如“严禁真实扣款”）不误拦截。"""
+    secret_match = _PROD_PAYMENT_SECRET_RE.search(corpus)
+    if secret_match is not None:
+        return secret_match
+    for match in _PROD_PAYMENT_PHRASE_RE.finditer(corpus):
+        start = max(0, match.start() - 24)
+        prefix = corpus[start : match.start()]
+        if _NEGATION_PREFIX_RE.search(prefix):
+            continue
+        return match
+    return None
 
 
 def factory_max_modules() -> int:
@@ -225,7 +253,7 @@ def _security_and_boundary_issues(spec: SoftwareSpecification) -> list[str]:
         if match:
             issues.append(f"安全与架构边界拦截：不支持高危超边界需求「{label}」（命中：{match.group(0)!r}）")
 
-    prod_match = _PROD_PAYMENT_FORBIDDEN_RE.search(corpus)
+    prod_match = _find_unnegated_prod_payment_match(corpus)
     if prod_match:
         issues.append(
             f"安全红线拦截：严禁在规格中要求真实生产支付扣款或传入生产商户私钥（命中：{prod_match.group(0)!r}），"

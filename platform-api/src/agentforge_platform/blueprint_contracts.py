@@ -636,8 +636,8 @@ def fix_directive_contract() -> str:
             "",
             "取值与用法：",
             "  - root_cause【必填】+ target_files【必填】+ instructions【必填】：必须给出可执行的最小修复范围。",
-            "  - do_not_touch：明确列出返工中禁止改动的文件（测试文件、生成的类型、他部门目录）。",
-            "  - round 必须等于给定的返工轮次；不得改写测试断言来绕过缺陷。",
+            "  - do_not_touch：明确列出返工中禁止改动的文件（如只读底座、生成的类型、他部门目录；修业务源码时列测试文件，纯修测试 Mock/语法错误时列业务源码）。",
+            "  - round 必须等于给定的返工轮次；严禁为绕过真实业务缺陷而放宽或删除测试断言（仅当确认根因在测试代码本身的 Mock/Captor/异常断言写法错误时，才将 target_files 限定在 test_paths 由 DeptTester 原地修复）。",
         ]
     )
     return "\n".join(lines)
@@ -687,6 +687,15 @@ def blueprint_prompt_contract() -> str:
             ),
             "  - 依赖对称性：模块 A 在 readable_contract_refs 中引用模块 B 的契约时，A.depends_on_modules 必须包含 B；凡在 depends_on_modules 中声明依赖的模块 B，B 必须在 frozen_contracts 中拥有至少一条契约；整个依赖图必须无环。",
             "  - 前端蓝图约束：owned_paths 必须全部位于 frontend/src/modules/<module_id>/ 下；test_paths 位于 frontend/test/<module_id>/ 下；covered_pages 必须覆盖规格中全部页面名称。",
+            (
+                "  - covered_entities / covered_pages / covered_acceptance_ids 三个字段都是“模块 id → 字符串数组”的映射："
+                "键必须逐字取自 modules[].module_id（小写 id，如 \"clubs\"），严禁用实体名、页面名或中文名作键；"
+                "值分别是该模块覆盖的实体名、页面名、验收用例 id。"
+            ),
+            (
+                "  - 输出体积控制：description/summary 等说明性文本每条不超过 40 个字符，严禁复述规格原文或附加解释，"
+                "整份 JSON 必须一次输出完整且可解析。"
+            ),
         ]
     )
     return "\n".join(lines)

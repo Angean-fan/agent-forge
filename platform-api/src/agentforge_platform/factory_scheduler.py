@@ -81,11 +81,20 @@ CONCURRENT_DEPTS_ENV = "AGENTFORGE_FACTORY_MAX_CONCURRENT_DEPTS"
 CONCURRENT_VERIFIERS_ENV = "AGENTFORGE_FACTORY_MAX_CONCURRENT_VERIFIERS"
 MAX_DEPT_ROUNDS_ENV = "AGENTFORGE_FACTORY_MAX_DEPT_ROUNDS"
 ROUND3_ESCALATION_ROLE_ENV = "AGENTFORGE_FACTORY_ROUND3_ESCALATION_ROLE"
+FAIL_FAST_ENV = "AGENTFORGE_FACTORY_FAIL_FAST"
 
 DEFAULT_MAX_CONCURRENT_DEPTS = 3
 DEFAULT_MAX_CONCURRENT_VERIFIERS = 2
 DEFAULT_MAX_DEPT_ROUNDS = 3
 DEFAULT_MAX_CONTRACT_CHANGES_PER_RUN = 2
+
+
+def factory_fail_fast(*, default: bool = False) -> bool:
+    """是否开启同阶段单部门失败即早停（Fail-Fast），避免其余部门继续白烧 Token。"""
+    raw = os.environ.get(FAIL_FAST_ENV, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -432,6 +441,7 @@ class AsyncDepartmentPool:
         max_rounds: int | None = None,
         max_contract_changes: int = DEFAULT_MAX_CONTRACT_CHANGES_PER_RUN,
         escalated_round3_role: str | None = None,
+        fail_fast: bool | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._verifier = verifier
@@ -457,6 +467,7 @@ class AsyncDepartmentPool:
             if escalated_round3_role is not None
             else round3_escalation_role()
         )
+        self._fail_fast = factory_fail_fast(default=False) if fail_fast is None else bool(fail_fast)
 
     def _compute_affected_depts(
         self,
@@ -517,6 +528,20 @@ class AsyncDepartmentPool:
             started = time.monotonic()
             executed_depts.append(dept_id)
             initial_ticket = tickets_map.pop(dept_id, None)
+            def _abort_check() -> None:
+                if stop_event.is_set():
+                    reason = stop_status.get("error_code") or "POOL_STOPPED"
+                    if stop_status.get("status") == "PAUSED_BUDGET":
+                        code = (
+                            ErrorCode.CALL_LIMIT_EXCEEDED
+                            if reason == ErrorCode.CALL_LIMIT_EXCEEDED.value
+                            else ErrorCode.BUDGET_EXCEEDED
+                        )
+                        raise AppException(code, f"调度池已触发预算/配额早停：{reason}", status_code=429)
+                    raise FactoryCancelledError(f"run {run_id} stopped at pool_stop:{dept_id}:{reason}")
+                if self._state_store.is_cancel_requested(run_id):
+                    raise FactoryCancelledError(f"run {run_id} cancelled at dept:{dept_id}:cancel_check")
+
             try:
                 if self._dept_executor is not None:
                     maybe = self._dept_executor(
@@ -550,6 +575,7 @@ class AsyncDepartmentPool:
                         phase=resolved_phase,
                         max_rounds=self._max_rounds,
                         initial_ticket=initial_ticket,
+                        abort_check=_abort_check,
                     )
 
                 assert isinstance(result, DepartmentDeliverable)
@@ -563,8 +589,14 @@ class AsyncDepartmentPool:
                     error_code=result.error_code,
                 )
                 if result.status == "CANCELLED":
-                    stop_status["status"] = "CANCELLED"
-                    stop_status["error_code"] = "RUN_CANCELLED"
+                    if stop_status["status"] is None:
+                        stop_status["status"] = "CANCELLED"
+                        stop_status["error_code"] = "RUN_CANCELLED"
+                    stop_event.set()
+                elif result.status == "FAILED" and self._fail_fast:
+                    if stop_status["status"] is None:
+                        stop_status["status"] = "FAIL_FAST"
+                        stop_status["error_code"] = result.error_code or "DEPT_FAILED"
                     stop_event.set()
             except ContractChangeEscalation as esc:
                 with escalations_lock:
@@ -577,27 +609,28 @@ class AsyncDepartmentPool:
                     error_code="CONTRACT_CHANGE_REQUESTED",
                 )
             except FactoryCancelledError:
-                stop_status["status"] = "CANCELLED"
-                stop_status["error_code"] = "RUN_CANCELLED"
+                if stop_status["status"] is None:
+                    stop_status["status"] = "CANCELLED"
+                    stop_status["error_code"] = "RUN_CANCELLED"
                 stop_event.set()
                 telemetry[dept_id] = DepartmentTelemetry(
                     dept_id=dept_id,
                     started_at_monotonic=started,
                     finished_at_monotonic=time.monotonic(),
                     status="CANCELLED",
-                    error_code="RUN_CANCELLED",
+                    error_code=stop_status["error_code"] or "RUN_CANCELLED",
                 )
             except AppException as exc:
-                if exc.code == ErrorCode.BUDGET_EXCEEDED:
+                if exc.code in {ErrorCode.BUDGET_EXCEEDED, ErrorCode.CALL_LIMIT_EXCEEDED}:
                     stop_status["status"] = "PAUSED_BUDGET"
-                    stop_status["error_code"] = ErrorCode.BUDGET_EXCEEDED.value
+                    stop_status["error_code"] = exc.code.value
                     stop_event.set()
                     telemetry[dept_id] = DepartmentTelemetry(
                         dept_id=dept_id,
                         started_at_monotonic=started,
                         finished_at_monotonic=time.monotonic(),
                         status="PAUSED_BUDGET",
-                        error_code=ErrorCode.BUDGET_EXCEEDED.value,
+                        error_code=exc.code.value,
                     )
                 else:
                     dept_row = self._state_store.get_department(run_id, resolved_phase, dept_id)
@@ -630,6 +663,11 @@ class AsyncDepartmentPool:
                         status="FAILED",
                         error_code=exc.code.value,
                     )
+                    if self._fail_fast:
+                        if stop_status["status"] is None:
+                            stop_status["status"] = "FAIL_FAST"
+                            stop_status["error_code"] = exc.code.value
+                        stop_event.set()
             except Exception as exc:  # noqa: BLE001  # 单部门未预期异常严格隔离，绝不拖垮其他部门
                 err_code = type(exc).__name__
                 dept_row = self._state_store.get_department(run_id, resolved_phase, dept_id)
@@ -662,6 +700,11 @@ class AsyncDepartmentPool:
                     status="FAILED",
                     error_code=err_code,
                 )
+                if self._fail_fast:
+                    if stop_status["status"] is None:
+                        stop_status["status"] = "FAIL_FAST"
+                        stop_status["error_code"] = err_code
+                    stop_event.set()
             finally:
                 _cleanup_dirty_staging(run_root, resolved_phase, dept_id)
                 tracker.exit_llm()
@@ -835,8 +878,15 @@ class AsyncDepartmentPool:
                     contract_changes_applied=contract_changes_applied,
                     max_observed_llm_concurrency=tracker.max_llm,
                     max_observed_verifier_concurrency=tracker.max_verifier,
-                    error_code=ErrorCode.BUDGET_EXCEEDED.value,
+                    error_code=stop_status["error_code"] or ErrorCode.BUDGET_EXCEEDED.value,
                 )
+
+            if stop_status["status"] == "FAIL_FAST":
+                # Fail-Fast 早停：将尚未完成的其余部门标为 CANCELLED，保留已失败部门与已通过部门状态
+                self._state_store.cancel_incomplete_departments(
+                    run_id, resolved_phase, reason="pool_fail_fast"
+                )
+                break
 
             # 2. 若无契约变更升级请求，本阶段调度结束
             if not escalations:

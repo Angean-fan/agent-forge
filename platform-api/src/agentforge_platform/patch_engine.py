@@ -270,6 +270,98 @@ class LedgerBinding:
     dept_id: str | None = None
     phase: str | None = None
     round_num: int | None = None
+    abort_check: Callable[[], None] | None = None
+
+
+_COMPACT_KEEP_RECENT = 6
+_COMPACT_TOOL_ARG_LIMIT = 300
+_COMPACT_TOOL_MSG_LIMIT = 600
+
+
+def compact_messages_for_llm(
+    messages: list[Any],
+    *,
+    keep_recent: int = _COMPACT_KEEP_RECENT,
+) -> list[Any]:
+    """对发往模型的历史消息做只读浅拷贝压缩，消除多轮 write_file/read_file 导致的 O(N^2) Token 膨胀。
+
+    保留：
+    - 头部关键消息（SystemMessage + 初始任务 HumanMessage，索引 0..1）；
+    - 最近 ``keep_recent`` 条完整消息；
+    仅压缩更早历史中已落盘的超长 write_file/edit_file 入参与冗长 ToolMessage 返回值。
+    """
+    if os.environ.get("AGENTFORGE_DISABLE_CONTEXT_COMPACTION", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return messages
+    total = len(messages)
+    if total <= keep_recent + 2:
+        return messages
+
+    cutoff = total - keep_recent
+    compacted: list[Any] = []
+    for idx, msg in enumerate(messages):
+        if idx < 2 or idx >= cutoff:
+            compacted.append(msg)
+            continue
+
+        msg_type = getattr(msg, "type", "")
+        if msg_type == "ai":
+            tool_calls = getattr(msg, "tool_calls", None)
+            if isinstance(tool_calls, list) and tool_calls:
+                changed = False
+                new_calls: list[dict[str, Any]] = []
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        new_calls.append(tc)
+                        continue
+                    name = tc.get("name")
+                    args = tc.get("args")
+                    if name == "write_file" and isinstance(args, dict):
+                        raw = args.get("content")
+                        if isinstance(raw, str) and len(raw) > _COMPACT_TOOL_ARG_LIMIT:
+                            fpath = args.get("file_path") or args.get("path") or ""
+                            new_args = dict(args)
+                            new_args["content"] = (
+                                f"[compacted: already written to {fpath} ({len(raw)} chars); "
+                                "call read_file if needed]"
+                            )
+                            new_calls.append({**tc, "args": new_args})
+                            changed = True
+                            continue
+                    elif name == "edit_file" and isinstance(args, dict):
+                        new_args = dict(args)
+                        sub_changed = False
+                        for key in ("old_string", "new_string"):
+                            val = new_args.get(key)
+                            if isinstance(val, str) and len(val) > _COMPACT_TOOL_ARG_LIMIT:
+                                new_args[key] = f"[compacted edit {key}: {len(val)} chars]"
+                                sub_changed = True
+                        if sub_changed:
+                            new_calls.append({**tc, "args": new_args})
+                            changed = True
+                            continue
+                    new_calls.append(tc)
+                if changed and hasattr(msg, "model_copy"):
+                    compacted.append(msg.model_copy(update={"tool_calls": new_calls}))
+                    continue
+            compacted.append(msg)
+            continue
+
+        if msg_type == "tool":
+            content = getattr(msg, "content", None)
+            if isinstance(content, str) and len(content) > _COMPACT_TOOL_MSG_LIMIT:
+                summary = (
+                    f"{content[:240]}\n...[compacted earlier tool output: {len(content)} chars]...\n"
+                    f"{content[-160:]}"
+                )
+                if hasattr(msg, "model_copy"):
+                    compacted.append(msg.model_copy(update={"content": summary}))
+                    continue
+        compacted.append(msg)
+    return compacted
 
 
 def _usage_from_chat_result(result: Any) -> Usage | None:
@@ -347,11 +439,28 @@ class LedgerChatModel(ChatOpenAI):
         with session_scope(binding.session_factory) as db:
             model_gateway.settle(db, call_id, usage=usage, error_class=error_class)
 
+    def _check_abort(self) -> None:
+        binding = self._binding
+        if binding.abort_check is not None:
+            binding.abort_check()
+        if binding.run_id is not None and (binding.dept_id is not None or binding.phase is not None):
+            from agentforge_platform.factory_state import FactoryCancelledError
+            from agentforge_platform.models import Run
+
+            with session_scope(binding.session_factory) as db:
+                row = db.get(Run, binding.run_id)
+                if row is not None and bool(row.cancel_requested):
+                    raise FactoryCancelledError(
+                        f"run {binding.run_id} cancelled at llm:{binding.task_id}"
+                    )
+
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
+        self._check_abort()
         call_id = uuid.uuid4().hex
         self._reserve(call_id)
+        effective_messages = compact_messages_for_llm(list(messages))
         try:
-            result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            result = super()._generate(effective_messages, stop=stop, run_manager=run_manager, **kwargs)
         except Exception as exc:  # 失败保留 UNKNOWN 预留供对账
             self._settle(call_id, usage=None, error_class=type(exc).__name__)
             raise
@@ -359,10 +468,14 @@ class LedgerChatModel(ChatOpenAI):
         return result
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[override]
+        self._check_abort()
         call_id = uuid.uuid4().hex
         self._reserve(call_id)
+        effective_messages = compact_messages_for_llm(list(messages))
         try:
-            result = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            result = await super()._agenerate(
+                effective_messages, stop=stop, run_manager=run_manager, **kwargs
+            )
         except Exception as exc:  # 失败保留 UNKNOWN 预留供对账
             self._settle(call_id, usage=None, error_class=type(exc).__name__)
             raise

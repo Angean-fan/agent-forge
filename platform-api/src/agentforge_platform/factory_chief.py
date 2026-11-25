@@ -339,6 +339,10 @@ class ChiefArchitect:
                 prompt=prompt,
                 json_mode=True,
                 max_output_tokens=max_out,
+                # 蓝图是一份体积固定的结构化 JSON：思考模式的 reasoning_content 同样计入
+                # max_tokens，会把 JSON 截断（实测 deepseek-flash 8K/16K 均被截断，
+                # 报 "Unterminated string"）。蓝图调用关闭思考，把额度全留给 JSON。
+                thinking_mode="disabled",
             )
         except ProviderPreflightError as exc:
             self._ledger.release_atomic(call_id, reason="ProviderPreflightError")

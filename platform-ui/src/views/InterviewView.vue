@@ -9,6 +9,7 @@ import { ElMessage } from 'element-plus';
 import { interviewApi } from '@/api/client';
 import type { InterviewAnswer, InterviewView as InterviewViewData } from '@/api/types';
 import SafeText from '@/components/SafeText.vue';
+import { setActiveHeaderContext } from '@/stores/workspace';
 import { describeError } from '@/utils/errors';
 
 const props = defineProps<{ id: string }>();
@@ -48,7 +49,6 @@ const statusType = computed<'info' | 'success' | 'warning'>(() => {
 });
 
 function ensureDrafts(data: InterviewViewData): void {
-  // 只补新题目的空答案，保留用户已填内容（网络中断不丢已确认答案）。
   for (const question of data.questions) {
     if (!drafts[question.question_id]) {
       drafts[question.question_id] = { selected: [], custom: '', unsure: false };
@@ -59,6 +59,11 @@ function ensureDrafts(data: InterviewViewData): void {
 function applyView(data: InterviewViewData): void {
   view.value = data;
   ensureDrafts(data);
+  setActiveHeaderContext({
+    projectId: projectId.value,
+    stageLabel: `需求访谈 · 第 ${data.round} 轮`,
+    stageTone: data.status === 'READY_TO_CONFIRM' ? 'ok' : 'accent',
+  });
 }
 
 async function load(): Promise<void> {
@@ -116,7 +121,6 @@ async function submit(): Promise<void> {
   submitting.value = true;
   errorMessage.value = '';
   try {
-    // 提交成功后草稿不清空：过期提示由后端 issues 给出，用户据此重答。
     applyView(await interviewApi.submit(projectId.value, buildAnswers()));
     ElMessage.success('已提交本轮回答');
   } catch (error) {
@@ -138,13 +142,14 @@ watch(() => props.id, load, { immediate: true });
 </script>
 
 <template>
-  <section v-loading="loading">
+  <div class="iv-scroll af-scroll">
+  <section v-loading="loading" class="iv-stage">
     <div class="detail-head">
       <div>
         <h1 class="page-title">需求访谈</h1>
         <p class="page-subtitle">用业务语言回答几个问题，帮助平台理解你的需求。每轮最多 3 题。</p>
       </div>
-      <el-button @click="gotoProject">返回项目</el-button>
+      <el-button size="small" @click="gotoProject">返回项目</el-button>
     </div>
 
     <el-alert
@@ -156,7 +161,7 @@ watch(() => props.id, load, { immediate: true });
       class="block-gap"
     />
 
-    <el-card v-if="view" class="block-gap">
+    <div v-if="view" class="iv-card block-gap">
       <div class="meta">
         <el-tag size="small" type="info" disable-transitions>第 {{ view.round }} 轮</el-tag>
         <el-tag size="small" :type="statusType" disable-transitions>{{ statusLabel }}</el-tag>
@@ -196,7 +201,7 @@ watch(() => props.id, load, { immediate: true });
         class="question-card"
         :data-testid="`question-${question.question_id}`"
       >
-        <SafeText :text="question.prompt" />
+        <SafeText :text="question.prompt" class="q-title" />
         <div class="options">
           <template v-if="question.type === 'single_choice'">
             <label v-for="option in question.options" :key="option" class="option">
@@ -213,35 +218,35 @@ watch(() => props.id, load, { immediate: true });
           <template v-else-if="question.type === 'multi_choice'">
             <label v-for="option in question.options" :key="option" class="option">
               <input
+                v-model="drafts[question.question_id].selected"
                 type="checkbox"
                 :value="option"
                 :data-testid="`option-${question.question_id}-${option}`"
-                v-model="drafts[question.question_id].selected"
               />
               <span>{{ option }}</span>
             </label>
           </template>
           <input
             v-else
+            v-model="drafts[question.question_id].custom"
             type="text"
             class="text-answer"
-            v-model="drafts[question.question_id].custom"
             :data-testid="`text-${question.question_id}`"
             placeholder="请输入你的回答"
           />
         </div>
         <input
           v-if="question.allow_custom && question.type !== 'text'"
+          v-model="drafts[question.question_id].custom"
           type="text"
           class="custom-answer"
-          v-model="drafts[question.question_id].custom"
           :data-testid="`custom-${question.question_id}`"
           placeholder="其他（可选）"
         />
         <label class="option unsure">
           <input
-            type="checkbox"
             v-model="drafts[question.question_id].unsure"
+            type="checkbox"
             :data-testid="`unsure-${question.question_id}`"
           />
           <span>不确定</span>
@@ -252,6 +257,7 @@ watch(() => props.id, load, { immediate: true });
         <el-button
           v-if="view.status === 'NEW'"
           type="primary"
+          size="small"
           :loading="submitting"
           @click="start"
         >
@@ -260,6 +266,7 @@ watch(() => props.id, load, { immediate: true });
         <el-button
           v-else-if="view.waiting"
           type="primary"
+          size="small"
           :loading="submitting"
           data-testid="submit-answers"
           @click="submit"
@@ -295,16 +302,28 @@ watch(() => props.id, load, { immediate: true });
         <el-button
           v-if="view.status === 'READY_TO_CONFIRM'"
           type="primary"
+          size="small"
           @click="gotoProject"
         >
           前往规格确认
         </el-button>
       </div>
-    </el-card>
+    </div>
   </section>
+  </div>
 </template>
 
 <style scoped>
+.iv-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 22px;
+}
+.iv-stage {
+  max-width: 780px;
+  margin: 0 auto;
+}
 .detail-head {
   display: flex;
   align-items: flex-start;
@@ -312,7 +331,13 @@ watch(() => props.id, load, { immediate: true });
   gap: 16px;
 }
 .block-gap {
-  margin-top: 16px;
+  margin-top: 14px;
+}
+.iv-card {
+  border-radius: 12px;
+  border: 1px solid var(--af-border-strong);
+  background: var(--af-surface);
+  padding: 16px;
 }
 .meta {
   display: flex;
@@ -321,52 +346,69 @@ watch(() => props.id, load, { immediate: true });
   flex-wrap: wrap;
 }
 .pending-note {
-  color: #909399;
-  font-size: 13px;
+  color: var(--af-muted);
+  font-size: 12px;
 }
 .round-note {
   margin-top: 4px;
-  color: #606266;
-  font-size: 13px;
+  color: var(--af-fg-secondary);
+  font-size: 12.5px;
 }
 .bullet-list {
   margin: 8px 0 0;
   padding-left: 20px;
 }
 .question-card {
-  margin-top: 16px;
-  padding: 12px 16px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 6px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--af-border);
+  background: var(--af-surface-2);
+  border-radius: 9px;
+}
+.q-title {
+  font-size: 13px;
+  font-weight: 500;
 }
 .options {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 .option {
   display: flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--af-border);
+  background: var(--af-surface);
+  font-size: 12.5px;
 }
 .unsure {
   margin-top: 8px;
-  color: #909399;
+  background: transparent;
+  border-color: transparent;
+  padding: 2px 0;
+  color: var(--af-muted);
 }
 .text-answer,
 .custom-answer {
   margin-top: 8px;
-  padding: 6px 10px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 4px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--af-border-strong);
+  border-radius: 6px;
+  background: var(--af-surface);
+  color: var(--af-fg);
   font: inherit;
+  font-size: 12.5px;
 }
 .action-bar {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid var(--el-border-color-light);
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--af-border);
   display: flex;
   gap: 8px;
   align-items: center;

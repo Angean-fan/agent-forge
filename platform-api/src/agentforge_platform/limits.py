@@ -41,6 +41,10 @@ class RuntimeLimits:
 
 DEFAULT_FACTORY_MAX_TOOL_OPS = 120
 FACTORY_MAX_TOOL_OPS_ENV = "AGENTFORGE_FACTORY_MAX_TOOL_OPS"
+DEFAULT_FACTORY_CODER_MAX_TOOL_OPS = 60
+FACTORY_CODER_MAX_TOOL_OPS_ENV = "AGENTFORGE_FACTORY_CODER_MAX_TOOL_OPS"
+DEFAULT_FACTORY_TESTER_MAX_TOOL_OPS = 50
+FACTORY_TESTER_MAX_TOOL_OPS_ENV = "AGENTFORGE_FACTORY_TESTER_MAX_TOOL_OPS"
 
 
 def runtime_limits() -> RuntimeLimits:
@@ -66,9 +70,32 @@ def factory_max_tool_ops() -> int:
     return DEFAULT_FACTORY_MAX_TOOL_OPS
 
 
-def factory_agent_recursion_limit() -> int:
+def factory_role_max_tool_ops(role: str) -> int:
+    """按子 Agent 最小职责收紧单角色工具操作上限（防止单子 Agent 上下文失控膨胀）。
+
+    优先级：角色专属 env（``AGENTFORGE_FACTORY_CODER_MAX_TOOL_OPS`` / ``AGENTFORGE_FACTORY_TESTER_MAX_TOOL_OPS``）
+    > ``AGENTFORGE_FACTORY_MAX_TOOL_OPS`` > 角色最小职责默认值（coder=24, tester=16）。
+    """
+    if role == "coder":
+        role_env, role_default = FACTORY_CODER_MAX_TOOL_OPS_ENV, DEFAULT_FACTORY_CODER_MAX_TOOL_OPS
+    elif role == "tester":
+        role_env, role_default = FACTORY_TESTER_MAX_TOOL_OPS_ENV, DEFAULT_FACTORY_TESTER_MAX_TOOL_OPS
+    else:
+        return factory_max_tool_ops()
+
+    raw_role = os.environ.get(role_env, "").strip()
+    if raw_role:
+        return max(1, int(raw_role))
+    raw_factory = os.environ.get(FACTORY_MAX_TOOL_OPS_ENV, "").strip()
+    if raw_factory:
+        return max(1, int(raw_factory))
+    return role_default
+
+
+def factory_agent_recursion_limit(role: str | None = None) -> int:
     """工厂子 Agent 的 LangGraph 递归步数上限（每工具操作≈2 步 + 余量 5）。"""
-    return 2 * factory_max_tool_ops() + 5
+    ops = factory_role_max_tool_ops(role) if role else factory_max_tool_ops()
+    return 2 * ops + 5
 
 
 def model_timeout_seconds() -> int:

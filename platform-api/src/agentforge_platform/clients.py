@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from agentforge_platform.limits import model_timeout_seconds
 
@@ -41,6 +42,10 @@ class ModelClient(Protocol):
         max_output_tokens: int | None = None,
         reasoning_effort: str | None = None,
     ) -> Completion: ...
+
+
+# 传输层重试次数（连接被重置 / SSL EOF / 响应截断 / 5xx 网关抖动）。
+_TRANSPORT_ATTEMPTS = 3
 
 
 class ProviderPreflightError(RuntimeError):
@@ -145,13 +150,29 @@ class OpenAICompatibleClient:
         )
         request.add_header("Content-Type", "application/json")
         request.add_header("Authorization", f"Bearer {api_key}")
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                body = json.loads(response.read().decode("utf-8"))
-                request_id = response.headers.get("x-request-id") or body.get("id")
-        except urllib.error.HTTPError as error:
-            # 不回显响应体（可能含敏感信息）
-            raise RuntimeError(f"{self._provider} API HTTP {error.code}") from None
+        body: dict[str, Any] = {}
+        request_id: str | None = None
+        attempts = _TRANSPORT_ATTEMPTS
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                    request_id = response.headers.get("x-request-id") or body.get("id")
+                break
+            except urllib.error.HTTPError as error:
+                # 不回显响应体（可能含敏感信息）；5xx/429 属网关侧抖动，可重试
+                if error.code < 500 and error.code != 429:
+                    raise RuntimeError(f"{self._provider} API HTTP {error.code}") from None
+                if attempt == attempts:
+                    raise RuntimeError(f"{self._provider} API HTTP {error.code}") from None
+            except (urllib.error.URLError, ConnectionError, TimeoutError, json.JSONDecodeError) as error:
+                # 传输层抖动（SSL EOF / RemoteDisconnected / 读超时 / 响应截断）：
+                # 重试的是**同一次已预留的调用**，不新增账单行，也不改变账本语义。
+                if attempt == attempts:
+                    raise RuntimeError(
+                        f"{self._provider} API 传输失败（{type(error).__name__}）"
+                    ) from None
+            time.sleep(min(2 ** attempt, 8))
 
         choices = body.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}

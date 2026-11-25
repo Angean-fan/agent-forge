@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import weakref
 from collections.abc import Iterator
@@ -24,7 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentforge_platform.budget import effective_budget_micro
@@ -58,6 +59,27 @@ UNASSIGNED_DEPT = "unassigned"
 _SQLITE_LOCKS_GUARD = threading.Lock()
 _SQLITE_URL_LOCKS: dict[str, threading.Lock] = {}
 _SQLITE_ENGINE_LOCKS: weakref.WeakKeyDictionary[Any, threading.Lock] = weakref.WeakKeyDictionary()
+
+
+DEFAULT_FACTORY_MAX_CALLS_PER_RUN = 300
+FACTORY_MAX_CALLS_PER_RUN_ENV = "AGENTFORGE_FACTORY_MAX_MODEL_CALLS_PER_RUN"
+GLOBAL_MAX_CALLS_PER_RUN_ENV = "AGENTFORGE_MAX_MODEL_CALLS_PER_RUN"
+
+
+def factory_max_model_calls_per_run() -> int:
+    """解析工厂账本单次 run 模型调用硬上限。
+
+    优先级：``AGENTFORGE_FACTORY_MAX_MODEL_CALLS_PER_RUN`` > ``AGENTFORGE_MAX_MODEL_CALLS_PER_RUN`` > 默认 120。
+    设为 0 表示不限次数（仍受金额预算保护）。
+    """
+    for env_name in (FACTORY_MAX_CALLS_PER_RUN_ENV, GLOBAL_MAX_CALLS_PER_RUN_ENV):
+        raw = os.environ.get(env_name, "").strip()
+        if raw:
+            try:
+                return max(0, int(raw))
+            except ValueError:
+                continue
+    return DEFAULT_FACTORY_MAX_CALLS_PER_RUN
 
 
 def _now() -> datetime:
@@ -277,6 +299,7 @@ class PgBudgetLedger:
         thinking_mode: str | None = None,
         reasoning_effort: str | None = None,
         budget_limit_micro: int | None = None,
+        max_calls_per_run: int | None = None,
         db: Session | None = None,
     ) -> ModelCall:
         """原子检查余额并写入 ``RESERVED`` 预留（按 ``call_id`` 幂等，PG 行锁防超扣/双扣）。"""
@@ -310,6 +333,28 @@ class PgBudgetLedger:
             existing = session.get(ModelCall, call_id)
             if existing is not None:
                 return existing
+
+            if run_id is not None:
+                call_limit = (
+                    max(0, int(max_calls_per_run))
+                    if max_calls_per_run is not None
+                    else factory_max_model_calls_per_run()
+                )
+                if call_limit > 0:
+                    used_calls = session.scalar(
+                        select(func.count())
+                        .select_from(ModelCall)
+                        .where(
+                            ModelCall.run_id == run_id,
+                            ModelCall.status.not_in((STATUS_NOT_SENT, STATUS_RELEASED)),
+                        )
+                    )
+                    if int(used_calls or 0) >= call_limit:
+                        raise AppException(
+                            ErrorCode.CALL_LIMIT_EXCEEDED,
+                            f"全 run 模型调用超上限：{call_limit}（已发起 {int(used_calls or 0)} 次）",
+                            status_code=429,
+                        )
 
             limit = (
                 int(budget_limit_micro)

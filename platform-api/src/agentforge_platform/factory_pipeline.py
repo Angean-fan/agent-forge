@@ -40,7 +40,7 @@ from agentforge_platform.factory_frontend_stage import (
     FrontendStageResult,
     run_frontend_factory_stage,
 )
-from agentforge_platform.factory_scheduler import AsyncDepartmentPool
+from agentforge_platform.factory_scheduler import AsyncDepartmentPool, factory_fail_fast
 from agentforge_platform.factory_state import (
     FactoryCancelledError,
     FactoryPhase,
@@ -85,7 +85,14 @@ if TYPE_CHECKING:
     from agentforge_platform.generation_graph import GenerationContext
 
 FACTORY_PIPELINE_ENV = "AGENTFORGE_FACTORY_PIPELINE_ENABLED"
+FACTORY_BACKEND_ONLY_ENV = "AGENTFORGE_FACTORY_BACKEND_ONLY"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def factory_backend_only_enabled() -> bool:
+    """是否开启仅后端模式（默认关闭；开启后后端总装 + 独立 Docker Runner 验证通过即打包交付并完成运行）。"""
+    raw = os.environ.get(FACTORY_BACKEND_ONLY_ENV, "").strip().lower()
+    return raw in _TRUTHY
 
 StageRunner = Callable[["GenerationContext", int, FactoryStateStore, FactoryPhase], dict[str, Any]]
 
@@ -143,15 +150,18 @@ def build_factory_runtime(
     store = FactoryStateStore(session_factory)
     dept_verifier = build_module_verifier(runner_client=runner_client, work_root=work_root)
     resolved_chief = chief or ChiefArchitect(session_factory=session_factory, state_store=store)
+    runtime_fail_fast = factory_fail_fast(default=True)
     resolved_be_pool = backend_pool or AsyncDepartmentPool(
         session_factory=session_factory,
         verifier=dept_verifier,
         state_store=store,
+        fail_fast=runtime_fail_fast,
     )
     resolved_fe_pool = frontend_pool or AsyncDepartmentPool(
         session_factory=session_factory,
         verifier=dept_verifier,
         state_store=store,
+        fail_fast=runtime_fail_fast,
     )
     return FactoryRuntime(
         chief=resolved_chief,
@@ -264,11 +274,13 @@ def assemble_fullstack_workspace(
 
 def _collect_sandbox_integrations(
     backend_bp: ArchitectureBlueprint,
-    frontend_bp: ArchitectureBlueprint,
+    frontend_bp: ArchitectureBlueprint | None = None,
 ) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
     for bp in (backend_bp, frontend_bp):
+        if bp is None:
+            continue
         for item in bp.sandbox_integrations:
             if not isinstance(item, dict):
                 continue
@@ -458,6 +470,175 @@ def _run_full_factory_pipeline(
     frozen_openapi_sha = be_stage.frozen_openapi_sha256 or canonical_openapi_sha256(
         frozen_openapi_doc
     )
+
+    if factory_backend_only_enabled():
+        store.raise_if_cancelled(run_id, boundary="factory_before_backend_only_finalize")
+        blueprint_bundle = {
+            "mode": "factory_backend_only",
+            "run_id": run_id,
+            "openapi_sha256": frozen_openapi_sha,
+            "backend": backend_bp.model_dump(mode="json"),
+        }
+        assembled_backend = Path(be_stage.assembled_dir).resolve() / "backend"
+        target_backend = run_dir / "backend"
+        if target_backend.exists():
+            shutil.rmtree(target_backend, ignore_errors=True)
+        shutil.copytree(
+            assembled_backend,
+            target_backend,
+            ignore=shutil.ignore_patterns(*_COPY_EXCLUDED_DIRS),
+        )
+        for top_name in _TEMPLATE_TOP_FILES:
+            src_top = template_dir / top_name
+            dst_top = run_dir / top_name
+            if src_top.is_file() and not dst_top.exists():
+                shutil.copy2(src_top, dst_top)
+        (target_backend / "openapi.json").write_text(
+            json.dumps(frozen_openapi_doc, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "factory-blueprint.json").write_text(
+            json.dumps(blueprint_bundle, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "asset-lock.json").write_text(
+            lock.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "spec.json").write_text(
+            spec.model_dump_json(indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with session_scope(context.session_factory) as db:
+            run = db.get(Run, run_id)
+            if run is not None and RunStatus(run.status) is RunStatus.GENERATING:
+                transition(db, run, RunStatus.VERIFYING)
+                append_event(
+                    db,
+                    run,
+                    "stage",
+                    json.dumps(
+                        {
+                            "stage": "backend_only_finalize",
+                            "mode": "factory",
+                            "openapi_sha256": frozen_openapi_sha,
+                        }
+                    ),
+                )
+
+        sandbox_integrations = _collect_sandbox_integrations(backend_bp, None)
+        backend_verification = dict(be_stage.verification or {"overall": "NOT_RUN", "checks": []})
+        backend_acceptance = {"overall": "SKIPPED", "mode": "backend_only", "cases": []}
+        services = declared_services(spec, backend_verification)
+        external_readiness = (
+            READINESS_MOCK_ONLY if sandbox_integrations else compute_readiness(services)
+        )
+        with session_scope(context.session_factory) as db:
+            cost_report = build_cost_report(db, project_id=project_id, run_id=run_id)
+
+        try:
+            pkg = package_run(
+                run_dir,
+                spec=spec,
+                lock=lock,
+                contract=contract,
+                verification=backend_verification,
+                acceptance=backend_acceptance,
+                cost_report=cost_report,
+                factory_blueprint=blueprint_bundle,
+                authoritative_openapi=frozen_openapi_doc,
+                include_department_cost_report=True,
+                sandbox_integrations=sandbox_integrations,
+                external_readiness=external_readiness,
+            )
+        except PackagingError as exc:
+            _transition_run_if_active(
+                context,
+                run_id,
+                RunStatus.FAILED,
+                event_type="failed",
+                payload={"code": exc.code, "stage": "factory_package", "detail": str(exc)},
+                error_code=exc.code,
+                external_readiness=external_readiness,
+            )
+            return {
+                "run_id": run_id,
+                "ok": False,
+                "mode": "factory",
+                "error_code": exc.code,
+                "detail": str(exc),
+                "recovery": recovery_summary,
+            }
+
+        backend_ok = str(backend_verification.get("overall") or "").upper() == "PASS"
+        with session_scope(context.session_factory) as db:
+            run = db.get(Run, run_id)
+            if run is not None:
+                run.external_readiness = external_readiness
+                artifact_row = record_artifact(
+                    db,
+                    run,
+                    pkg.zip_path,
+                    pkg.zip_sha256,
+                    "zip",
+                    verified=backend_ok,
+                )
+                artifact_id = int(artifact_row.id)
+                append_event(
+                    db,
+                    run,
+                    "packaged",
+                    json.dumps(
+                        {
+                            "mode": "factory_backend_only",
+                            "zip": pkg.zip_path,
+                            "files": pkg.file_count,
+                            "verified": backend_ok,
+                            "external_readiness": external_readiness,
+                        }
+                    ),
+                )
+                if backend_ok:
+                    transition(db, run, RunStatus.SUCCEEDED)
+                    append_event(
+                        db,
+                        run,
+                        "succeeded",
+                        json.dumps({"mode": "factory_backend_only"}),
+                    )
+                else:
+                    transition(db, run, RunStatus.FAILED, error_code="VERIFICATION_FAILED")
+                    append_event(
+                        db,
+                        run,
+                        "failed",
+                        json.dumps(
+                            {
+                                "code": "VERIFICATION_FAILED",
+                                "stage": "backend_only_verify",
+                                "verify_overall": backend_verification.get("overall"),
+                            }
+                        ),
+                    )
+            else:
+                artifact_id = None
+
+        return {
+            "run_id": run_id,
+            "ok": backend_ok,
+            "mode": "factory_backend_only",
+            "status": "SUCCEEDED" if backend_ok else "FAILED",
+            "verification_status": str(backend_verification.get("overall") or "NOT_RUN"),
+            "acceptance_status": "SKIPPED",
+            "external_readiness": external_readiness,
+            "artifact_id": artifact_id,
+            "zip_path": pkg.zip_path,
+            "zip_sha256": pkg.zip_sha256,
+            "openapi_sha256": frozen_openapi_sha,
+            "recovery": recovery_summary,
+            "error_code": "" if backend_ok else "VERIFICATION_FAILED",
+        }
 
     # 3. 前端工厂阶段：总管蓝图（消费冻结 OpenAPI）→ 只读前端底座 + TS 契约 → 多部门并行 → 路由聚合与构建验证
     store.raise_if_cancelled(run_id, boundary="factory_before_frontend")

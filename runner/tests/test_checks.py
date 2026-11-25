@@ -8,6 +8,8 @@ from agentforge_runner.checks import (
     STATIC_REQUIRED,
     CheckResult,
     classify_failure,
+    extract_surefire_failure_summary,
+    format_java_failure_excerpt,
     overall_of,
     redact,
     run_backend_static_check,
@@ -99,3 +101,49 @@ def test_backend_static_manifest_fails_when_pom_or_sql_missing(tmp_path: Path) -
     res = run_backend_static_check(tmp_path)
     assert res.status == "FAIL"
     assert res.error_code == "MISSING_FILES"
+
+
+def test_truncate_strips_jansi_noise_and_focuses_on_errors() -> None:
+    filler = "\n".join(f"[INFO] maven verbose line {i} " + ("x" * 60) for i in range(100))
+    raw = (
+        f"{filler}\n"
+        "[ERROR] Tests run: 5, Failures: 1, Errors: 0 <<< FAILURE! -- in BookingServiceTest\n"
+        "AssertionFailedError: expected 409 but was 200\n"
+        f"{filler}\n"
+        "java.lang.UnsatisfiedLinkError: /tmp/jansi-2.4.3-libjansi.so: failed to map segment\n"
+    )
+    excerpt = truncate(raw, limit=1200)
+    assert "BookingServiceTest" in excerpt
+    assert "AssertionFailedError" in excerpt
+    assert "libjansi.so" not in excerpt
+
+
+def test_extract_surefire_failure_summary_and_strip_maven_help_boilerplate(tmp_path: Path) -> None:
+    sf = tmp_path / "backend" / "target" / "surefire-reports"
+    sf.mkdir(parents=True)
+    (sf / "PaymentServiceTest.txt").write_text(
+        "Test set: com.agentforge.template.modules.payment.PaymentServiceTest\n"
+        "Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.2 s <<< FAILURE!\n"
+        "com.agentforge.template.modules.payment.PaymentServiceTest.pay -- Time elapsed: 0.05 s <<< FAILURE!\n"
+        'org.opentest4j.AssertionFailedError: expected: "PENDING" but was: "PAID"\n'
+        "\tat org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:182)\n"
+        "\tat com.agentforge.template.modules.payment.PaymentServiceTest.pay(PaymentServiceTest.java:88)\n",
+        encoding="utf-8",
+    )
+    summary = extract_surefire_failure_summary(tmp_path)
+    assert summary.startswith("[surefire-failures]")
+    assert 'expected: "PENDING" but was: "PAID"' in summary
+    assert "PaymentServiceTest.java:88" in summary
+    assert "org.junit.jupiter" not in summary
+
+    raw_maven = (
+        "[ERROR] Failed to execute goal surefire:test\n"
+        "[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n"
+        "[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\n"
+        "token=secret_should_redact\n"
+    )
+    excerpt = format_java_failure_excerpt(tmp_path, raw_maven, limit=2000)
+    assert 'expected: "PENDING" but was: "PAID"' in excerpt
+    assert "[Help 1]" not in excerpt
+    assert "Re-run Maven using the -X" not in excerpt
+    assert "secret_should_redact" not in excerpt

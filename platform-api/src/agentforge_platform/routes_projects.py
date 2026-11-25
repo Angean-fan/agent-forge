@@ -7,14 +7,25 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, StringConstraints
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from agentforge_platform.accounts import Account
 from agentforge_platform.auth import get_current_account, require_csrf, require_project_owner
 from agentforge_platform.db import get_db
 from agentforge_platform.middleware import get_request_id
-from agentforge_platform.models import Project
+from agentforge_platform.models import (
+    Artifact,
+    BudgetAdjustment,
+    DefectTicketRow,
+    DepartmentRun,
+    FactoryBlueprint,
+    Project,
+    Run,
+    RunEvent,
+    RunTask,
+    SpecVersion,
+)
 from agentforge_platform.responses import ApiResponse
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -43,6 +54,11 @@ class ProjectDetail(ProjectSummary):
 
 class ProjectListData(BaseModel):
     items: list[ProjectSummary]
+
+
+class ProjectDeleteData(BaseModel):
+    deleted: bool
+    project_id: int
 
 
 def _summary(project: Project) -> ProjectSummary:
@@ -103,3 +119,33 @@ def get_project(
     request: Request, project: Project = Depends(require_project_owner)
 ) -> ApiResponse[ProjectDetail]:
     return ApiResponse(request_id=get_request_id(request), data=_detail(project))
+
+
+@router.delete("/{project_id}", response_model=ApiResponse[ProjectDeleteData])
+def delete_project(
+    request: Request,
+    project: Project = Depends(require_project_owner),
+    _csrf: None = Depends(require_csrf),
+    db: Session = Depends(get_db),
+) -> ApiResponse[ProjectDeleteData]:
+    """删除当前用户拥有的项目及其规格草稿与运行记录（保留财务 model_call 审计账本）。"""
+    project_id = project.id
+    run_ids = list(db.scalars(select(Run.id).where(Run.project_id == project_id)).all())
+    if run_ids:
+        db.execute(delete(DefectTicketRow).where(DefectTicketRow.run_id.in_(run_ids)))
+        db.execute(delete(DepartmentRun).where(DepartmentRun.run_id.in_(run_ids)))
+        db.execute(delete(FactoryBlueprint).where(FactoryBlueprint.run_id.in_(run_ids)))
+        db.execute(delete(Artifact).where(Artifact.run_id.in_(run_ids)))
+        db.execute(delete(RunEvent).where(RunEvent.run_id.in_(run_ids)))
+        db.execute(delete(RunTask).where(RunTask.run_id.in_(run_ids)))
+        db.execute(delete(Run).where(Run.id.in_(run_ids)))
+
+    db.execute(delete(BudgetAdjustment).where(BudgetAdjustment.project_id == project_id))
+    db.execute(delete(SpecVersion).where(SpecVersion.project_id == project_id))
+    db.delete(project)
+    db.flush()
+
+    return ApiResponse(
+        request_id=get_request_id(request),
+        data=ProjectDeleteData(deleted=True, project_id=project_id),
+    )

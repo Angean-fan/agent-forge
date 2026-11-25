@@ -24,7 +24,7 @@
       "model": "deepseek-flash",
       "api_key_env": "DEEPSEEK_API_KEY",
       "enabled": true,
-      "max_output_tokens": 8192,
+      "max_output_tokens": 16384,
       "timeout_seconds": 240,
       "supports_tools": true,
       "price_micro": {
@@ -40,7 +40,7 @@
       "model": "deepseek-flash",
       "api_key_env": "DEEPSEEK_API_KEY",
       "enabled": true,
-      "max_output_tokens": 8192,
+      "max_output_tokens": 16384,
       "timeout_seconds": 240,
       "supports_tools": true,
       "price_micro": {
