@@ -41,7 +41,11 @@ from agentforge_platform.agent_files import (
     _within_allowed,
 )
 from agentforge_platform.asset_cache import make_writable_tree
-from agentforge_platform.blueprint_contracts import ArchitectureBlueprint
+from agentforge_platform.blueprint_contracts import (
+    ArchitectureBlueprint,
+    department_plan_contract,
+    fix_directive_contract,
+)
 from agentforge_platform.budget_pg import PgBudgetLedger
 from agentforge_platform.clients import ModelClient, ProviderPreflightError
 from agentforge_platform.db import session_scope
@@ -67,6 +71,7 @@ from agentforge_platform.factory_tickets import (
     TestEvidence,
     sanitize_defect_log,
 )
+from agentforge_platform.limits import factory_agent_recursion_limit
 from agentforge_platform.model_gateway import Route, lookup_price, resolve_route, role_enabled
 from agentforge_platform.models import Run
 from agentforge_platform.module_registry import Module
@@ -94,7 +99,9 @@ CODER_SYSTEM_PROMPT = (
     "你是 AgentForge 异步工厂的【部门编码子 Agent（DeptCoder）】。"
     "你只允许在当前部门暂存区的 owned_paths 内编写业务代码与 api-fragment.json；"
     "你可以自主调用 search_assets / read_asset_file / apply_asset_to_staging 查 PG 资产库复用或直接编写。"
-    "严禁修改 test_paths、只读底座、跨模块 api/*Facade.java 或他部门目录；严禁执行 shell 命令。"
+    "严禁修改 test_paths、只读底座、跨模块 api/*Facade.java 或他部门目录；严禁执行 shell 命令；严禁硬编码真实密钥，前端严禁使用 v-html 或 innerHTML。"
+    "【效率要求】为避免触发工具循环步数上限：1) 提示词中已给出的底座路径、Facade 契约与生成类型无需重复 ls/glob 探测；"
+    "2) 请尽量在同一轮助手响应中**并行发出多个独立的 write_file / read_file 工具调用**（例如一次同时写入 3~6 个关联文件），写完并自查无遗漏后立即结束。"
 )
 
 TESTER_SYSTEM_PROMPT = (
@@ -102,6 +109,7 @@ TESTER_SYSTEM_PROMPT = (
     "你只允许在本部门 test_paths 内编写单元测试与跨模块 Facade 的 Mockito/Mock 契约测试。"
     "严禁修改任何业务源码、只读底座、api/*Facade.java 或他部门测试文件；严禁执行 shell 命令。"
     "测试是否通过将由系统程序调用真实编译与单测工具判定。"
+    "【效率要求】请直接依据提示词中给出的变更文件与契约摘要定位被测类，在同一轮中尽量**并行读取或写入多个文件**，写完测试后立即结束。"
 )
 
 CoderModelFactory = Callable[[LedgerBinding, int], BaseChatModel]
@@ -369,6 +377,98 @@ def _load_api_fragment(dept_staging: Path) -> tuple[str | None, dict[str, Any]]:
     return API_FRAGMENT_FILENAME, parsed if isinstance(parsed, dict) else {}
 
 
+_MAX_CONTEXT_INLINE_BYTES = 8192
+_MAX_BASE_LISTING_FILES = 40
+
+
+def _collect_staging_context(
+    dept_staging: Path,
+    *,
+    module: Module,
+    blueprint: ArchitectureBlueprint,
+    phase: FactoryPhase,
+) -> str:
+    """确定性采集本部门暂存区的关键只读底座与冻结契约摘要，减少子 Agent 盲目 ls/glob/read 步数。"""
+    lines: list[str] = []
+    if phase is FactoryPhase.BACKEND:
+        lines.append(f"- base_package: {blueprint.base_package}")
+        if module.owned_package:
+            lines.append(f"- owned_package: {module.owned_package}")
+        if module.migration_range is not None:
+            lo, hi = module.migration_range
+            lines.append(
+                f"- migration_range: [{lo}, {hi}]（若写 Flyway SQL 必须命名为 "
+                f"backend/src/main/resources/db/migration/V<{lo}..{hi}>__<desc>.sql 且路径在 owned_paths 内）"
+            )
+        backend_root = dept_staging / "backend"
+        if backend_root.is_dir():
+            facade_files: list[Path] = []
+            base_files: list[str] = []
+            for path in sorted(backend_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                rel = path.relative_to(dept_staging).as_posix()
+                if "/target/" in rel or rel.startswith("backend/target/"):
+                    continue
+                if _is_module_api_java(rel):
+                    facade_files.append(path)
+                elif len(base_files) < _MAX_BASE_LISTING_FILES:
+                    base_files.append(rel)
+            if base_files:
+                lines.append(f"- 只读底座参考文件（勿改）：{json.dumps(base_files, ensure_ascii=False)}")
+            if facade_files:
+                lines.append("- 已生成的只读跨模块 Facade/DTO 骨架（严禁修改，直接 import 实现或调用）：")
+                budget = _MAX_CONTEXT_INLINE_BYTES
+                for fp in facade_files:
+                    rel = fp.relative_to(dept_staging).as_posix()
+                    try:
+                        text = fp.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    encoded_len = len(text.encode("utf-8"))
+                    if encoded_len <= budget:
+                        lines.append(f"  [FILE: /{rel}]\n{text.rstrip()}")
+                        budget -= encoded_len
+                    else:
+                        lines.append(f"  [FILE: /{rel}]（内容较长，按需 read_file）")
+        lines.append(
+            '- api-fragment.json 格式要求：合法 JSON 对象，形如 '
+            '{"paths": {"/api/...": {"get": {"operationId": "...", "summary": "...", "x-auth": ["USER"], "responses": {"200": {"description": "OK"}}}}}, '
+            '"components": {"schemas": {...}}}；不要重复声明其他部门路由。'
+        )
+    else:
+        fe_root = dept_staging / "frontend"
+        if fe_root.is_dir():
+            key_rel_paths = (
+                "frontend/src/generated/api-endpoints.ts",
+                "frontend/src/generated/api-types.ts",
+                "frontend/src/core/http.ts",
+            )
+            budget = _MAX_CONTEXT_INLINE_BYTES
+            for rel in key_rel_paths:
+                fp = dept_staging / rel
+                if not fp.is_file():
+                    continue
+                try:
+                    text = fp.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                encoded_len = len(text.encode("utf-8"))
+                if encoded_len <= budget:
+                    lines.append(f"  [READONLY FILE: /{rel}]\n{text.rstrip()}")
+                    budget -= encoded_len
+                else:
+                    lines.append(f"  [READONLY FILE: /{rel}]（内容较长，按需 read_file）")
+        lines.extend(
+            [
+                f"- 声明式路由硬约束：必须提供 frontend/src/modules/{module.module_id}/routes.ts，使用 `export default` 或 `export const routes` 导出 Vue Router RouteRecordRaw[]；",
+                "  严禁声明底座保留路由 '/' 或 '/login'；若本部门消费的后端端点需要鉴权，路由必须包含 `meta: { requiresAuth: true }`。",
+                "- 契约与安全硬约束：仅允许调用权威 api-endpoints.ts / openapi.json 中真实存在的 `/api/*` 或 `API_ENDPOINTS.<op>`；严禁使用 `v-html` / `.innerHTML =`；严禁硬编码密钥。",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _build_lead_plan_prompt(
     *,
     module: Module,
@@ -384,6 +484,7 @@ def _build_lead_plan_prompt(
     ]
     return "\n".join(
         [
+            "[TASK_TYPE: DEPARTMENT_PLAN]",
             f"你是【{module.name}（{module.module_id}）】的部门副总管（DeptLead，只读规划角色）。",
             "你不直接编写源码，只负责输出严格的 DepartmentPlan JSON，指导 DeptCoder 与 DeptTester 工作。",
             f"- phase: {phase.value}",
@@ -395,6 +496,7 @@ def _build_lead_plan_prompt(
             f"- goal: {spec.goal}",
             f"- related_contracts: {json.dumps(contracts, ensure_ascii=False)}",
             "请仅输出一个符合 DepartmentPlan Schema 的 JSON 对象。",
+            department_plan_contract(),
         ]
     )
 
@@ -412,6 +514,7 @@ def _build_lead_fix_prompt(
     )
     return "\n".join(
         [
+            "[TASK_TYPE: FIX_DIRECTIVE]",
             f"你是【{module.name}（{module.module_id}）】的部门副总管（DeptLead，只读返工拆解角色）。",
             "请依据以下脱敏 DefectTicket 输出严格的 FixDirective JSON，精准指出根因与最小修复范围，不直接写代码。",
             f"- phase: {phase.value}",
@@ -420,6 +523,7 @@ def _build_lead_fix_prompt(
             f"- owned_paths: {json.dumps(module.owned_paths, ensure_ascii=False)}",
             f"- defect_ticket: {safe_ticket.model_dump_json()}",
             "请仅输出一个符合 FixDirective Schema 的 JSON 对象。",
+            fix_directive_contract(),
         ]
     )
 
@@ -430,6 +534,7 @@ def _build_coder_prompt(
     plan: DepartmentPlan | None,
     directive: FixDirective | None,
     round_num: int,
+    staging_context: str = "",
 ) -> str:
     lines = [
         f"部门：{module.module_id}（第 {round_num} 轮）",
@@ -437,7 +542,10 @@ def _build_coder_prompt(
         f"接口片段输出路径：{API_FRAGMENT_FILENAME}",
         "你可自主调用 search_assets / read_asset_file / apply_asset_to_staging 查 PG 资产库或直接编写。",
         "严禁修改 test_paths、底座文件、api/*Facade.java 或他部门目录。",
+        "提示：单轮响应可同时发起多个 write_file 工具调用批量写入文件，写完即结束，无需重复探查已知路径。",
     ]
+    if staging_context:
+        lines.extend(["【工作区只读底座与契约上下文】", staging_context])
     if directive is not None:
         lines.append(f"【返工修复指令 FixDirective】{directive.model_dump_json()}")
     elif plan is not None:
@@ -452,6 +560,7 @@ def _build_tester_prompt(
     directive: FixDirective | None,
     coder_changes: FileChangeSet,
     round_num: int,
+    staging_context: str = "",
 ) -> str:
     lines = [
         f"部门：{module.module_id}（第 {round_num} 轮测试任务）",
@@ -460,6 +569,8 @@ def _build_tester_prompt(
         "严禁修改任何业务源码与底座文件。",
         f"本轮编码变更：{json.dumps(coder_changes.to_dict(), ensure_ascii=False)}",
     ]
+    if staging_context:
+        lines.extend(["【工作区只读底座与契约上下文】", staging_context])
     if directive is not None:
         lines.append(f"【返工测试关注点】{json.dumps(directive.test_adjustments, ensure_ascii=False)}")
     elif plan is not None:
@@ -538,7 +649,7 @@ class DepartmentRunner:
         )
         call_id = f"factory:{run_id}:{phase.value}:{dept_id}:lead:r{round_num}:{uuid.uuid4().hex[:8]}"
         price = route.price or lookup_price(route.model)
-        max_out = route.max_output_tokens or 4096
+        max_out = route.max_output_tokens or 8192
         max_in = max(1, len(prompt) // 2)
 
         self._ledger.reserve_atomic(
@@ -896,6 +1007,13 @@ class DepartmentRunner:
                     DeptStatus.CODING,
                     current_round=round_num,
                 )
+                staging_context = _collect_staging_context(
+                    dept_staging,
+                    module=module,
+                    blueprint=blueprint,
+                    phase=resolved_phase,
+                )
+                dept_recursion_limit = factory_agent_recursion_limit()
                 coder_engine = self._build_coder_engine(
                     project_id=project_id,
                     run_id=run_id,
@@ -909,8 +1027,9 @@ class DepartmentRunner:
                     plan=plan,
                     directive=current_directive,
                     round_num=round_num,
+                    staging_context=staging_context,
                 )
-                coder_engine.run(coder_prompt)
+                coder_engine.run(coder_prompt, recursion_limit=dept_recursion_limit)
                 coder_cs = coder_fb.commit()
                 all_coder_changes.extend(coder_cs.to_dict()["changes"])
 
@@ -939,8 +1058,9 @@ class DepartmentRunner:
                     directive=current_directive,
                     coder_changes=coder_cs,
                     round_num=round_num,
+                    staging_context=staging_context,
                 )
-                tester_engine.run(tester_prompt)
+                tester_engine.run(tester_prompt, recursion_limit=dept_recursion_limit)
                 tester_cs = tester_fb.commit()
                 all_tester_changes.extend(tester_cs.to_dict()["changes"])
 

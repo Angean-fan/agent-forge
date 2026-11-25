@@ -105,6 +105,8 @@ def _empty_bucket() -> dict[str, Any]:
         "settled_calls": 0,
         "reserved_calls": 0,
         "unknown_calls": 0,
+        "failed_calls": 0,
+        "unpriced_calls": 0,
         "released_calls": 0,
         "input_tokens": 0,
         "output_tokens": 0,
@@ -127,9 +129,13 @@ def _accumulate_row(bucket: dict[str, Any], row: ModelCall) -> None:
         bucket["reserved_calls"] += 1
         bucket["reserved_micro"] += int(row.reserved_micro or 0)
     else:
-        # UNKNOWN 及其他未决态保留预留额度，绝不记零
+        # UNKNOWN 及其他未决态保留预留额度，绝不记零；同时区分真实异常失败与缺单价未结算
         bucket["unknown_calls"] += 1
         bucket["reserved_micro"] += int(row.reserved_micro or 0)
+        if row.error_class:
+            bucket["failed_calls"] += 1
+        elif row.input_tokens is not None or row.output_tokens is not None:
+            bucket["unpriced_calls"] += 1
 
 
 def cost_by_department(db: Session, run_id: int) -> dict[str, Any]:

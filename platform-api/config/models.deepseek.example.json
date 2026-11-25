@@ -1,0 +1,134 @@
+{
+  "version": "local-deepseek-1",
+  "currency": "CNY",
+  "roles": {
+    "user_interaction": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 4096,
+      "timeout_seconds": 120,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    },
+    "chief_architect": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 240,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    },
+    "technical_planning": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 240,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    },
+    "dept_coder": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 180,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    },
+    "coding": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 180,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    },
+    "dept_lead": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 180,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    },
+    "dept_tester": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 180,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    },
+    "complex_repair": {
+      "provider": "deepseek_official",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-flash",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "enabled": true,
+      "max_output_tokens": 8192,
+      "timeout_seconds": 180,
+      "supports_tools": true,
+      "price_micro": {
+        "input_micro_per_million": 1000000,
+        "output_micro_per_million": 2000000,
+        "currency": "CNY",
+        "version": "deepseek-flash-cny-v1"
+      }
+    }
+  }
+}

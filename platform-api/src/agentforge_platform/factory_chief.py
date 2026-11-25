@@ -27,6 +27,7 @@ from agentforge_platform.blueprint_contracts import (
     MAX_MODULE_MIGRATION_VERSION,
     MIN_MODULE_MIGRATION_VERSION,
     ArchitectureBlueprint,
+    blueprint_prompt_contract,
     validate_blueprint,
 )
 from agentforge_platform.budget_pg import PgBudgetLedger
@@ -188,9 +189,9 @@ def _build_backend_blueprint_prompt(
         "你的唯一职责是产出冻结架构蓝图 JSON（ArchitectureBlueprint），你不编写任何业务源码，也不拥有文件写入权限。",
         "",
         "【硬性架构规则（全部由 Python 确定性校验）】",
-        f"1. 业务部门数量必须 <= {max_modules}，每个部门拥有互不重叠的 owned_paths、test_paths 与 owned_package。",
+        f"1. 业务部门数量必须 <= {max_modules}，每个部门拥有互不重叠的 owned_paths、非空 test_paths 与 owned_package。",
         "2. 禁止任何部门将只读底座或跨模块 api/*Facade.java 目录放入可写 owned_paths（业务实现放在 modules/<dept_id>/internal/ 或 controller/service/mapper/entity/dto）。",
-        f"3. 每个后端部门必须分配互不重叠的 Flyway SQL 号段 migration_range=[lo, hi]，范围严格在 [{MIN_MODULE_MIGRATION_VERSION}, {MAX_MODULE_MIGRATION_VERSION}]（如 [100,199]、[200,299]…，避开底座 V001..V009 与总装 V900+）。",
+        f"3. 每个后端部门必须分配互不重叠的 Flyway SQL 号段 migration_range=[lo, hi]，范围严格在 [{MIN_MODULE_MIGRATION_VERSION}, {MAX_MODULE_MIGRATION_VERSION}]（如 [100,199]、[200,299]…，避开底座 V001..V009 与总装 V900+）；如需 SQL 迁移文件，请把具体文件路径（如 backend/src/main/resources/db/migration/V100__init_<dept>.sql）加入该部门 owned_paths，严禁把整个 migration 目录分给多个部门。",
         "4. 所有跨模块 JAVA_METHOD（api/*Facade）与对外契约必须在 frozen_contracts 中冻结为 status='APPROVED_FOR_BUILD'，签名必须精确（'<ReturnType> <methodName>(<Args>)'），严禁出现 TODO / * / ? / unknown；凡消费他部门契约必须在 readable_contract_refs 与 depends_on_modules 中同时显式声明，且依赖图必须无环。",
         "5. 蓝图必须通过 covered_entities 与 covered_acceptance_ids 覆盖冻结规格中的全部业务实体与验收场景。",
         f"6. {SANDBOX_CONSTRAINT_DECLARATION}",
@@ -222,7 +223,10 @@ def _build_backend_blueprint_prompt(
     lines.extend(
         [
             "",
-            "请仅输出一个严格符合 ArchitectureBlueprint Schema 的合法 JSON 对象（不要输出多余解释文本）。",
+            "【ArchitectureBlueprint 字段契约——由代码生成，键名必须逐字匹配】",
+            blueprint_prompt_contract(),
+            "",
+            "请仅输出一个严格符合上述字段契约的合法 JSON 对象（不要输出多余解释文本）。",
         ]
     )
     return "\n".join(lines)
@@ -310,7 +314,7 @@ class ChiefArchitect:
     ) -> str:
         call_id = f"factory:{run_id}:{phase.value}:{CHIEF_DEPT_ID}:r{round_num}:{uuid.uuid4().hex[:8]}"
         price = route.price or lookup_price(route.model)
-        max_out = route.max_output_tokens or 4096
+        max_out = route.max_output_tokens or 8192
         max_in = max(1, len(prompt) // 2)
 
         self._ledger.reserve_atomic(
@@ -552,11 +556,11 @@ class ChiefArchitect:
                 "你的唯一职责是基于后端已冻结权威 openapi.json 与冻结需求，产出前端架构蓝图 JSON（ArchitectureBlueprint, phase='frontend'）；你零文件写入权限，不写前端源码。",
                 "",
                 "【前端架构硬性规则】",
-                f"1. 前端业务部门数量必须 <= {max_modules}（如 auth-ui、home-ui、cart-ui、order-ui、payment-ui）。",
-                "2. 每个前端部门独占 frontend/src/modules/<dept_id>/ 与 frontend/test/<dept_id>/，彼此零交集。",
+                f"1. 前端业务部门数量必须 <= {max_modules}，module_id 仅允许小写字母/数字/连字符/下划线（如 auth-ui、home-ui、cart-ui、order-ui、payment-ui）。",
+                "2. 每个前端部门独占 frontend/src/modules/<dept_id>/ 与非空 frontend/test/<dept_id>/，彼此零交集。",
                 f"3. 严禁将只读受保护路径纳入 owned_paths：{json.dumps(list(FRONTEND_PROTECTED_PREFIXES), ensure_ascii=False)}。",
-                "4. 各前端部门路由前缀不可冲突；引用后端 API 时必须严格匹配权威 openapi.json 中已存在的路径与方法。",
-                "5. 必须通过 covered_pages 覆盖冻结规格中的全部业务页面。",
+                "4. 各前端部门页面路由前缀不可冲突且禁止侵占只读底座保留路由 '/' 与 '/login'；若在 frozen_contracts 中声明后端 /api/* 端点，(http_method, http_path) 必须严格存在于权威 openapi.json。",
+                "5. 必须通过 covered_pages 覆盖冻结规格中的全部业务页面（使用 spec.pages 中的精确 page.name）。",
                 f"- project_id: \"{project_id}\"",
                 "- phase: \"frontend\"",
                 f"- blueprint_version: {blueprint_version}",
@@ -578,7 +582,15 @@ class ChiefArchitect:
                         *[f"- {err}" for err in last_issues],
                     ]
                 )
-            prompt_lines.append("请仅输出一个严格符合 ArchitectureBlueprint Schema 的合法 JSON 对象。")
+            prompt_lines.extend(
+                [
+                    "",
+                    "【ArchitectureBlueprint 字段契约——由代码生成，键名必须逐字匹配】",
+                    blueprint_prompt_contract(),
+                    "",
+                    "请仅输出一个严格符合上述字段契约的合法 JSON 对象。",
+                ]
+            )
 
             raw_content = self._invoke_billed_model(
                 project_id=project_id,

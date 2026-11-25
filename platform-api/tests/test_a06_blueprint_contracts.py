@@ -625,3 +625,17 @@ def test_negative_5_undeclared_cross_module_dependency_and_missing_coverage_reje
     )
     cov_issues = validate_blueprint(incomplete_bp, spec)
     assert any("未覆盖全部冻结业务实体" in item and "PaymentRecord" in item for item in cov_issues)
+
+
+def test_blueprint_prompt_contract_lists_every_field() -> None:
+    """总管提示词内联的字段契约必须覆盖全部 pydantic 模型字段（防止新增字段后模型再次猜键名）。"""
+    from agentforge_platform.blueprint_contracts import blueprint_prompt_contract
+    from agentforge_platform.interface_registry import PublicCapability
+    from agentforge_platform.module_registry import Module
+
+    text = blueprint_prompt_contract()
+    for model in (ArchitectureBlueprint, Module, PublicCapability, DtoContract, DtoField):
+        assert f"{model.__name__}:" in text
+        for field_name in model.model_fields:
+            assert f"- {field_name}:" in text, f"{model.__name__}.{field_name} 不在提示词契约中"
+    assert "extra=forbid" in text

@@ -62,12 +62,14 @@ class OpenAICompatibleClient:
         base_url: str = "https://api.openai.com/v1",
         default_max_output_tokens: int | None = None,
         supports_tools: bool = True,
+        timeout_seconds: int | None = None,
     ) -> None:
         self._provider = provider
         self._api_key_env = api_key_env
         self._base_url = base_url.rstrip("/")
         self._default_max_output_tokens = default_max_output_tokens
         self._supports_tools = supports_tools
+        self._timeout_seconds = timeout_seconds
 
     @property
     def provider(self) -> str:
@@ -91,7 +93,9 @@ class OpenAICompatibleClient:
 
     @property
     def timeout_seconds(self) -> int:
-        """R21：模型等待时限（默认 120s，可经 AGENTFORGE_MODEL_TIMEOUT_SECONDS 调整）。"""
+        """R21：模型等待时限（角色级配置优先，其次 AGENTFORGE_MODEL_TIMEOUT_SECONDS，默认 120s）。"""
+        if self._timeout_seconds is not None:
+            return self._timeout_seconds
         return model_timeout_seconds()
 
     def complete(

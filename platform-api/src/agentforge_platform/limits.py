@@ -39,6 +39,10 @@ class RuntimeLimits:
         return 2 * self.max_tool_ops + 5
 
 
+DEFAULT_FACTORY_MAX_TOOL_OPS = 120
+FACTORY_MAX_TOOL_OPS_ENV = "AGENTFORGE_FACTORY_MAX_TOOL_OPS"
+
+
 def runtime_limits() -> RuntimeLimits:
     values = {
         field: int(os.environ.get(_ENV[field], str(_DEFAULTS[field])))
@@ -47,8 +51,36 @@ def runtime_limits() -> RuntimeLimits:
     return RuntimeLimits(**values)
 
 
+def factory_max_tool_ops() -> int:
+    """工厂多部门子 Agent（DeptCoder / DeptTester）的工具操作上限。
+
+    优先级：``AGENTFORGE_FACTORY_MAX_TOOL_OPS`` > ``AGENTFORGE_MAX_TOOL_OPS`` > 默认 120。
+    保持既有 R21 ``runtime_limits().max_tool_ops`` 默认值（40）不变。
+    """
+    raw = os.environ.get(FACTORY_MAX_TOOL_OPS_ENV, "").strip()
+    if raw:
+        return max(1, int(raw))
+    global_raw = os.environ.get(_ENV["max_tool_ops"], "").strip()
+    if global_raw:
+        return max(1, int(global_raw))
+    return DEFAULT_FACTORY_MAX_TOOL_OPS
+
+
+def factory_agent_recursion_limit() -> int:
+    """工厂子 Agent 的 LangGraph 递归步数上限（每工具操作≈2 步 + 余量 5）。"""
+    return 2 * factory_max_tool_ops() + 5
+
+
 def model_timeout_seconds() -> int:
     return runtime_limits().model_timeout_seconds
 
 
-__all__ = ["RuntimeLimits", "model_timeout_seconds", "runtime_limits"]
+__all__ = [
+    "DEFAULT_FACTORY_MAX_TOOL_OPS",
+    "FACTORY_MAX_TOOL_OPS_ENV",
+    "RuntimeLimits",
+    "factory_agent_recursion_limit",
+    "factory_max_tool_ops",
+    "model_timeout_seconds",
+    "runtime_limits",
+]

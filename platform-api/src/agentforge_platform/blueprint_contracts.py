@@ -19,7 +19,7 @@ import json
 import re
 import stat
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Union
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -545,12 +545,162 @@ def generate_java_facade_stubs(
     return sorted(written_files)
 
 
+def _prompt_type_name(annotation: Any) -> str:
+    """把 pydantic 注解渲染成提示词里可读的类型名（不引入额外依赖）。"""
+    origin = getattr(annotation, "__origin__", None)
+    args = getattr(annotation, "__args__", ())
+    if annotation is Any:
+        return "any"
+    if annotation is type(None):
+        return "null"
+    if origin is Union or str(origin) == "types.UnionType":
+        parts = [_prompt_type_name(arg) for arg in args if arg is not type(None)]
+        rendered = " | ".join(dict.fromkeys(parts))
+        return rendered if type(None) not in args else f"{rendered} | null"
+    if origin is list:
+        return f"list[{_prompt_type_name(args[0])}]"
+    if origin is dict:
+        return f"dict[{_prompt_type_name(args[0])}, {_prompt_type_name(args[1])}]"
+    if origin is tuple:
+        return "[" + ", ".join(_prompt_type_name(arg) for arg in args) + "]"
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation.__name__
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
+_PROMPT_MODEL_ORDER = (
+    "ArchitectureBlueprint",
+    "Module",
+    "PublicCapability",
+    "DtoContract",
+    "DtoField",
+)
+
+
+def _render_model_fields(models: dict[str, type[BaseModel]]) -> list[str]:
+    """把若干 pydantic 模型渲染成「字段名: 类型 【必填】/（可选）」，供提示词内联。"""
+    lines = ["以下类型均禁止额外字段（extra=forbid）；标记【必填】的键必须出现，其余可省略。"]
+    for name, model in models.items():
+        lines.append("")
+        lines.append(f"{name}:")
+        for field_name, info in model.model_fields.items():
+            type_name = _prompt_type_name(info.annotation)
+            if info.is_required():
+                suffix = "【必填】"
+            else:
+                default = info.default
+                if default is None:
+                    rendered = "null"
+                elif isinstance(default, str):
+                    rendered = json.dumps(default, ensure_ascii=False)
+                elif isinstance(default, (list, dict, tuple)):
+                    rendered = json.dumps(default, ensure_ascii=False, default=str)
+                else:
+                    rendered = str(default)
+                suffix = f"（可选，默认 {rendered}）"
+            lines.append(f"  - {field_name}: {type_name} {suffix}")
+    return lines
+
+
+def department_plan_contract() -> str:
+    """渲染部门首次规划的 ``DepartmentPlan`` / ``PlannedFile`` 字段契约。
+
+    真实运行中模型返回的是 goal/owned_paths/tasks/risks 一套自造键，而 ``DepartmentPlan`` 要求
+    ``summary`` 且 extra=forbid，导致部门在 PLANNING 第一步即以 VALIDATION_ERROR 失败。
+    """
+    from agentforge_platform.factory_tickets import DepartmentPlan, PlannedFile
+
+    lines = _render_model_fields({"DepartmentPlan": DepartmentPlan, "PlannedFile": PlannedFile})
+    lines.extend(
+        [
+            "",
+            "取值与用法：",
+            "  - phase: 后端部门填 \"backend\"，前端部门填 \"frontend\"；dept_id/round 由系统回填，仍建议照抄给定值。",
+            "  - summary【必填】：一两句话说明本次部门要交付什么；不要用 goal/objective/tasks 等其他键代替。",
+            "  - files_to_create：每个元素都必须含 path + purpose（purpose 说明该文件职责），可选 source/asset_ref。",
+            "  - 只能规划写入 owned_paths 与 test_paths 列出的路径；跨模块接口由蓝图冻结契约提供，不得自行新增。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def fix_directive_contract() -> str:
+    """渲染部门返工的 ``FixDirective`` 字段契约（仅在返工提示词中内联）。"""
+    from agentforge_platform.factory_tickets import FixDirective
+
+    lines = _render_model_fields({"FixDirective": FixDirective})
+    lines.extend(
+        [
+            "",
+            "取值与用法：",
+            "  - root_cause【必填】+ target_files【必填】+ instructions【必填】：必须给出可执行的最小修复范围。",
+            "  - do_not_touch：明确列出返工中禁止改动的文件（测试文件、生成的类型、他部门目录）。",
+            "  - round 必须等于给定的返工轮次；不得改写测试断言来绕过缺陷。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def blueprint_prompt_contract() -> str:
+    """渲染 ``ArchitectureBlueprint`` 字段契约，供总管提示词内联（由 pydantic 模型派生，防止与代码漂移）。
+
+    总管提示词此前只写「请符合 ArchitectureBlueprint Schema」却不给字段名，真实模型只能猜测键名
+    （实测 220 条 ``Field required`` / ``extra_forbidden`` 报错）。这里把模型字段逐条列出，
+    并声明 ``extra=forbid`` 与必填性，让模型无需猜测。
+    """
+    models = {
+        "ArchitectureBlueprint": ArchitectureBlueprint,
+        "Module": Module,
+        "PublicCapability": PublicCapability,
+        "DtoContract": DtoContract,
+        "DtoField": DtoField,
+    }
+    lines = _render_model_fields({name: models[name] for name in _PROMPT_MODEL_ORDER})
+    lines.extend(
+        [
+            "",
+            "枚举取值：",
+            "  - phase: 后端蓝图填 \"backend\"，前端蓝图填 \"frontend\"",
+            f"  - interface_kind: {KIND_JAVA_METHOD!r}（跨模块 Java 方法）| \"HTTP\"（对外 HTTP 接口）",
+            f"  - status: 冻结契约必须为 {STATUS_APPROVED_FOR_BUILD!r}",
+            "  - Module.owner_role 固定 \"module_owner\"；Module.execution_mode 填 \"SERIAL\"；Module.lifecycle 填 \"READY\"；Module.migration_range 形如 [100, 199]。",
+            (
+                "注意：嵌套对象必须使用与上述完全一致的键名（例如契约用 capability_id/owner_module_id/interface_kind，"
+                "模块用 module_id/owned_paths/migration_range），不得改用 name/id 等简写。"
+            ),
+            "",
+            "命名与交叉约束硬规则（由 Python 确定性逐字校验，任一条违规即整份蓝图作废）：",
+            "  - module_id 必须为小写字母/数字/连字符或下划线（推荐 ^[a-z][a-z0-9_-]*$），且彼此唯一。",
+            "  - 每个模块必须声明非空 test_paths（DeptTester 强校验，缺省直接 422）：后端形如 [\"backend/src/test/java/<base_pkg_path>/modules/<module_id>/\"]，前端形如 [\"frontend/test/<module_id>/\"]。",
+            "  - 后端模块如需编写 Flyway 迁移脚本，必须把具体文件名（如 \"backend/src/main/resources/db/migration/V100__init_clubs.sql\"，版本号落在 migration_range 内）列入 owned_paths；严禁把共享目录 \"backend/src/main/resources/db/migration/\" 放入 owned_paths（会触发跨模块唯一写入权冲突）。",
+            "  - capability_id 必须匹配 ^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$（两段小写点分，如 clubs.requireactiveclub）。",
+            "  - JAVA_METHOD 与 HTTP 字段互斥：interface_kind='JAVA_METHOD' 时必须填 symbol 且严禁填 http_method/http_path；interface_kind='HTTP' 时严禁填 symbol 且必须填 http_method（GET/POST/PUT/DELETE/PATCH）与以 '/' 开头的 http_path。",
+            (
+                "  - symbol 必须匹配 ^[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*$：只允许 \"类名.方法名\" 两段，"
+                "严禁写包路径、严禁用 # 或 :: 连接、严禁出现 * ? todo 等占位符（反例：com.x.modules.clubs.api.ClubFacade#requireActiveClub）。"
+            ),
+            (
+                "  - signature 必须形如 \"List<ClubDto> findAll(Long id)\"：返回类型只写简单类名+泛型（不得含包名点号），方法名小驼峰，"
+                "参数为 \"类型 名称\" 逗号分隔；含 * ? TODO 的签名一律作废。"
+            ),
+            "  - 依赖对称性：模块 A 在 readable_contract_refs 中引用模块 B 的契约时，A.depends_on_modules 必须包含 B；凡在 depends_on_modules 中声明依赖的模块 B，B 必须在 frozen_contracts 中拥有至少一条契约；整个依赖图必须无环。",
+            "  - 前端蓝图约束：owned_paths 必须全部位于 frontend/src/modules/<module_id>/ 下；test_paths 位于 frontend/test/<module_id>/ 下；covered_pages 必须覆盖规格中全部页面名称。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 __all__ = [
     "MAX_MODULE_MIGRATION_VERSION",
     "MIN_MODULE_MIGRATION_VERSION",
     "ArchitectureBlueprint",
     "DtoContract",
     "DtoField",
+    "blueprint_prompt_contract",
+    "department_plan_contract",
+    "fix_directive_contract",
     "generate_java_facade_stubs",
     "validate_blueprint",
 ]

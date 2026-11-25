@@ -33,6 +33,7 @@ from agentforge_platform.clients import (
     OpenAICompatibleClient,
 )
 from agentforge_platform.errors import AppException, ErrorCode
+from agentforge_platform.limits import model_timeout_seconds
 from agentforge_platform.model_gateway import (
     DEFAULT_DEEPSEEK_BASE_URL,
     FACTORY_ROLES,
@@ -141,6 +142,7 @@ def build_client_for_role(role: str) -> OpenAICompatibleClient:
         base_url=_route_endpoint(route),
         default_max_output_tokens=route.max_output_tokens,
         supports_tools=route.supports_tools,
+        timeout_seconds=route.timeout_seconds,
     )
 
 
@@ -169,14 +171,16 @@ def build_ledger_model(role: str, binding: LedgerBinding) -> LedgerChatModel:
             f"环境变量 {route.api_key_env} 未配置",
             status_code=422,
         )
-    role_binding = replace(binding, model_role=role) if binding.model_role != role else binding
-    max_tokens = route.max_output_tokens or role_binding.max_output_tokens
+    max_tokens = route.max_output_tokens or binding.max_output_tokens
+    role_binding = replace(binding, model_role=role, max_output_tokens=max_tokens)
+    timeout = route.timeout_seconds if route.timeout_seconds is not None else model_timeout_seconds()
     return LedgerChatModel(
         ledger_binding=role_binding,
         model=resolved_model_name(role),
         base_url=_route_endpoint(route),
         api_key=api_key,
         max_tokens=max_tokens,
+        timeout=timeout,
         temperature=0,
     )
 

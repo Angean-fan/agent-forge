@@ -57,6 +57,7 @@ class Route:
     max_output_tokens: int | None = None
     supports_tools: bool = True
     price: Price | None = None
+    timeout_seconds: int | None = None
 
 
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -293,6 +294,17 @@ def load_custom_routes(config_path: str | Path | None = None) -> dict[str, Route
                 status_code=422,
             )
 
+        timeout_raw = entry.get("timeout_seconds")
+        timeout_sec: int | None = None
+        if timeout_raw is not None:
+            if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, int) or timeout_raw <= 0:
+                raise AppException(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"角色 {role} 的 timeout_seconds 必须为正整数",
+                    status_code=422,
+                )
+            timeout_sec = timeout_raw
+
         price = _parse_custom_price(
             entry.get("price_micro"),
             default_version=default_version,
@@ -309,6 +321,7 @@ def load_custom_routes(config_path: str | Path | None = None) -> dict[str, Route
             max_output_tokens=max_out,
             supports_tools=supports_tools_raw,
             price=price,
+            timeout_seconds=timeout_sec,
         )
     return custom
 
