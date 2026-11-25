@@ -61,15 +61,19 @@ def test_gitignore_covers_all_sensitive_and_runtime_paths() -> None:
 def test_readme_is_synced_with_current_architecture_and_three_docs() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     for token in (
-        "AgentForge_01_现状盘点与开发约束.md",
-        "AgentForge_02_现有底座改造与适配_分步开发Prompt.md",
-        "AgentForge_03_异步工厂流水线与开源交付_分步开发Prompt.md",
         "compose.local-pg.yaml",
         "seed_assets",
         "models.example.json",
         "/verify-module",
         "ci_gate.sh",
+        "MVP_DEPLOY.md",
     ):
         assert token in readme
+    for internal_doc in (
+        "AgentForge_01_现状盘点与开发约束.md",
+        "AgentForge_02_现有底座改造与适配_分步开发Prompt.md",
+        "AgentForge_03_异步工厂流水线与开源交付_分步开发Prompt.md",
+    ):
+        assert internal_doc not in readme
     for pat in _REAL_SECRET_PATTERNS:
         assert pat.search(readme) is None
