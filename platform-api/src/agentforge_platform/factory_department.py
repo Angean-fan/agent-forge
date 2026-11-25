@@ -431,10 +431,20 @@ def _collect_staging_context(
                         budget -= encoded_len
                     else:
                         lines.append(f"  [FILE: /{rel}]（内容较长，按需 read_file）")
-        lines.append(
-            '- api-fragment.json 格式要求：合法 JSON 对象，形如 '
-            '{"paths": {"/api/...": {"get": {"operationId": "...", "summary": "...", "x-auth": ["USER"], "responses": {"200": {"description": "OK"}}}}}, '
-            '"components": {"schemas": {...}}}；不要重复声明其他部门路由。'
+        lines.extend(
+            [
+                "- 【Spring Boot 锁定技术栈与依赖禁令（离线 Maven 编译，严禁引入 pom.xml 之外的依赖）】",
+                "  1) 仅可使用：Java 17、Spring Boot 3.5.16（Web / Security / Validation / Test）、MyBatis-Plus 3.5.17（BaseMapper / @TableName / @TableId(type = IdType.AUTO)）、Flyway、JJWT、H2（test）与 MySQL 8.0。",
+                "  2) 严禁使用 Lombok（禁止 @Data/@Builder/@RequiredArgsConstructor/@Slf4j 等）、严禁使用 Spring Data JPA/Hibernate（禁止 @Entity/JpaRepository）、严禁使用 Swagger/SpringDoc（禁止 @Tag/@Operation/@Schema）、严禁使用 MapStruct；DTO/VO 优先使用 Java 17 record 或显式构造器与 getter/setter，日志使用 org.slf4j.LoggerFactory。",
+                "  3) 所有本部门 MyBatis-Plus Mapper 接口必须标注 `@org.apache.ibatis.annotations.Mapper`（由只读底座 common/FactoryBaseConfig 自动扫描注册）；方法级权限控制可直接使用 `@PreAuthorize(...)`；底座 SecurityConfig 仅放行 /api/health 与 /api/auth/login，业务接口默认需要 JWT 鉴权。",
+                "  4) Flyway SQL 隔离规范：严禁在单部门迁移脚本中写跨部门表的 `FOREIGN KEY ... REFERENCES <other_dept_table>`（单部门测试环境无他部门建表 SQL，只保留逻辑外键列，跨表外键由总装 V900__relations.sql 统一处理）；DDL 必须同时兼容 H2(MODE=MySQL) 与 MySQL 8.0。",
+                "  5) 单元测试隔离规范：DeptTester 优先编写纯 JUnit 5 + Mockito（`@ExtendWith(MockitoExtension.class)`）单元测试，速度快且不依赖外部部门 Bean；如必须使用 `@SpringBootTest`，必须对所有外部模块 `*Facade` 依赖加 `@MockitoBean`（Spring Boot 3.5+）。",
+                (
+                    '- api-fragment.json 格式要求：合法 JSON 对象，形如 '
+                    '{"paths": {"/api/...": {"get": {"operationId": "...", "summary": "...", "x-auth": ["USER"], "security": [{"bearerAuth": []}], "responses": {"200": {"description": "OK"}}}}}, '
+                    '"components": {"schemas": {...}}}；不要重复声明其他部门路由。'
+                ),
+            ]
         )
     else:
         fe_root = dept_staging / "frontend"

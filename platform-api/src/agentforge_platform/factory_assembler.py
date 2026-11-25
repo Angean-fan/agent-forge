@@ -282,10 +282,28 @@ def _build_merged_openapi(
                 "operationId": "base_health",
                 "summary": "Backend health check",
                 "x-department": "base",
+                "x-auth": ["PUBLIC"],
+                "security": [],
                 "responses": {"200": {"description": "OK"}},
             }
         },
     )
+
+    # 对齐 OpenAPI 3.0 标准 security 字段（与底座 SecurityConfig 的 JWT Bearer 鉴权保持一致）
+    public_base_paths = {"/api/health", "/api/auth/login"}
+    for path_key, methods_obj in paths.items():
+        if not isinstance(methods_obj, dict):
+            continue
+        for method_key, op_obj in methods_obj.items():
+            if method_key.lower() not in _HTTP_METHODS or not isinstance(op_obj, dict):
+                continue
+            if "security" in op_obj:
+                continue
+            x_auth = op_obj.get("x-auth")
+            is_public = path_key in public_base_paths or (
+                isinstance(x_auth, list) and "PUBLIC" in {str(a).upper() for a in x_auth}
+            )
+            op_obj["security"] = [] if is_public else [{"bearerAuth": []}]
 
     doc: dict[str, Any] = {
         "openapi": "3.0.3",
@@ -298,7 +316,16 @@ def _build_merged_openapi(
         "x-agentforge-blueprint-hash": blueprint.blueprint_hash(),
         "x-agentforge-frozen": False,
         "paths": dict(sorted(paths.items())),
-        "components": {"schemas": dict(sorted(schemas.items()))},
+        "components": {
+            "schemas": dict(sorted(schemas.items())),
+            "securitySchemes": {
+                "bearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "bearerFormat": "JWT",
+                }
+            },
+        },
     }
     return doc, conflicts
 

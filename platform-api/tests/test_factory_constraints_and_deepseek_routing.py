@@ -309,6 +309,11 @@ def test_prompts_enforce_contracts_task_markers_and_staging_context(tmp_path: Pa
     assert "ClubFacade.java" in be_ctx
     assert "boolean exists(Long id)" in be_ctx
     assert "api-fragment.json" in be_ctx
+    assert "Lombok" in be_ctx
+    assert "@org.apache.ibatis.annotations.Mapper" in be_ctx
+    assert "FactoryBaseConfig" in be_ctx
+    assert "@MockitoBean" in be_ctx
+    assert "FOREIGN KEY" in be_ctx
 
     coder_prompt = _build_coder_prompt(
         module=mod, plan=None, directive=None, round_num=1, staging_context=be_ctx
@@ -335,3 +340,81 @@ def test_prompts_enforce_contracts_task_markers_and_staging_context(tmp_path: Pa
     assert "API_ENDPOINTS" in fe_ctx
     assert "requiresAuth: true" in fe_ctx
     assert "v-html" in fe_ctx
+
+
+def test_factory_base_generates_mapper_scan_config_and_openapi_security_alignment(
+    tmp_path: Path,
+) -> None:
+    """确认后端底座自动生成 FactoryBaseConfig(@MapperScan+@EnableMethodSecurity)，且聚合 OpenAPI 自动对齐 bearerAuth。"""
+    from agentforge_platform.factory_assembler import _build_merged_openapi
+    from agentforge_platform.factory_base_builder import (
+        _ensure_common_and_base_migration,
+        _render_common_factory_base_config_java,
+    )
+    from agentforge_platform.factory_tickets import DepartmentDeliverable
+
+    cfg_src = _render_common_factory_base_config_java("com.agentforge.template")
+    assert "@Configuration" in cfg_src
+    assert "@EnableMethodSecurity" in cfg_src
+    assert '@MapperScan(basePackages = "com.agentforge.template.modules", annotationClass = Mapper.class)' in cfg_src
+
+    mod = Module(
+        project_id="1",
+        module_id="clubs",
+        name="社团管理",
+        based_on_spec_hash="a" * 64,
+        profile_ref="java-vue@1",
+        owned_paths=["backend/src/main/java/com/agentforge/template/modules/clubs/internal/"],
+        test_paths=["backend/src/test/java/com/agentforge/template/modules/clubs/"],
+        migration_range=(100, 199),
+    )
+    bp = ArchitectureBlueprint(
+        project_id="1",
+        based_on_spec_hash="a" * 64,
+        profile_ref="java-vue@1",
+        modules=[mod],
+    )
+    categories: dict[str, str] = {}
+    _ensure_common_and_base_migration(tmp_path, bp, categories)
+    cfg_rel = "backend/src/main/java/com/agentforge/template/common/FactoryBaseConfig.java"
+    assert categories[cfg_rel] == "base_common"
+    assert (tmp_path / cfg_rel).is_file()
+
+    deliverable = DepartmentDeliverable(
+        run_id=1,
+        phase="backend",
+        dept_id="clubs",
+        status="PASSED",
+        rounds_used=1,
+        staging_dir=str(tmp_path),
+        api_fragment={
+            "paths": {
+                "/api/clubs": {
+                    "get": {
+                        "operationId": "listClubs",
+                        "x-auth": ["USER"],
+                        "responses": {"200": {"description": "OK"}},
+                    }
+                },
+                "/api/public/ping": {
+                    "get": {
+                        "operationId": "publicPing",
+                        "x-auth": ["PUBLIC"],
+                        "responses": {"200": {"description": "OK"}},
+                    }
+                },
+            }
+        },
+    )
+    doc, conflicts = _build_merged_openapi(
+        blueprint=bp,
+        spec=None,
+        deliverables_by_dept={"clubs": deliverable},
+        run_id=1,
+        integration_round=1,
+    )
+    assert conflicts == []
+    assert "bearerAuth" in doc["components"]["securitySchemes"]
+    assert doc["paths"]["/api/clubs"]["get"]["security"] == [{"bearerAuth": []}]
+    assert doc["paths"]["/api/public/ping"]["get"]["security"] == []
+    assert doc["paths"]["/api/health"]["get"]["security"] == []

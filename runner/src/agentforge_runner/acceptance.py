@@ -260,14 +260,15 @@ def run_acceptance(artifact_dir: Path, config: RunnerConfig) -> AcceptanceResult
         )
         _sh(["docker", "exec", mysql_name, "mysql", f"-u{_DB_USER}", f"-p{_DB_PASSWORD}", _DB_NAME, "-e", seed])
 
-        # R12：按生成项目形态分流——含校园活动实体（/api/activities）跑校园主线固定场景，
-        # 含工厂权威 openapi.json / factory-blueprint.json 跑工厂 OpenAPI 契约验收，否则跑原 Task 场景。
+        # R12 / FP06：按生成项目形态分流——优先识别含工厂权威 openapi.json / factory-blueprint.json 的
+        # 工厂流水线产物（避免含 /api/activities 的多领域工厂项目被误判为旧校园活动 Demo），
+        # 其次识别借阅契约与校园活动主线，否则跑原 Task 场景。
         if _is_lending_contract(artifact_dir):
             _run_lending_cases(base["url"], case)
-        elif _is_campus_project(base["url"]):
-            _run_campus_cases(base["url"], case)
         elif _is_factory_openapi_project(artifact_dir):
             _run_factory_openapi_cases(base["url"], artifact_dir, case)
+        elif _is_campus_project(base["url"]):
+            _run_campus_cases(base["url"], case)
         else:
             _run_http_cases(base["url"], artifact_dir, case)
     finally:
@@ -496,6 +497,16 @@ def _slug_path(path: str) -> str:
     return cleaned or "root"
 
 
+def _op_requires_auth(op: dict) -> bool:
+    sec = op.get("security")
+    if isinstance(sec, list):
+        return len(sec) > 0
+    x_auth = op.get("x-auth")
+    if isinstance(x_auth, list) and x_auth:
+        return "PUBLIC" not in {str(item).upper() for item in x_auth}
+    return False
+
+
 def _run_factory_openapi_cases(base: str, artifact_dir: Path, case) -> None:
     """工厂模式多领域（如电商沙箱）通用 HTTP 契约验收：健康检查 + 鉴权守卫 + OpenAPI 端点可达性 + 沙箱支付路由。"""
     health_status, _ = _http("GET", f"{base}/api/health")
@@ -527,8 +538,7 @@ def _run_factory_openapi_cases(base: str, artifact_dir: Path, case) -> None:
         if isinstance(get_op, dict) and raw_path != "/api/health" and probed_get < 16:
             probed_get += 1
             slug = _slug_path(raw_path)
-            sec = get_op.get("security")
-            requires_auth = isinstance(sec, list) and len(sec) > 0
+            requires_auth = _op_requires_auth(get_op)
             if requires_auth:
                 unauth_status, _ = _http("GET", f"{base}{raw_path}")
                 case(
@@ -550,8 +560,7 @@ def _run_factory_openapi_cases(base: str, artifact_dir: Path, case) -> None:
             and ("sandbox-pay" in raw_path or "payment" in raw_path)
         ):
             probed_sandbox_pay = True
-            sec = post_op.get("security")
-            requires_auth = isinstance(sec, list) and len(sec) > 0
+            requires_auth = _op_requires_auth(post_op)
             status, _ = _http(
                 "POST",
                 f"{base}{raw_path}",

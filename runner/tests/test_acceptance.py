@@ -321,3 +321,55 @@ def test_run_factory_openapi_cases_flags_missing_auth_guard_or_500(tmp_path: Pat
     )
     assert results["factory_auth_guard_api_orders"] is False
     assert results["factory_get_api_orders"] is False
+
+
+def test_factory_openapi_takes_precedence_over_campus_and_respects_x_auth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """含 /api/activities 的工厂项目（如社团管理系统）必须走工厂 OpenAPI 验收而非旧校园 Demo，并识别 x-auth。"""
+    from agentforge_runner import acceptance
+
+    assert acceptance._op_requires_auth({"security": [{"bearerAuth": []}]}) is True
+    assert acceptance._op_requires_auth({"security": []}) is False
+    assert acceptance._op_requires_auth({"x-auth": ["USER"]}) is True
+    assert acceptance._op_requires_auth({"x-auth": ["PUBLIC"]}) is False
+    assert acceptance._op_requires_auth({}) is False
+
+    oa = tmp_path / "backend" / "openapi.json"
+    oa.parent.mkdir(parents=True)
+    oa.write_text(
+        json.dumps(
+            {
+                "openapi": "3.0.3",
+                "paths": {
+                    "/api/activities": {
+                        "get": {"summary": "社团活动列表", "x-auth": ["USER"]},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(acceptance, "_login", lambda *a: "tok")
+
+    def fake_http(method, url, token=None, body=None):
+        if url.endswith("/api/health"):
+            return 200, {"status": "UP"}
+        if url.endswith("/api/activities"):
+            return (200, {"items": []}) if token else (401, None)
+        return 404, None
+
+    monkeypatch.setattr(acceptance, "_http", fake_http)
+    cases: dict[str, bool] = {}
+    _run_factory_openapi_cases(
+        "http://x",
+        tmp_path,
+        lambda name, passed, detail=None: cases.__setitem__(name, passed),
+    )
+    assert cases["factory_auth_guard_api_activities"] is True
+    assert cases["factory_get_api_activities"] is True
+    assert "campus_admin_publish" not in cases
+
+    # 验证 run_acceptance 源码中 _is_factory_openapi_project 优先于 _is_campus_project
+    src = Path(acceptance.__file__).read_text(encoding="utf-8")
+    assert src.index("elif _is_factory_openapi_project") < src.index("elif _is_campus_project")

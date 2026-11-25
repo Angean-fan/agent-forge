@@ -130,6 +130,31 @@ def _render_common_api_response_java(base_package: str) -> str:
     )
 
 
+def _render_common_factory_base_config_java(base_package: str) -> str:
+    pkg = f"{base_package}.common"
+    modules_pkg = f"{base_package}.modules"
+    return (
+        f"package {pkg};\n"
+        "\n"
+        "import org.apache.ibatis.annotations.Mapper;\n"
+        "import org.mybatis.spring.annotation.MapperScan;\n"
+        "import org.springframework.context.annotation.Configuration;\n"
+        "import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;\n"
+        "\n"
+        "/**\n"
+        " * Read-only factory Spring configuration provided by the backend base.\n"
+        f" * Automatically registers all @Mapper-annotated interfaces under {modules_pkg}\n"
+        " * and enables @PreAuthorize method-level security.\n"
+        " * DO NOT MODIFY inside individual department staging.\n"
+        " */\n"
+        "@Configuration\n"
+        "@EnableMethodSecurity\n"
+        f'@MapperScan(basePackages = "{modules_pkg}", annotationClass = Mapper.class)\n'
+        "public class FactoryBaseConfig {\n"
+        "}\n"
+    )
+
+
 def _render_fallback_base_sql() -> str:
     return (
         "-- Read-only factory backend base migration (generated when template lacks V1/V001).\n"
@@ -205,6 +230,19 @@ def _ensure_common_and_base_migration(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(_render_common_api_response_java(blueprint.base_package), encoding="utf-8")
         categories[common_rel] = "base_common"
+
+    config_rel = f"backend/src/main/java/{pkg_rel}/common/FactoryBaseConfig.java"
+    if config_rel not in categories:
+        _validate_rel(config_rel)
+        target_cfg = dest_root / config_rel
+        if not _is_within(dest_root, target_cfg):
+            raise AssemblyError(f"共享 common 配置文件路径越界：{config_rel}")
+        target_cfg.parent.mkdir(parents=True, exist_ok=True)
+        target_cfg.write_text(
+            _render_common_factory_base_config_java(blueprint.base_package),
+            encoding="utf-8",
+        )
+        categories[config_rel] = "base_common"
 
     migration_dir = dest_root / "backend" / "src" / "main" / "resources" / "db" / "migration"
     has_base_v1 = migration_dir.is_dir() and any(
